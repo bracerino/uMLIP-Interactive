@@ -35,173 +35,46 @@ try:
 except ImportError:
     ELASTIC_AVAILABLE = False
 
+if 'structures_locked' not in st.session_state:
+    st.session_state.structures_locked = False
+if 'uploaded_files_processed' not in st.session_state:
+    st.session_state.uploaded_files_processed = False
+if 'pending_structures' not in st.session_state:
+    st.session_state.pending_structures = {}
 
-def calculate_phonons_simple(atoms, calculator, phonon_params, log_queue, structure_name):
-    """
-    Simple phonon calculation - let ASE handle as much as possible automatically
-    """
-    try:
-        log_queue.put(f"Starting simple phonon calculation for {structure_name}")
 
-        # Set calculator
-        atoms.calc = calculator
+st.markdown("""
+    <style>
+    div.stButton > button[kind="primary"] {
+        background-color: #0099ff; color: white; font-size: 16px; font-weight: bold;
+        padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+    }
+    div.stButton > button[kind="primary"]:active, div.stButton > button[kind="primary"]:focus {
+        background-color: #007acc !important; color: white !important; box-shadow: none !important;
+    }
 
-        num_atoms = len(atoms)
-        log_queue.put(f"  Structure has {num_atoms} atoms")
+    div.stButton > button[kind="secondary"] {
+        background-color: #dc3545; color: white; font-size: 16px; font-weight: bold;
+        padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+    }
+    div.stButton > button[kind="secondary"]:active, div.stButton > button[kind="secondary"]:focus {
+        background-color: #c82333 !important; color: white !important; box-shadow: none !important;
+    }
 
-        # For large structures, just use (1,1,1) - no supercell
-        if num_atoms > 20:
-            supercell_size = (1, 1, 1)
-            log_queue.put(f"  Large structure detected - using primitive cell only (no supercell)")
-        else:
-            # For smaller structures, try (2,2,2) first, fallback to (1,1,1)
-            supercell_size = phonon_params.get('supercell_size', (2, 2, 2))
-            if phonon_params.get('auto_supercell', True):
-                # Simple rule: if < 10 atoms, use (2,2,2), otherwise (1,1,1)
-                if num_atoms < 10:
-                    supercell_size = (2, 2, 2)
-                else:
-                    supercell_size = (1, 1, 1)
-                log_queue.put(f"  Auto-selected supercell: {supercell_size} for {num_atoms} atoms")
+    div.stButton > button[kind="tertiary"] {
+        background-color: #6f42c1; color: white; font-size: 16px; font-weight: bold;
+        padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+    }
+    div.stButton > button[kind="tertiary"]:active, div.stButton > button[kind="tertiary"]:focus {
+        background-color: #5a2d91 !important; color: white !important; box-shadow: none !important;
+    }
 
-        log_queue.put(f"  Using supercell: {supercell_size}")
+    div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
+#st.markdown(css, unsafe_allow_html=True)
 
-        # Simple approach: just use ASE defaults with minimal intervention
-        try:
-            log_queue.put("  Initializing ASE Phonons class...")
-            ph = Phonons(atoms, calculator, supercell=supercell_size, delta=phonon_params.get('delta', 0.01))
-
-            log_queue.put("  Running force calculations...")
-            ph.run()
-
-            log_queue.put("  Reading forces and building dynamical matrix...")
-            ph.read(acoustic=True)
-
-            log_queue.put("  ✅ Phonon setup successful!")
-
-        except Exception as setup_error:
-            if supercell_size != (1, 1, 1):
-                log_queue.put(f"  ❌ Supercell {supercell_size} failed: {str(setup_error)}")
-                log_queue.put("  Falling back to primitive cell only...")
-
-                # Fallback to primitive cell
-                ph = Phonons(atoms, calculator, supercell=(1, 1, 1), delta=phonon_params.get('delta', 0.01))
-                ph.run()
-                ph.read(acoustic=True)
-                supercell_size = (1, 1, 1)
-                log_queue.put("  ✅ Primitive cell calculation successful!")
-            else:
-                raise setup_error
-
-        # Let ASE choose the k-path automatically
-        log_queue.put("  Setting up k-point path...")
-        try:
-            # Use ASE's automatic band path selection
-            lat = atoms.cell.get_bravais_lattice()
-            npoints = phonon_params.get('npoints', 100)
-            bandpath_obj = lat.bandpath(npoints=npoints)
-            log_queue.put(f"  Using ASE automatic k-path: {bandpath_obj.path} ({len(bandpath_obj.kpts)} points)")
-        except Exception as kpath_error:
-            log_queue.put(f"  ⚠️ Automatic k-path failed: {str(kpath_error)}")
-            log_queue.put("  Using simple Gamma-X path...")
-            # Simple fallback - just use a basic path
-            from ase.dft.kpoints import BandPath
-            import numpy as np
-            kpts = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.0, 0.0]])
-            bandpath_obj = BandPath(atoms.cell, kpts=kpts, path='GXG')
-
-        # Calculate band structure
-        log_queue.put("  Calculating phonon band structure...")
-        bs = ph.get_band_structure(bandpath_obj)
-        frequencies = bs.energies[0] * 1000  # Convert eV to meV
-        kpoints = bs.path.kpts
-
-        # Simple DOS calculation
-        log_queue.put("  Calculating phonon DOS...")
-        try:
-            dos_obj = ph.get_dos(kpts=(5, 5, 5))  # Use smaller grid for reliability
-            dos_energies = dos_obj.get_energies() * 1000  # Convert to meV
-            dos_weights = dos_obj.get_weights()
-        except Exception as dos_error:
-            log_queue.put(f"  ⚠️ DOS calculation failed: {str(dos_error)}")
-            log_queue.put("  Creating simplified DOS...")
-            # Create simple DOS from band structure
-            freq_flat = frequencies.flatten()
-            freq_flat = freq_flat[freq_flat > 0]  # Remove negatives
-
-            if len(freq_flat) > 0:
-                dos_energies = np.linspace(0, np.max(freq_flat) * 1.2, 500)
-                dos_weights = np.zeros_like(dos_energies)
-                sigma = 2.0  # meV broadening
-                for f in freq_flat:
-                    dos_weights += np.exp(-0.5 * ((dos_energies - f) / sigma) ** 2)
-                dos_weights /= len(freq_flat) * sigma * np.sqrt(2 * np.pi)
-            else:
-                dos_energies = np.linspace(0, 50, 500)
-                dos_weights = np.zeros_like(dos_energies)
-
-        # Check for imaginary modes
-        imaginary_count = np.sum(frequencies < 0)
-        if imaginary_count > 0:
-            log_queue.put(f"  ⚠️ Found {imaginary_count} imaginary modes")
-            log_queue.put(f"    Most negative frequency: {np.min(frequencies):.3f} meV")
-        else:
-            log_queue.put("  ✅ No imaginary modes found")
-
-        # Simple thermodynamics
-        temp = phonon_params.get('temperature', 300)  # K
-        log_queue.put(f"  Calculating thermodynamics at {temp} K...")
-
-        positive_freqs = frequencies[frequencies > 0] * 1e-3  # Convert to eV
-        thermo_props = None
-
-        if len(positive_freqs) > 10:  # Need reasonable number of modes
-            kB = 8.617e-5  # eV/K
-
-            # Zero-point energy
-            E_zp = 0.5 * np.sum(positive_freqs)
-
-            # Simple thermal properties
-            x = positive_freqs / (kB * temp)
-            exp_x = np.exp(np.minimum(x, 50))  # Prevent overflow
-
-            U = np.sum(positive_freqs * exp_x / (exp_x - 1 + 1e-10))
-            Cv = np.sum(kB * x ** 2 * exp_x / (exp_x - 1 + 1e-10) ** 2)
-
-            thermo_props = {
-                'temperature': temp,
-                'zero_point_energy': E_zp,
-                'internal_energy': U,
-                'heat_capacity': Cv,
-                'entropy': 0.0,  # Simplified
-                'free_energy': U  # Simplified
-            }
-
-            log_queue.put(f"  Zero-point energy: {E_zp:.6f} eV")
-            log_queue.put(f"  Heat capacity: {Cv:.6f} eV/K")
-
-        log_queue.put(f"✅ Simple phonon calculation completed for {structure_name}")
-
-        return {
-            'success': True,
-            'frequencies': frequencies,  # meV, shape (nkpts, nbands)
-            'kpoints': kpoints,
-            'dos_energies': dos_energies,  # meV
-            'dos': dos_weights,
-            'thermodynamics': thermo_props,
-            'supercell_size': supercell_size,
-            'imaginary_modes': imaginary_count,
-            'min_frequency': np.min(frequencies) if frequencies.size > 0 else 0
-        }
-
-    except Exception as e:
-        log_queue.put(f"❌ Simple phonon calculation failed for {structure_name}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-# Replace your existing phonon functions with these corrected versions:
 
 def estimate_phonon_supercell(atoms, target_min_length=15.0, max_supercell=4, log_queue=None):
     """
@@ -260,380 +133,8 @@ def estimate_phonon_supercell(atoms, target_min_length=15.0, max_supercell=4, lo
     return supercell_size
 
 
-def calculate_phonons(atoms, calculator, phonon_params, log_queue, structure_name):
-    """
-    Calculate phonons with automatic supercell size estimation
-    """
-    try:
-        log_queue.put(f"Starting phonon calculation for {structure_name}")
-
-        # Set calculator
-        atoms.calc = calculator
-
-        # Get number of atoms in primitive cell
-        num_initial_atoms = len(atoms)
-        log_queue.put(f"  Initial atoms object (primitive cell) has {num_initial_atoms} atoms.")
-
-        # Estimate appropriate supercell size
-        if phonon_params.get('auto_supercell', True):
-            log_queue.put("  Estimating appropriate supercell size...")
-            target_length = phonon_params.get('target_supercell_length', 15.0)
-            max_supercell = phonon_params.get('max_supercell_multiplier', 4)
-            supercell_size = estimate_phonon_supercell(atoms, target_length, max_supercell, log_queue)
-        else:
-            # Use user-specified supercell
-            supercell_size = phonon_params.get('supercell_size', (2, 2, 2))
-            log_queue.put(f"  Using user-specified supercell: {supercell_size}")
-
-        # Additional safety check: limit total supercell atoms
-        total_supercell_atoms = num_initial_atoms * np.prod(supercell_size)
-        max_total_atoms = phonon_params.get('max_supercell_atoms', 800)
-
-        if total_supercell_atoms > max_total_atoms:
-            log_queue.put(f"  ⚠️ Supercell too large ({total_supercell_atoms} atoms), reducing...")
-            # Scale down supercell proportionally
-            scale_factor = (max_total_atoms / total_supercell_atoms) ** (1 / 3)
-            supercell_size = tuple(max(1, int(s * scale_factor)) for s in supercell_size)
-            total_supercell_atoms = num_initial_atoms * np.prod(supercell_size)
-            log_queue.put(f"  Reduced supercell to: {supercell_size} ({total_supercell_atoms} atoms)")
-
-        log_queue.put(f"  Creating {supercell_size} supercell for force calculations")
-
-        # Initialize phonons object with estimated supercell
-        ph = Phonons(atoms, calculator, supercell=supercell_size, delta=phonon_params.get('delta', 0.01))
-
-        # Calculate forces for displaced atoms
-        log_queue.put("  Calculating forces for displaced configurations...")
-        ph.run()
-
-        # Read forces and create dynamical matrix
-        log_queue.put("  Building dynamical matrix...")
-        try:
-            ph.read(acoustic=True)
-            log_queue.put("  ✅ Dynamical matrix built successfully.")
-        except Exception as read_error:
-            log_queue.put(f"❌ Error during ph.read(): {str(read_error)}")
-            log_queue.put(f"This is often due to an inconsistent primitive cell or supercell/displacement setup.")
-
-            # Try fallback: smaller supercell
-            if phonon_params.get('auto_supercell', True) and np.any(np.array(supercell_size) > 1):
-                log_queue.put("  Trying fallback with smaller supercell...")
-                fallback_supercell = tuple(max(1, s - 1) for s in supercell_size)
-
-                try:
-                    ph_fallback = Phonons(atoms, calculator, supercell=fallback_supercell,
-                                          delta=phonon_params.get('delta', 0.01))
-                    ph_fallback.run()
-                    ph_fallback.read(acoustic=True)
-                    ph = ph_fallback  # Use the fallback
-                    supercell_size = fallback_supercell
-                    log_queue.put(f"  ✅ Fallback supercell {fallback_supercell} worked!")
-                except Exception as fallback_error:
-                    log_queue.put(f"❌ Fallback also failed: {str(fallback_error)}")
-                    raise read_error  # Re-raise original error
-            else:
-                raise read_error  # Re-raise to immediately exit
-
-        # Define high-symmetry k-points path based on crystal system
-        cell = atoms.get_cell()
-        if phonon_params.get('auto_kpath', True):
-            try:
-                # Use ase.dft.kpoints.BandPath object directly
-                lat = atoms.cell.get_bravais_lattice()
-                path_npoints = phonon_params.get('npoints', 100)
-                bandpath_obj = lat.bandpath(npoints=path_npoints)
-                log_queue.put(
-                    f"  Using automatic k-path with {len(bandpath_obj.kpts)} points and path {bandpath_obj.path}")
-            except Exception as kpath_error:
-                log_queue.put(
-                    f"  ⚠️ Could not get automatic k-path ({str(kpath_error)}). Falling back to manual Gamma-X-M-Gamma path.")
-                path_npoints = phonon_params.get('npoints', 100)
-                special_points = {'G': [0, 0, 0], 'X': [0.5, 0, 0], 'M': [0.5, 0.5, 0], 'R': [0.5, 0.5, 0.5]}
-                path_str = 'GXMG'
-                bandpath_obj = atoms.cell.bandpath(path_str, npoints=path_npoints, special_points=special_points)
-                log_queue.put(f"  Using fallback path {bandpath_obj.path} with {len(bandpath_obj.kpts)} points")
-        else:
-            # Use custom k-points if provided
-            log_queue.put("  Custom k-path selected.")
-            path_npoints = phonon_params.get('npoints', 100)
-            special_points = phonon_params.get('special_kpoints',
-                                               {'G': [0, 0, 0], 'X': [0.5, 0, 0], 'M': [0.5, 0.5, 0]})
-            path_str = phonon_params.get('kpath_string', 'GXMG')
-            try:
-                bandpath_obj = atoms.cell.bandpath(path_str, npoints=path_npoints, special_points=special_points)
-                log_queue.put(f"  Using custom k-path '{path_str}' with {len(bandpath_obj.kpts)} points")
-            except Exception as e:
-                log_queue.put(f"  ❌ Error creating custom k-path ({str(e)}). Falling back to automatic path.")
-                lat = atoms.cell.get_bravais_lattice()
-                path_npoints = phonon_params.get('npoints', 100)
-                bandpath_obj = lat.bandpath(npoints=path_npoints)
-                log_queue.put(
-                    f"  Using automatic k-path with {len(bandpath_obj.kpts)} points and path {bandpath_obj.path}")
-
-        # Calculate phonon dispersion using get_band_structure
-        log_queue.put("  Calculating phonon dispersion...")
-        bs = ph.get_band_structure(bandpath_obj)
-        # bs.energies has shape (nspins, nkpoints, nbands) - take the first (and only) spin component
-        omega_kn = bs.energies[0] * 1000  # Convert eV to meV, shape: (nkpoints, nbands)
-
-        # The k-points are in bs.path.kpts
-        kpts = bs.path.kpts
-
-        # Calculate phonon DOS
-        log_queue.put("  Calculating phonon density of states...")
-        dos_obj = ph.get_dos(kpts=phonon_params.get('dos_kgrid', (10, 10, 10)))
-
-        # Get DOS data from the RawDOSData object
-        dos_energies = dos_obj.get_energies() * 1000  # Convert eV to meV
-        dos = dos_obj.get_weights()
-
-        # Check for imaginary modes
-        imaginary_modes_count = np.sum(omega_kn < 0)
-        if imaginary_modes_count > 0:
-            log_queue.put(f"  ⚠️ Warning: Found {imaginary_modes_count} imaginary modes in dispersion curve.")
-            log_queue.put(f"    Lowest frequency: {np.min(omega_kn):.3f} meV")
-
-        # Calculate thermodynamic properties
-        temp = phonon_params.get('temperature', 300)  # K
-        log_queue.put(f"  Calculating thermodynamic properties at {temp} K...")
-
-        kB = 8.617e-5  # eV/K
-        positive_freqs = omega_kn[omega_kn > 0] * 1e-3  # Convert meV to eV
-
-        if len(positive_freqs) > 0:
-            # Zero-point energy
-            E_zp = 0.5 * np.sum(positive_freqs)
-
-            # Internal energy, Heat capacity, Entropy
-            x = positive_freqs / (kB * temp)
-            exp_x = np.exp(x)
-
-            # Avoid division by zero
-            exp_x_minus_1 = exp_x - 1
-            exp_x_minus_1[exp_x_minus_1 == 0] = 1e-10
-
-            U = np.sum(positive_freqs * exp_x / exp_x_minus_1)
-            Cv = np.sum(kB * x ** 2 * exp_x / (exp_x_minus_1) ** 2)
-            S = np.sum(kB * (x * exp_x / exp_x_minus_1 - np.log(1 - 1 / exp_x)))
-
-            thermo_props = {
-                'temperature': temp,
-                'zero_point_energy': E_zp,
-                'internal_energy': U,
-                'heat_capacity': Cv,
-                'entropy': S,
-                'free_energy': U - temp * S
-            }
-        else:
-            log_queue.put("  ⚠️ No positive frequencies found for thermodynamics - skipping.")
-            thermo_props = None
-
-        log_queue.put(f"✅ Phonon calculation completed for {structure_name}")
-        if thermo_props:
-            log_queue.put(f"  Zero-point energy: {thermo_props['zero_point_energy']:.6f} eV")
-            log_queue.put(f"  Heat capacity: {thermo_props['heat_capacity']:.6f} eV/K")
-
-        return {
-            'success': True,
-            'frequencies': omega_kn,  # meV
-            'kpoints': kpts,
-            'dos_energies': dos_energies,  # meV
-            'dos': dos,
-            'thermodynamics': thermo_props,
-            'supercell_size': supercell_size,
-            'imaginary_modes': imaginary_modes_count,
-            'min_frequency': np.min(omega_kn) if omega_kn.size > 0 else 0
-        }
-
-    except Exception as e:
-        log_queue.put(f"❌ Phonon calculation failed for {structure_name}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
 
 
-def calculate_phonons_old(atoms, calculator, phonon_params, log_queue, structure_name):
-    try:
-        log_queue.put(f"Starting phonon calculation for {structure_name}")
-
-        # Set calculator
-        atoms.calc = calculator
-
-        # Add this debug log before initializing Phonons
-        num_initial_atoms = len(atoms)
-        log_queue.put(f"  Initial atoms object (primitive cell for Phonons) has {num_initial_atoms} atoms.")
-
-        # Create supercell for phonon calculation
-        supercell_size = phonon_params.get('supercell_size', (2, 2, 2))
-        log_queue.put(f"  Creating {supercell_size} supercell for force calculations")
-
-        # Initialize phonons object
-        ph = Phonons(atoms, calculator, supercell=supercell_size, delta=phonon_params.get('delta', 0.01))
-
-        # Calculate forces for displaced atoms
-        log_queue.put("  Calculating forces for displaced configurations...")
-        ph.run()
-
-        # Read forces and create dynamical matrix
-        log_queue.put("  Building dynamical matrix...")
-        try:
-            ph.read(acoustic=True)
-            log_queue.put("  ✅ Dynamical matrix built successfully.")
-        except Exception as read_error:
-            log_queue.put(f"❌ Error during ph.read(): {str(read_error)}")
-            log_queue.put(f"This is often due to an inconsistent primitive cell or supercell/displacement setup.")
-            raise # Re-raise to immediately exit this calculation for better error isolation
-
-        # Define high-symmetry k-points path based on crystal system
-        # Get crystal structure info for k-points
-        cell = atoms.get_cell()
-        if phonon_params.get('auto_kpath', True):
-            try:
-                # Use ase.dft.kpoints.BandPath object directly
-                lat = atoms.cell.get_bravais_lattice()
-                # npoints applies to the total number of points in the path, not per segment
-                # If npoints in phonon_params is per segment, adjust this.
-                # For simplicity, let's use npoints as the total number of points if auto.
-                path_npoints = phonon_params.get('npoints', 100)
-                bandpath_obj = lat.bandpath(npoints=path_npoints)
-                log_queue.put(f"  Using automatic k-path with {len(bandpath_obj.kpts)} points and path {bandpath_obj.path}")
-            except Exception as kpath_error:
-                log_queue.put(f"  ⚠️ Could not get automatic k-path ({str(kpath_error)}). Falling back to manual Gamma-X-M-Gamma path.")
-                path_npoints = phonon_params.get('npoints', 100)
-                # Fallback to manual Gamma-X-M-Gamma path (common for cubic/tetragonal)
-                # Need to construct a BandPath object for get_band_structure
-                # Gamma-X-M-Gamma in scaled coordinates:
-                # G=(0,0,0), X=(0.5,0,0), M=(0.5,0.5,0), R=(0.5,0.5,0.5) (example points)
-                # For a general fallback, we might just define points directly or use standard.
-                # Let's stick to a simple path: G-X-M-G
-                special_points = {'G': [0, 0, 0], 'X': [0.5, 0, 0], 'M': [0.5, 0.5, 0], 'R': [0.5, 0.5, 0.5]}
-                # Create a simple cubic-like path
-                path_str = 'GXMG' # A common path
-                bandpath_obj = atoms.cell.bandpath(path_str, npoints=path_npoints, special_points=special_points)
-                log_queue.put(f"  Using fallback path {bandpath_obj.path} with {len(bandpath_obj.kpts)} points")
-        else:
-            # Use custom k-points if provided. Assume custom kpoints are raw k-vectors.
-            # Need to convert these to a BandPath object. For simplicity, if custom
-            # is selected, let's assume kpoints are provided as a list of high-symmetry
-            # points, and we generate the band path from that.
-            # If `kpoints` is just a list of raw k-vectors for sampling, you might need
-            # to adjust this to directly use `ph.get_frequencies()` on those k-points
-            # if that method were available. But it's not.
-            # So, for custom path, we expect `kpoints` to define the high-symmetry path.
-            # Example: kpoints = [[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]
-            # This would correspond to a path string like 'GXMG'
-            log_queue.put("  Custom k-path selected. Please ensure `kpoints` parameter defines BandPath points.")
-            # For now, let's assume `phonon_params['kpoints']` gives the direct k-points for a path
-            # and we manually create a BandPath object. This needs careful definition.
-            # A more robust solution for custom kpoints would involve specific path segments.
-            # For this context, if custom is chosen, we'll need `kpoints_raw` or similar
-            # that's a list of actual k-vectors. But the error is about `get_energies`.
-            # For a manual path, ASE generally expects `atoms.cell.bandpath(path_string, special_points=...)`
-            # Let's fall back to auto_kpath logic if manual `kpoints` isn't a BandPath object directly.
-            path_npoints = phonon_params.get('npoints', 100) # Use the same npoints for density
-            special_points = phonon_params.get('special_kpoints', {'G': [0, 0, 0], 'X': [0.5, 0, 0], 'M': [0.5, 0.5, 0]})
-            path_str = phonon_params.get('kpath_string', 'GXMG') # e.g. 'GXMG'
-            try:
-                bandpath_obj = atoms.cell.bandpath(path_str, npoints=path_npoints, special_points=special_points)
-                log_queue.put(f"  Using custom k-path '{path_str}' with {len(bandpath_obj.kpts)} points")
-            except Exception as e:
-                log_queue.put(f"  ❌ Error creating custom k-path ({str(e)}). Falling back to automatic path.")
-                lat = atoms.cell.get_bravais_lattice()
-                path_npoints = phonon_params.get('npoints', 100)
-                bandpath_obj = lat.bandpath(npoints=path_npoints)
-                log_queue.put(f"  Using automatic k-path with {len(bandpath_obj.kpts)} points and path {bandpath_obj.path}")
-
-        # Calculate phonon dispersion using get_band_structure
-        log_queue.put("  Calculating phonon dispersion...")
-        # get_band_structure returns a BandStructure object
-        bs = ph.get_band_structure(bandpath_obj)
-        # The frequencies are in the .energies property of the BandStructure object, in eV
-        omega_kn = bs.energies[0] * 1000  # Convert eV to meV
-
-        # FIXED: The k-points are in bs.path.kpts (not bs.kpts)
-        kpts = bs.path.kpts
-
-        # Calculate phonon DOS
-        log_queue.put("  Calculating phonon density of states...")
-        # ph.get_dos() returns a RawDOSData object
-        # It takes kpts as grid dimensions, not a BandPath object.
-        # Default kpts grid for DOS: (10, 10, 10)
-        dos_obj = ph.get_dos(kpts=phonon_params.get('dos_kgrid', (10, 10, 10)))
-
-        # Get DOS data from the RawDOSData object
-        dos_energies = dos_obj.get_energies() * 1000 # Convert eV to meV
-        dos = dos_obj.get_weights()
-
-        # Check for imaginary modes (from dispersion curve data)
-        # Note: get_band_structure can return negative frequencies for unstable modes
-        imaginary_modes_count = np.sum(omega_kn < 0)
-        if imaginary_modes_count > 0:
-            log_queue.put(f"  ⚠️ Warning: Found {imaginary_modes_count} imaginary modes in dispersion curve.")
-            log_queue.put(f"    Lowest frequency: {np.min(omega_kn):.3f} meV")
-
-        # Calculate thermodynamic properties at room temperature
-        temp = phonon_params.get('temperature', 300)  # K
-        log_queue.put(f"  Calculating thermodynamic properties at {temp} K...")
-
-        kB = 8.617e-5  # eV/K
-
-        # Filter out negative frequencies for thermodynamics, using the dispersion data
-        # Note: Thermo properties are often better calculated from DOS data if a dense grid is used.
-        # But for simplicity, we'll continue with the dispersion frequencies as before.
-        positive_freqs = omega_kn[omega_kn > 0] * 1e-3  # Convert meV to eV
-
-        if len(positive_freqs) > 0:
-            # Zero-point energy
-            E_zp = 0.5 * np.sum(positive_freqs)
-
-            # Internal energy, Heat capacity, Entropy
-            x = positive_freqs / (kB * temp)
-            exp_x = np.exp(x)
-
-            # Avoid division by zero if exp_x - 1 is zero for any element
-            exp_x_minus_1 = exp_x - 1
-            exp_x_minus_1[exp_x_minus_1 == 0] = 1e-10 # Small non-zero value to prevent inf/nan
-
-            U = np.sum(positive_freqs * exp_x / exp_x_minus_1)
-            Cv = np.sum(kB * x ** 2 * exp_x / (exp_x_minus_1) ** 2)
-            S = np.sum(kB * (x * exp_x / exp_x_minus_1 - np.log(1 - 1 / exp_x)))
-
-            thermo_props = {
-                'temperature': temp,
-                'zero_point_energy': E_zp,
-                'internal_energy': U,
-                'heat_capacity': Cv,
-                'entropy': S,
-                'free_energy': U - temp * S
-            }
-        else:
-            log_queue.put("  ⚠️ No positive frequencies found for thermodynamics - skipping.")
-            thermo_props = None
-
-        log_queue.put(f"✅ Phonon calculation completed for {structure_name}")
-        if thermo_props:
-            log_queue.put(f"  Zero-point energy: {thermo_props['zero_point_energy']:.6f} eV")
-            log_queue.put(f"  Heat capacity: {thermo_props['heat_capacity']:.6f} eV/K")
-
-        return {
-            'success': True,
-            'frequencies': omega_kn,  # meV
-            'kpoints': kpts, # from BandPath
-            'dos_energies': dos_energies,  # meV
-            'dos': dos,
-            'thermodynamics': thermo_props,
-            'supercell_size': supercell_size,
-            'imaginary_modes': imaginary_modes_count,
-            'min_frequency': np.min(omega_kn) if omega_kn.size > 0 else 0
-        }
-
-    except Exception as e:
-        log_queue.put(f"❌ Phonon calculation failed for {structure_name}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
 
 def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, structure_name):
     """
@@ -986,7 +487,6 @@ def create_elastic_data_export(elastic_results, structure_name):
         'mechanical_stability': elastic_results['mechanical_stability']
     }
 
-
 def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, structure_name):
     """
     Calculate phonons using Pymatgen + Phonopy with MACE calculator
@@ -1182,12 +682,96 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             is_legacy_plot=False
         )
 
-        # Get band structure data
+        # Get band structure data - FIXED SECTION
+        log_queue.put("  Processing band structure data...")
         band_dict = phonon.get_band_structure_dict()
-        frequencies = np.array(band_dict['frequencies']) * units_phonopy.THzToEv * 1000  # Convert to meV
-        kpoints_band = band_dict['qpoints']
+        
+        # Handle the irregular frequency array structure
+        raw_frequencies = band_dict['frequencies']
+        log_queue.put(f"  Raw frequencies type: {type(raw_frequencies)}")
+        log_queue.put(f"  Raw frequencies length: {len(raw_frequencies)}")
+        
+        # Check the structure of the frequency data
+        if isinstance(raw_frequencies, list):
+            # Convert each sub-array and find the maximum number of bands
+            freq_arrays = []
+            max_bands = 0
+            for i, freq_array in enumerate(raw_frequencies):
+                freq_np = np.array(freq_array)
+                freq_arrays.append(freq_np)
+                if freq_np.ndim == 1:
+                    max_bands = max(max_bands, len(freq_np))
+                elif freq_np.ndim == 2:
+                    max_bands = max(max_bands, freq_np.shape[1])
+                    
+            log_queue.put(f"  Found {len(freq_arrays)} k-point groups with max {max_bands} bands")
+            
+            # Create a regular array by padding with NaN if necessary
+            total_kpoints = sum(len(freq_array) if freq_array.ndim > 0 else 1 for freq_array in freq_arrays)
+            frequencies = np.full((total_kpoints, max_bands), np.nan)
+            
+            kpoint_idx = 0
+            for freq_array in freq_arrays:
+                freq_np = np.array(freq_array)
+                if freq_np.ndim == 1:
+                    # Single k-point
+                    n_bands = len(freq_np)
+                    frequencies[kpoint_idx, :n_bands] = freq_np
+                    kpoint_idx += 1
+                elif freq_np.ndim == 2:
+                    # Multiple k-points
+                    n_kpts, n_bands = freq_np.shape
+                    frequencies[kpoint_idx:kpoint_idx+n_kpts, :n_bands] = freq_np
+                    kpoint_idx += n_kpts
+                    
+        else:
+            # Try direct conversion
+            frequencies = np.array(raw_frequencies)
+            
+        # Convert units: THz to meV
+        frequencies = frequencies * units_phonopy.THzToEv * 1000  # Convert to meV
+        
+        # Remove NaN values for statistics
+        valid_frequencies = frequencies[~np.isnan(frequencies)]
+        log_queue.put(f"  ✅ Band structure calculated: {frequencies.shape} (valid points: {len(valid_frequencies)})")
 
-        log_queue.put(f"  ✅ Band structure calculated: {frequencies.shape}")
+        # Get k-points - handle irregular structure
+        raw_kpoints = band_dict['qpoints']
+        log_queue.put(f"  Raw k-points type: {type(raw_kpoints)}")
+        log_queue.put(f"  Raw k-points length: {len(raw_kpoints)}")
+        
+        # Handle irregular k-point array structure
+        if isinstance(raw_kpoints, list):
+            # Flatten the k-points list
+            kpoints_band = []
+            for kpt_group in raw_kpoints:
+                kpt_array = np.array(kpt_group)
+                if kpt_array.ndim == 1:
+                    # Single k-point
+                    kpoints_band.append(kpt_array)
+                elif kpt_array.ndim == 2:
+                    # Multiple k-points
+                    for kpt in kpt_array:
+                        kpoints_band.append(kpt)
+                else:
+                    log_queue.put(f"  ⚠️ Unexpected k-point dimension: {kpt_array.ndim}")
+                    
+            # Convert to numpy array
+            kpoints_band = np.array(kpoints_band)
+        else:
+            # Try direct conversion
+            kpoints_band = np.array(raw_kpoints)
+            
+        log_queue.put(f"  Processed k-points shape: {kpoints_band.shape}")
+        
+        # Ensure k-points and frequencies have consistent dimensions
+        if len(kpoints_band) != frequencies.shape[0]:
+            log_queue.put(f"  ⚠️ K-point count mismatch: {len(kpoints_band)} vs {frequencies.shape[0]}")
+            # Truncate or pad as needed
+            min_len = min(len(kpoints_band), frequencies.shape[0])
+            kpoints_band = kpoints_band[:min_len]
+            frequencies = frequencies[:min_len]
+            log_queue.put(f"  Adjusted to consistent length: {min_len}")
 
         # Calculate DOS
         log_queue.put("  Calculating phonon DOS...")
@@ -1211,8 +795,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         except Exception as dos_error:
             log_queue.put(f"  ⚠️ DOS calculation failed: {str(dos_error)}")
             # Create simple DOS from band structure
-            freq_flat = frequencies.flatten()
-            freq_flat = freq_flat[freq_flat > 0]
+            freq_flat = valid_frequencies[valid_frequencies > 0]
 
             if len(freq_flat) > 0:
                 dos_frequencies = np.linspace(0, np.max(freq_flat) * 1.2, 500)
@@ -1226,8 +809,8 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                 dos_values = np.zeros_like(dos_frequencies)
 
         # Check for imaginary modes
-        imaginary_count = np.sum(frequencies < 0)
-        min_frequency = np.min(frequencies) if frequencies.size > 0 else 0
+        imaginary_count = np.sum(valid_frequencies < 0)
+        min_frequency = np.min(valid_frequencies) if len(valid_frequencies) > 0 else 0
 
         if imaginary_count > 0:
             log_queue.put(f"  ⚠️ Found {imaginary_count} imaginary modes")
@@ -1268,7 +851,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             log_queue.put(f"  ⚠️ Thermodynamics calculation failed: {str(thermo_error)}")
 
             # Fallback calculation
-            positive_freqs = frequencies[frequencies > 0] * 1e-3  # Convert to eV
+            positive_freqs = valid_frequencies[valid_frequencies > 0] * 1e-3  # Convert to eV
             if len(positive_freqs) > 0:
                 kB = 8.617e-5  # eV/K
                 E_zp = 0.5 * np.sum(positive_freqs)
@@ -1296,7 +879,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         return {
             'success': True,
             'frequencies': frequencies,  # meV, shape (nkpts, nbands)
-            'kpoints': np.array(kpoints_band),
+            'kpoints': kpoints_band,
             'dos_energies': dos_frequencies,  # meV
             'dos': dos_values,
             'thermodynamics': thermo_props,
@@ -2372,37 +1955,118 @@ if __name__ == "__main__":
 
 
 
-
 with tab1:
     st.header("1. Upload Structure Files")
 
-    uploaded_files = st.file_uploader(
-        "Upload POSCAR files",
-        accept_multiple_files=True,
-        type=['POSCAR', 'vasp', 'poscar', 'contcar'],
-        help="Upload multiple POSCAR format files for batch processing"
-    )
+    # Show different interface based on whether structures are locked
+    if not st.session_state.structures_locked:
+        uploaded_files = st.file_uploader(
+            "Upload POSCAR files",
+            accept_multiple_files=True,
+            type=['POSCAR', 'vasp', 'poscar', 'contcar'],
+            help="Upload multiple POSCAR format files for batch processing",
+            key="structure_uploader"
+        )
 
-    if uploaded_files:
-        new_structures = {}
+        if uploaded_files:
+            new_structures = {}
+            upload_errors = []
 
-        for uploaded_file in uploaded_files:
-            try:
-                content = uploaded_file.getvalue().decode("utf-8")
-                structure = Structure.from_str(content, fmt="poscar")
-                new_structures[uploaded_file.name] = structure
-            except Exception as e:
-                st.error(f"Error reading {uploaded_file.name}: {str(e)}")
+            for uploaded_file in uploaded_files:
+                try:
+                    content = uploaded_file.getvalue().decode("utf-8")
+                    structure = Structure.from_str(content, fmt="poscar")
+                    new_structures[uploaded_file.name] = structure
+                except Exception as e:
+                    upload_errors.append(f"Error reading {uploaded_file.name}: {str(e)}")
 
-        if new_structures:
-            st.session_state.structures.update(new_structures)
-            st.success(f"Loaded {len(new_structures)} structures. Total: {len(st.session_state.structures)}")
+            if upload_errors:
+                for error in upload_errors:
+                    st.error(error)
 
-    if st.button("🗑️ Clear All Structures"):
-        st.session_state.structures = {}
-        st.session_state.results = []
-        st.session_state.optimization_trajectories = {}
-        st.success("All structures cleared")
+            if new_structures:
+                # Store in pending structures
+                st.session_state.pending_structures.update(new_structures)
+                
+                # Show preview of what will be added
+                st.info(f"📁 {len(new_structures)} new structures ready to be added")
+                
+                # Show current + pending count
+                total_after_addition = len(st.session_state.structures) + len(st.session_state.pending_structures)
+                st.write(f"Current structures: {len(st.session_state.structures)}")
+                st.write(f"Pending structures: {len(st.session_state.pending_structures)}")
+                st.write(f"Total after addition: {total_after_addition}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("✅ Accept & Add Structures", type="primary"):
+                        st.session_state.structures.update(st.session_state.pending_structures)
+                        added_count = len(st.session_state.pending_structures)
+                        st.session_state.pending_structures = {}
+                        st.success(f"✅ Added {added_count} structures. Total: {len(st.session_state.structures)}")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("❌ Cancel Upload"):
+                        st.session_state.pending_structures = {}
+                        st.info("Upload cancelled")
+                        st.rerun()
+
+        # Show current accepted structures
+        if st.session_state.structures:
+            st.success(f"✅ {len(st.session_state.structures)} structures loaded and ready")
+            
+            # Show list of current structures
+            with st.expander("📋 View Current Structures", expanded=False):
+                for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
+                    st.write(f"{i}. **{name}** - {structure.composition.reduced_formula} ({structure.num_sites} atoms)")
+
+        # Lock/Clear buttons
+        col1, col2 = st.columns(2)
+        
+
+        with col1:  
+            if st.button("🔒 Lock Structures for Calculation", 
+                        disabled=len(st.session_state.structures) == 0, type = 'primary'):
+                st.session_state.structures_locked = True
+                st.success("🔒 Structures locked! You can now start calculations safely.")
+                st.rerun()
+        
+        with col2:
+            if st.button("🗑️ Clear All Structures", type ='secondary'):
+                st.session_state.structures = {}
+                st.session_state.pending_structures = {}
+                st.session_state.results = []
+                st.session_state.optimization_trajectories = {}
+                st.success("All structures cleared")
+                st.rerun()
+
+    else:
+        # Structures are locked - show read-only view
+        st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
+        st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
+        
+        # Show locked structures list
+        with st.expander("📋 Locked Structures", expanded=True):
+            for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
+                col1, col2, col3 = st.columns([3, 2, 2])
+                with col1:
+                    st.write(f"**{i}. {name}**")
+                with col2:
+                    st.write(f"{structure.composition.reduced_formula}")
+                with col3:
+                    st.write(f"{structure.num_sites} atoms")
+        
+        # Unlock button (disabled during calculation)
+        if st.button("🔓 Unlock Structures", type = 'secondary',
+                    disabled=st.session_state.calculation_running):
+            st.session_state.structures_locked = False
+            st.info("🔓 Structures unlocked. You can now modify the structure list.")
+            st.rerun()
+        
+        if st.session_state.calculation_running:
+            st.warning("⚠️ Cannot unlock structures while calculation is running")
 
     st.divider()
 
@@ -2456,8 +2120,8 @@ with tab1:
 
         calculate_formation_energy_flag = st.checkbox(
             "Calculate Formation Energy",
-            value=False,
-            help="Calculate formation energy per atom (requires additional atomic reference calculations)"
+            value=True,
+            help="Calculate formation energy per atom"
         )
 
         optimization_params = {
@@ -2700,27 +2364,57 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
-        col1, col2, col3 = st.columns(3)  # Changed from 2 to 3 columns
+        col1, col2= st.columns(2)  # Changed from 2 to 3 columns
+        
+        st.markdown("""
+            <style>
+            div.stButton > button[kind="primary"] {
+                background-color: #0099ff; color: white; font-size: 16px; font-weight: bold;
+                padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+            }
+            div.stButton > button[kind="primary"]:active, div.stButton > button[kind="primary"]:focus {
+                background-color: #007acc !important; color: white !important; box-shadow: none !important;
+            }
 
+            div.stButton > button[kind="secondary"] {
+                background-color: #dc3545; color: white; font-size: 16px; font-weight: bold;
+                padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+            }
+            div.stButton > button[kind="secondary"]:active, div.stButton > button[kind="secondary"]:focus {
+                background-color: #c82333 !important; color: white !important; box-shadow: none !important;
+            }
+
+            div.stButton > button[kind="tertiary"] {
+                background-color: #6f42c1; color: white; font-size: 16px; font-weight: bold;
+                padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
+            }
+            div.stButton > button[kind="tertiary"]:active, div.stButton > button[kind="tertiary"]:focus {
+                background-color: #5a2d91 !important; color: white !important; box-shadow: none !important;
+            }
+
+            div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
+            #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+            </style>
+        """, unsafe_allow_html=True)
         with col1:
             start_calc = st.button(
                 "🚀 Start Batch Calculation",
                 type="primary",
-                disabled=not all_compatible or st.session_state.calculation_running or len(
-                    st.session_state.structures) == 0
+                disabled=not all_compatible or 
+                         st.session_state.calculation_running or 
+                         len(st.session_state.structures) == 0 or
+                         not st.session_state.structures_locked,  # Add this condition
             )
 
-        with col2:
-            if st.session_state.calculation_running:
-                if st.button("🛑 Stop Calculation", type="secondary"):
-                    st.session_state.stop_event.set()
+        # Add helpful message if structures aren't locked
+        if len(st.session_state.structures) > 0 and not st.session_state.structures_locked:
+            st.warning("🔒 Please lock your structures before starting calculation to prevent accidental changes.")
 
-        with col3:
+        with col2:
             but_script = st.button(
                     "📝 Generate Python Script",
-                    type="secondary",
+                    type="tertiary",
                     disabled=len(st.session_state.structures) == 0,
-                    help="Generate a standalone Python script with current settings"
             )
         if but_script:
             # Generate the script content
