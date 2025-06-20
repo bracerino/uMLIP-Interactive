@@ -15,6 +15,24 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide",initial_sidebar_state="expanded")
 st.title("MACE Molecular Dynamic Batch Structure Calculator")
 
+def show_citation_section():
+    with st.expander("How to Cite", icon="📚", expanded=True):
+        st.markdown("""
+        ### How to Cite
+        Please cite the following sources 
+        #### 🖼️ **Using Structure Visualizations**
+        - **MACE** - [BATATIA, Ilyes, et al. MACE: Higher order equivariant message passing neural networks for fast and accurate force fields. Advances in neural information processing systems, 2022, 35: 11423-11436](https://proceedings.neurips.cc/paper_files/paper/2022/hash/4a36c3c51af11ed9f34615b81edb5bbc-Abstract-Conference.html).
+        - **MACE-MP-0** - [BATATIA, Ilyes, et al. A foundation model for atomistic materials chemistry. arXiv preprint arXiv:2401.00096, 2023](https://arxiv.org/abs/2401.00096).        
+        - **pymatgen** –  [S. P. Ong et al., pymatgen: A robust, open-source python library for materials analysis, Comput. Mater. Sci. 68, 314 (2013)](https://www.sciencedirect.com/science/article/abs/pii/S0927025612006295).
+        - **ASE** – [A. H. Larsen et al., The Atomic Simulation Environment: A Python library for working with atoms, J. Phys.: Condens. Matter 29, 273002 (2017)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e).
+        ---  
+        For phonon calculations:
+        - Phonopy - [TOGO, Atsushi, et al. Implementation strategies in phonopy and phono3py. Journal of Physics: Condensed Matter, 2023, 35.35: 353001](https://iopscience.iop.org/article/10.1088/1361-648X/acd831/meta).
+        """)
+cites = st.checkbox(f"📚 How to cite", value = False)
+if cites:
+    show_citation_section()
+    
 from helpers.phonons_help import *
 from helpers.generate_python_code import *
 from helpers.phase_diagram import *
