@@ -1,0 +1,17 @@
+streamlit
+plotly
+pymatgen
+ase
+phonopy
+py3Dmol
+
+torch
+torchvision
+torchaudio
+mace-torch
+
+cuequivariance
+cuequivariance-torch
+cuequivariance-ops-torch-cu12
+
+
