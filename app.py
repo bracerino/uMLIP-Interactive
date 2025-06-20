@@ -12,6 +12,9 @@ import zipfile
 from pathlib import Path
 from plotly.subplots import make_subplots
 
+st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide",initial_sidebar_state="expanded")
+st.title("MACE Molecular Dynamic Batch Structure Calculator")
+
 from helpers.phonons_help import *
 from helpers.generate_python_code import *
 from helpers.phase_diagram import *
@@ -1614,8 +1617,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
-st.title("MACE Molecular Dynamic Batch Structure Calculator")
+
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
