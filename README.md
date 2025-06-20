@@ -1,6 +1,6 @@
 # mace-md-gui
 Run basic molecular dynamics simulations in interactive interface with MACE interatomic potential.
-.![XRDlicious web-based application](Illu_images/xrdlicious.png)
+.![MACE GUI illustration](images/Mace-1.png)
 
 ### **Compile the app**  
 
