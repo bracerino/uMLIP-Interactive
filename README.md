@@ -1,6 +1,6 @@
 # mace-md-gui
 Run basic molecular dynamics simulations in interactive interface with MACE interatomic potential.
-.![MACE GUI illustration](images/Mace-1.png)
+![MACE GUI illustration](images/Mace-1.png)
 
 ### **Compile the app**  
 
@@ -32,3 +32,20 @@ Open your terminal console and write the following commands (the bold text):
 
 6) Run the XRDlicious app (always before running it, make sure to activate its Python virtual environment (Step 4):  
       **streamlit run app.py**
+
+
+### **Workflow**
+
+![MACE GUI Console](images/Mace-2.png)
+
+---
+
+![MACE GUI Console](images/Mace-3.png)
+
+---
+
+![MACE GUI Console](images/Mace-4.png)
+
+---
+
+![MACE GUI Console](images/Mace-5.png)
