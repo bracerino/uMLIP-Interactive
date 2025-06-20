@@ -2,6 +2,13 @@
 GUI for running molecular dynamics simulations with MACE interatomic potential
 
 ### **Compile the app**  
+
+For calculations on **GPU, compile CUDA**:  
+https://developer.nvidia.com/cuda-toolkit  
+(do not forget to add it to the PATH, e.g.:  
+export PATH=/usr/local/cuda-12.9/bin:$PATH  
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH  )  
+
 Open your terminal console and write the following commands (the bold text):  
 (Optional) Install Git:  
       **sudo apt update**  
