@@ -40,12 +40,24 @@ Open your terminal console and write the following commands (the bold text):
 
 ---
 
-![MACE GUI Console](images/Mace-3.png)
+![MACE GUI Energies 1](images/Mace-3.png)
 
 ---
 
-![MACE GUI Console](images/Mace-4.png)
+![MACE GUI Energies 2](images/Mace-4.png)
 
 ---
 
-![MACE GUI Console](images/Mace-5.png)
+![MACE GUI Geometry optimization](images/Mace-5.png)
+
+---
+
+![MACE GUI Elastic properties](images/Mace-6.png)
+
+---
+
+![MACE GUI Phonons](images/Mace-7.png)
+
+---
+
+![MACE GUI Simulation time](images/Mace-8.png)
