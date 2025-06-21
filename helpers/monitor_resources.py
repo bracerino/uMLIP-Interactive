@@ -103,7 +103,7 @@ def display_system_monitoring_detailed():
     
     col0,col1, col2, col3, col4 = st.columns(5)
     with col0:
-        if st.button("🔄 Refresh Stats (automatically refreshed during calculations)", type = 'tertiary'):
+        if st.button("🔄 Refresh Stats (automatically during calculations)", type = 'tertiary'):
             pass
     
     stats = st.session_state.system_monitor.get_stats()
