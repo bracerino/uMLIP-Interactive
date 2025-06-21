@@ -1708,7 +1708,7 @@ if st.session_state.calculation_running:
                     st.write(f"📈 {st.session_state.progress_text}")
                 st.write("👀 **Switch to 'Calculation Console' tab for detailed output**")
                 if st.button(
-                        "🛑 Stop Calculation (only possible for runs between more structures, will not stop the current structure run))",
+                        "🛑 Stop Calculation (the current structure will still finish)",
                         key="stop_top"):
                     st.session_state.stop_event.set()
 
@@ -2314,7 +2314,7 @@ with tab2:
     if st.session_state.calculation_running:
         st.info("🔄 Calculation in progress...")
 
-        if st.button("🛑 Stop Calculation", key="console_stop"):
+        if st.button("🛑 Stop Calculation (the current structure will still finish)", key="console_stop"):
             st.session_state.stop_event.set()
 
     has_new_messages = False
