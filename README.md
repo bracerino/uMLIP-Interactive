@@ -24,7 +24,7 @@ Open your terminal console and write the following commands (the bold text):
 3) Create a Python virtual environment to prevent possible conflicts between packages:  
       **python3 -m venv mace_env**
 
-4) Activate the Python virtual environment (before activating, make sure you are inside the xrdlicious folder):  
+4) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env/bin/activate**
    
 5) Install all the necessary Python packages:  
