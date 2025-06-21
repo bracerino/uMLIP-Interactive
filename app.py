@@ -2299,7 +2299,7 @@ with tab1:
             st.rerun()
 
     else:
-        st.info("Upload POSCAR files to begin")
+        st.info("Upload structure files to begin")
 with st.sidebar:
     st.info(f"**Selected Model:** {selected_model}")
     st.info(f"**Device:** {device}")
