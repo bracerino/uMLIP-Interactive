@@ -1,7 +1,7 @@
 # mace-md-gui
 Run basic molecular dynamics simulations (single-point energy, geometry optimization, elastic properties, phonons) in interactive interface with MACE interatomic potential.
 **Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.
-
+---
 ![MACE GUI illustration](images/Mace-1.png)
 
 ### **Compile the app**  
