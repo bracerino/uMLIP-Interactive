@@ -22,7 +22,6 @@ from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
 
-
 import py3Dmol
 import streamlit.components.v1 as components
 from pymatgen.core import Structure
@@ -99,12 +98,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-
-
-
 # Monitor CPU, GPU, RAM
 display_system_monitoring_detailed()
-
 
 
 def estimate_phonon_supercell(atoms, target_min_length=15.0, max_supercell=4, log_queue=None):
@@ -191,6 +186,7 @@ def load_structure(file):
             os.remove(file.name)
         raise e
 
+
 def ase_to_pymatgen_wrapped(atoms):
     wrapped_atoms = wrap_positions_in_cell(atoms)
     structure = Structure(
@@ -220,7 +216,6 @@ def create_wrapped_poscar_content(structure):
 def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, structure_name):
     try:
         log_queue.put(f"Starting elastic tensor calculation for {structure_name}")
-
 
         atoms.calc = calculator
         log_queue.put("  Calculating equilibrium energy and stress...")
@@ -261,7 +256,6 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
             deformed_cell = original_cell @ (np.eye(3) - strain_tensor)
             atoms.set_cell(deformed_cell, scale_atoms=True)
             stress_neg = atoms.get_stress(voigt=True)
-
 
             # C_ij = d(stress_i)/d(strain_j)
             stress_derivative = (stress_pos - stress_neg) / (2 * strain_magnitude)
@@ -573,7 +567,6 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             target_length = phonon_params.get('target_supercell_length', 15.0)
             max_multiplier = phonon_params.get('max_supercell_multiplier', 4)
 
-
             na = max(1, min(max_multiplier, int(np.ceil(target_length / a))))
             nb = max(1, min(max_multiplier, int(np.ceil(target_length / b))))
             nc = max(1, min(max_multiplier, int(np.ceil(target_length / c))))
@@ -585,7 +578,6 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
             supercell_matrix = [[na, 0, 0], [0, nb, 0], [0, 0, nc]]
         else:
-
             sc = phonon_params.get('supercell_size', (2, 2, 2))
             supercell_matrix = [[sc[0], 0, 0], [0, sc[1], 0], [0, 0, sc[2]]]
 
@@ -644,45 +636,160 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put("  Calculating force constants...")
         phonon.produce_force_constants()
 
-        log_queue.put("  Calculating phonon band structure...")
+        log_queue.put("  Calculating phonon band structure with enhanced k-point density...")
 
+        # Enhanced k-point path generation with more points and proper labeling
         try:
             from pymatgen.symmetry.bandstructure import HighSymmKpath
+            from ase.dft.kpoints import bandpath
+
+            # Get high-symmetry path using pymatgen
             kpath = HighSymmKpath(pmg_structure)
             path = kpath.kpath["path"]
             kpoints = kpath.kpath["kpoints"]
 
-            bands = []
-            labels = []
+            # Convert to ASE format for better handling
+            ase_cell = atoms.get_cell()
+
+            # Create enhanced k-point path with more points
+            npoints_per_segment = phonon_params.get('npoints', 151)  # Increased default from 101 to 151
+            total_npoints = phonon_params.get('total_npoints', 501)  # New parameter for total points
+
+            log_queue.put(f"  Using {npoints_per_segment} points per segment")
+
+            # Build the band structure path with labels
+            path_kpoints = []
+            path_labels = []
+            path_connections = []
+            cumulative_distance = [0.0]
+            current_distance = 0.0
 
             for segment in path:
-                segment_points = []
-                for point_name in segment:
-                    segment_points.append(kpoints[point_name])
-                bands.append(segment_points)
-                labels.extend(segment)
-            unique_labels = []
-            unique_labels.append(labels[0])
-            for i in range(1, len(labels)):
-                if labels[i] != labels[i - 1]:
-                    unique_labels.append(labels[i])
+                if len(segment) < 2:
+                    continue
 
-            log_queue.put(f"  Using high-symmetry path: {' → '.join(unique_labels)}")
+                segment_points = []
+                segment_labels = []
+
+                for i, point_name in enumerate(segment):
+                    point_coords = kpoints[point_name]
+                    segment_points.append(point_coords)
+                    segment_labels.append(point_name)
+
+                # Generate interpolated points for this segment
+                for i in range(len(segment_points) - 1):
+                    start_point = np.array(segment_points[i])
+                    end_point = np.array(segment_points[i + 1])
+
+                    # Create dense sampling between points
+                    for j in range(npoints_per_segment):
+                        t = j / (npoints_per_segment - 1)
+                        interpolated_point = start_point + t * (end_point - start_point)
+                        path_kpoints.append(interpolated_point.tolist())
+
+                        # Calculate distance for x-axis
+                        if len(path_kpoints) > 1:
+                            prev_point = np.array(path_kpoints[-2])
+                            curr_point = np.array(path_kpoints[-1])
+                            # Convert to Cartesian coordinates for distance calculation
+                            prev_cart = prev_point @ ase_cell.reciprocal()
+                            curr_cart = curr_point @ ase_cell.reciprocal()
+                            current_distance += np.linalg.norm(curr_cart - prev_cart)
+
+                        cumulative_distance.append(current_distance)
+
+                        # Label assignment
+                        if j == 0:
+                            path_labels.append(segment_labels[i])
+                        elif j == npoints_per_segment - 1:
+                            path_labels.append(segment_labels[i + 1])
+                        else:
+                            path_labels.append('')
+
+            # Create the band structure calculation
+            bands = []
+            current_band = []
+
+            for kpt in path_kpoints:
+                current_band.append(kpt)
+
+            if current_band:
+                bands.append(current_band)
+
+            log_queue.put(f"  Generated enhanced k-point path with {len(path_kpoints)} points")
+
+            # Find unique labels and their positions for plotting
+            unique_label_positions = []
+            unique_labels = []
+            seen_labels = set()
+
+            for i, label in enumerate(path_labels):
+                if label and label not in seen_labels:
+                    unique_label_positions.append(cumulative_distance[i])
+                    unique_labels.append(label)
+                    seen_labels.add(label)
+                elif label and i == len(path_labels) - 1:  # Always include the last point
+                    unique_label_positions.append(cumulative_distance[i])
+                    if label not in unique_labels:
+                        unique_labels.append(label)
+
+            log_queue.put(f"  High-symmetry path: {' → '.join(unique_labels)}")
 
         except Exception as path_error:
             log_queue.put(f"  ⚠️ High-symmetry path detection failed: {str(path_error)}")
-            log_queue.put("  Using simple Γ-X-M-Γ path")
-            bands = [[[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]]
-            unique_labels = ['Γ', 'X', 'M', 'Γ']
+            log_queue.put("  Using simple Γ-X-M-Γ path with enhanced density")
 
-        npoints = phonon_params.get('npoints', 101)
+            # Fallback path with more points
+            npoints_fallback = phonon_params.get('npoints', 151)
+            gamma = [0, 0, 0]
+            x_point = [0.5, 0, 0]
+            m_point = [0.5, 0.5, 0]
+
+            # Create dense path
+            path_kpoints = []
+            cumulative_distance = [0.0]
+            current_distance = 0.0
+
+            # Γ to X
+            for i in range(npoints_fallback):
+                t = i / (npoints_fallback - 1)
+                kpt = [t * 0.5, 0, 0]
+                path_kpoints.append(kpt)
+                if i > 0:
+                    current_distance += 0.5 / (npoints_fallback - 1)
+                cumulative_distance.append(current_distance)
+
+            # X to M
+            for i in range(1, npoints_fallback):
+                t = i / (npoints_fallback - 1)
+                kpt = [0.5, t * 0.5, 0]
+                path_kpoints.append(kpt)
+                current_distance += 0.5 / (npoints_fallback - 1)
+                cumulative_distance.append(current_distance)
+
+            # M to Γ
+            for i in range(1, npoints_fallback):
+                t = i / (npoints_fallback - 1)
+                kpt = [0.5 * (1 - t), 0.5 * (1 - t), 0]
+                path_kpoints.append(kpt)
+                current_distance += np.sqrt(2) * 0.5 / (npoints_fallback - 1)
+                cumulative_distance.append(current_distance)
+
+            bands = [path_kpoints]
+            unique_labels = ['Γ', 'X', 'M', 'Γ']
+            unique_label_positions = [0, cumulative_distance[npoints_fallback - 1],
+                                      cumulative_distance[2 * npoints_fallback - 2],
+                                      cumulative_distance[-1]]
+
+        # Run phonon calculation
         phonon.run_band_structure(
             bands,
             is_band_connection=False,
             with_eigenvectors=False,
             is_legacy_plot=False
         )
-        log_queue.put("  Processing band structure data...")
+
+        log_queue.put("  Processing enhanced band structure data...")
         band_dict = phonon.get_band_structure_dict()
 
         raw_frequencies = band_dict['frequencies']
@@ -716,18 +823,17 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     n_kpts, n_bands = freq_np.shape
                     frequencies[kpoint_idx:kpoint_idx + n_kpts, :n_bands] = freq_np
                     kpoint_idx += n_kpts
-
         else:
-
             frequencies = np.array(raw_frequencies)
 
         # Convert units: THz to meV
         frequencies = frequencies * units_phonopy.THzToEv * 1000  # Convert to meV
 
         valid_frequencies = frequencies[~np.isnan(frequencies)]
-        log_queue.put(f"  ✅ Band structure calculated: {frequencies.shape} (valid points: {len(valid_frequencies)})")
+        log_queue.put(
+            f"  ✅ Enhanced band structure calculated: {frequencies.shape} (valid points: {len(valid_frequencies)})")
 
-
+        # Process k-points
         raw_kpoints = band_dict['qpoints']
         log_queue.put(f"  Raw k-points type: {type(raw_kpoints)}")
         log_queue.put(f"  Raw k-points length: {len(raw_kpoints)}")
@@ -753,6 +859,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             min_len = min(len(kpoints_band), frequencies.shape[0])
             kpoints_band = kpoints_band[:min_len]
             frequencies = frequencies[:min_len]
+            cumulative_distance = cumulative_distance[:min_len + 1]
             log_queue.put(f"  Adjusted to consistent length: {min_len}")
 
         log_queue.put("  Calculating phonon DOS...")
@@ -790,13 +897,14 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         filtered_frequencies = filter_near_zero_frequencies(valid_frequencies)
         imaginary_count = np.sum(filtered_frequencies < 0)
         min_frequency = np.min(filtered_frequencies) if len(filtered_frequencies) > 0 else 0
-        frequencies = filter_near_zero_frequencies(frequencies)  #
+        frequencies = filter_near_zero_frequencies(frequencies)
 
         if imaginary_count > 0:
             log_queue.put(f"  ⚠️ Found {imaginary_count} imaginary modes")
             log_queue.put(f"    Most negative frequency: {min_frequency:.3f} meV")
         else:
             log_queue.put("  ✅ No imaginary modes found")
+
         temp = phonon_params.get('temperature', 300)
         log_queue.put(f"  Calculating thermodynamics at {temp} K...")
 
@@ -855,14 +963,19 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             'success': True,
             'frequencies': frequencies,  # meV, shape (nkpts, nbands)
             'kpoints': kpoints_band,
+            'kpoint_distances': np.array(cumulative_distance[:-1]) if len(cumulative_distance) > len(
+                kpoints_band) else np.array(cumulative_distance),  # Distance along path
+            'kpoint_labels': unique_labels,  # High-symmetry point labels
+            'kpoint_label_positions': unique_label_positions,  # Positions of labels along path
             'dos_energies': dos_frequencies,  # meV
             'dos': dos_values,
             'thermodynamics': thermo_props,
-            'thermal_properties_dict': thermal_dict,  # ADD THIS LINE - full temperature data
+            'thermal_properties_dict': thermal_dict,  # Full temperature data
             'supercell_size': tuple([supercell_matrix[i][i] for i in range(3)]),
             'imaginary_modes': int(imaginary_count),
             'min_frequency': float(min_frequency),
-            'method': 'Pymatgen+Phonopy'
+            'method': 'Pymatgen+Phonopy',
+            'enhanced_kpoints': True  # Flag to indicate enhanced k-point sampling
         }
 
     except Exception as e:
@@ -1007,7 +1120,6 @@ PHONON_ZERO_THRESHOLD = 0.001  # meV
 
 
 def filter_near_zero_frequencies(frequencies, threshold=PHONON_ZERO_THRESHOLD):
-
     filtered = frequencies.copy()
     mask = np.abs(filtered) < threshold
     filtered[mask] = 0.0
@@ -1057,7 +1169,6 @@ def pymatgen_to_ase(structure):
         pbc=True
     )
 
-    # Wrap positions to ensure they're within the cell
     return wrap_positions_in_cell(atoms)
 
 
@@ -1432,7 +1543,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                         force_converged = max_final_force < optimization_params['fmax']
                         energy_converged = False
-                        stress_converged = True  # Default for atom-only optimization
+                        stress_converged = True  
 
                         if len(logger.trajectory) > 1:
                             final_energy_change = logger.trajectory[-1]['energy_change']
@@ -1443,10 +1554,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             try:
                                 final_stress = final_atoms.get_stress(voigt=True)
                                 max_final_stress = np.max(np.abs(final_stress))
-                                stress_converged = max_final_stress < 0.1  # 0.1 GPa stress convergence
+                                stress_converged = max_final_stress < 0.1 
                                 log_queue.put(f"  Final stress: {max_final_stress:.4f} GPa")
                             except:
-                                stress_converged = True  # Assume converged if we can't get stress
+                                stress_converged = True 
 
                         if opt_type == "Atoms only (fixed cell)":
                             if force_converged and energy_converged:
@@ -1717,7 +1828,8 @@ if st.session_state.calculation_running:
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
 tab1, tab2, tab3, tab4 = st.tabs(
-    ["📁 Structure Upload & Setup", "🖥️ Calculation Console", "📊 Results & Analysis", "📈 Optimization Trajectories and Convergence"])
+    ["📁 Structure Upload & Setup", "🖥️ Calculation Console", "📊 Results & Analysis",
+     "📈 Optimization Trajectories and Convergence"])
 
 with tab1:
     st.sidebar.header("Upload Structure Files")
@@ -1725,7 +1837,7 @@ with tab1:
         uploaded_files = st.sidebar.file_uploader(
             "Upload structure files (CIF, POSCAR, LMP, XSF, PW, CFG, etc.)",
             accept_multiple_files=True,
-            type=None,  # Accept any file type, let the parser handle format detection
+            type=None, 
             help="Upload multiple structure files for batch processing. Supports CIF, POSCAR, LMP, XSF, PW, CFG and other ASE-compatible formats",
             key="structure_uploader"
         )
@@ -1928,7 +2040,6 @@ with tab1:
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
-
 
         optimization_params = {
             'optimizer': "BFGS",
@@ -2719,8 +2830,6 @@ with tab3:
                         - Type: {slowest['Calculation Type']}
                         """)
 
-
-
                 st.subheader("📥 Export Timing Data")
 
                 col_export1, col_export2 = st.columns(2)
@@ -3152,16 +3261,28 @@ with tab3:
                     frequencies = np.array(phonon_data['frequencies'])
                     nkpts, nbands = frequencies.shape
 
+                    # Use enhanced k-point information if available
+                    if phonon_data.get('enhanced_kpoints') and 'kpoint_distances' in phonon_data:
+                        x_axis = phonon_data['kpoint_distances']
+                        x_title = "Distance along k-path"
+                        use_labels = True
+                    else:
+                        x_axis = list(range(nkpts))
+                        x_title = "k-point index"
+                        use_labels = False
+
                     fig_disp = go.Figure()
 
+                    # Plot phonon branches
                     for band in range(nbands):
                         fig_disp.add_trace(go.Scatter(
-                            x=list(range(nkpts)),
+                            x=x_axis,
                             y=frequencies[:, band],
                             mode='lines',
                             name=f'Branch {band + 1}',
-                            line=dict(width=1),
-                            showlegend=False
+                            line=dict(width=1.5),
+                            showlegend=False,
+                            hovertemplate='Frequency: %{y:.3f} meV<extra></extra>'
                         ))
 
                     if phonon_data['imaginary_modes'] > 0:
@@ -3170,17 +3291,56 @@ with tab3:
                             imaginary_points = np.where(imaginary_mask[:, band])[0]
                             if len(imaginary_points) > 0:
                                 fig_disp.add_trace(go.Scatter(
-                                    x=imaginary_points,
+                                    x=[x_axis[i] for i in imaginary_points],
                                     y=frequencies[imaginary_points, band],
                                     mode='markers',
                                     marker=dict(color='red', size=4),
                                     name='Imaginary modes',
-                                    showlegend=band == 0
+                                    showlegend=band == 0,
+                                    hovertemplate='Imaginary mode: %{y:.3f} meV<extra></extra>'
                                 ))
+
+                    if use_labels and 'kpoint_labels' in phonon_data and 'kpoint_label_positions' in phonon_data:
+                        labels = phonon_data['kpoint_labels']
+                        positions = phonon_data['kpoint_label_positions']
+
+                        display_labels = []
+                        for label in labels:
+                            if label.upper() == 'GAMMA':
+                                display_labels.append('Γ')
+                            else:
+                                display_labels.append(label)
+
+                        for pos in positions:
+                            fig_disp.add_vline(
+                                x=pos,
+                                line_dash="dash",
+                                line_color="gray",
+                                opacity=0.7,
+                                line_width=1
+                            )
+
+                        fig_disp.update_layout(
+                            xaxis=dict(
+                                tickmode='array',
+                                tickvals=positions,
+                                ticktext=display_labels,
+                                title=x_title,
+                                title_font=dict(size=20),
+                                tickfont=dict(size=18)
+                            )
+                        )
+                    else:
+                        fig_disp.update_layout(
+                            xaxis=dict(
+                                title=x_title,
+                                title_font=dict(size=20),
+                                tickfont=dict(size=18)
+                            )
+                        )
 
                     fig_disp.update_layout(
                         title=dict(text="Phonon Dispersion", font=dict(size=24)),
-                        xaxis_title="k-point index",
                         yaxis_title="Frequency (meV)",
                         height=750,
                         font=dict(size=20),
@@ -3189,10 +3349,6 @@ with tab3:
                             bordercolor="black",
                             font_size=20,
                             font_family="Arial"
-                        ),
-                        xaxis=dict(
-                            title_font=dict(size=20),
-                            tickfont=dict(size=20)
                         ),
                         yaxis=dict(
                             title_font=dict(size=20),
@@ -3204,6 +3360,10 @@ with tab3:
                     fig_disp.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
 
                     st.plotly_chart(fig_disp, use_container_width=True)
+
+                    if use_labels and 'kpoint_labels' in phonon_data:
+                        st.info(f"🎯 **Enhanced k-point sampling**: {len(x_axis)} points along path")
+                        st.info(f"🗺️ **High-symmetry path**: {' → '.join(phonon_data['kpoint_labels'])}")
 
                 with col_ph2:
                     st.write("**Phonon Density of States**")
@@ -3341,7 +3501,7 @@ with tab3:
                                         file_name=f"thermodynamics_vs_temp_{selected_phonon['name'].replace('.', '_')}.json",
                                         mime="application/json",
                                         key=f"download_temp_{selected_phonon['name']}",
-                                        type = 'primary'
+                                        type='primary'
                                     )
                             else:
                                 st.error(f"Error generating analysis: {thermo_data}")
@@ -3373,10 +3533,6 @@ with tab3:
                             if comparison_data:
                                 df_temp_compare = pd.DataFrame(comparison_data)
                                 st.dataframe(df_temp_compare, use_container_width=True, hide_index=True)
-
-
-
-
 
                 if phonon_results and len(phonon_results) > 1:
                     st.subheader("🗺️ Computational Phase Diagram Analysis")
@@ -3424,7 +3580,8 @@ with tab3:
                             col_analysis1, col_analysis2 = st.columns([1, 3])
 
                             with col_analysis1:
-                                if st.button("🔬 Generate Phase Diagram (", type="primary", key="generate_phase_diagram", disabled = True):
+                                if st.button("🔬 Generate Phase Diagram (", type="primary", key="generate_phase_diagram",
+                                             disabled=True):
                                     with st.spinner("Calculating phase diagram..."):
                                         element_concentrations = {name: comp[selected_element]
                                                                   for name, comp in compositions.items()}
@@ -3518,7 +3675,7 @@ with tab3:
                                             f'{selected_element} (%)': f"{element_concentrations[structure]:.1f}",
                                             'Min Free Energy (eV)': f"{struct_data['free_energy'].min():.6f}",
                                             'Max Free Energy (eV)': f"{struct_data['free_energy'].max():.6f}",
-                                            #'Avg Entropy (eV/K)': f"{struct_data['entropy'].mean():.6f}",
+                                            # 'Avg Entropy (eV/K)': f"{struct_data['entropy'].mean():.6f}",
                                             'Max Heat Capacity (eV/K)': f"{struct_data['heat_capacity'].max():.6f}",
                                             'Stable at T_min':
                                                 stable_df[stable_df['temperature'] == stable_df['temperature'].min()][
@@ -3920,6 +4077,7 @@ with tab3:
                         export_data['phase_transitions'].extend(transitions)
 
                     return json.dumps(export_data, indent=2)
+
 
                 if phonon_results and len(phonon_results) > 1:
 
@@ -4441,7 +4599,7 @@ with tab3:
 
                 if bulk_data['reuss'] and shear_data['reuss'] and shear_data['reuss'] != 0 and bulk_data['reuss'] != 0:
                     A_U = 5 * (shear_data['voigt'] / shear_data['reuss']) + (
-                                bulk_data['voigt'] / bulk_data['reuss']) - 6
+                            bulk_data['voigt'] / bulk_data['reuss']) - 6
 
                     elastic_tensor = np.array(elastic_data['elastic_tensor'])
                     if abs(elastic_tensor[0, 0] - elastic_tensor[1, 1]) < 10:
@@ -4655,7 +4813,7 @@ with tab3:
                                         file_name=filename,
                                         mime="text/plain",
                                         key=f"poscar_{result['name']}",
-                                        type = 'primary'
+                                        type='primary'
                                     )
 
                     with col_download2:
@@ -4674,7 +4832,7 @@ with tab3:
                                 label="📦 Download All (ZIP)",
                                 data=zip_buffer.getvalue(),
                                 file_name="optimized_structures.zip",
-                                mime="application/zip", type = 'primary'
+                                mime="application/zip", type='primary'
                             )
 
                     st.subheader("📈 Optimization Summary")
@@ -4723,7 +4881,7 @@ with tab3:
                         row.update({
                             'Zero-point Energy (eV)': f"{thermo['zero_point_energy']:.6f}",
                             'Heat Capacity (eV/K)': f"{thermo['heat_capacity']:.6f}",
-                           #'Entropy (eV/K)': f"{thermo['entropy']:.6f}"
+                            # 'Entropy (eV/K)': f"{thermo['entropy']:.6f}"
                         })
 
                     phonon_comparison_data.append(row)
