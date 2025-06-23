@@ -5,6 +5,9 @@ ase
 phonopy
 py3Dmol
 
+psutil
+gputil
+
 torch
 torchvision
 torchaudio
