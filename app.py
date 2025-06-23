@@ -2105,15 +2105,15 @@ with tab1:
             if auto_supercell:
                 col_auto1, col_auto2, col_auto3 = st.columns(3)
                 with col_auto1:
-                    target_length = st.number_input("Target supercell length (Å)", min_value=8.0, max_value=30.0,
+                    target_length = st.number_input("Target supercell length (Å)", min_value=8.0, max_value=150.0,
                                                     value=15.0, step=1.0,
                                                     help="Minimum length for each supercell dimension")
                 with col_auto2:
-                    max_multiplier = st.number_input("Max supercell multiplier", min_value=1, max_value=6,
+                    max_multiplier = st.number_input("Max supercell multiplier", min_value=1, max_value=50,
                                                      value=4, step=1,
                                                      help="Maximum allowed multiplier for any dimension")
                 with col_auto3:
-                    max_atoms = st.number_input("Max supercell atoms", min_value=100, max_value=2000,
+                    max_atoms = st.number_input("Max supercell atoms", min_value=100, max_value=200000,
                                                 value=800, step=100,
                                                 help="Maximum total atoms in supercell")
                 phonon_params = {
