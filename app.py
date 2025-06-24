@@ -16,6 +16,8 @@ import GPUtil
 import streamlit as st
 import threading
 import time
+from ase.constraints import FixAtoms
+from ase.io import read, write
 
 from helpers.phonons_help import *
 from helpers.generate_python_code import *
@@ -170,7 +172,16 @@ def load_structure(file):
             mg_structure = lammps_data.structure
         else:
             atoms = read(file.name)
+            
+            constraints_info = None
+            if hasattr(atoms, 'constraints') and atoms.constraints:
+                constraints_info = atoms.constraints
+            
             mg_structure = AseAtomsAdaptor.get_structure(atoms)
+            
+
+            if constraints_info:
+                mg_structure.constraints_info = constraints_info
 
         if os.path.exists(file.name):
             os.remove(file.name)
@@ -1080,10 +1091,8 @@ class OptimizationLogger:
                 'trajectory_data': trajectory_step
             })
 
-
 def create_xyz_content(trajectory_data, structure_name):
     xyz_content = ""
-
     for step_data in trajectory_data:
         step = step_data['step']
         energy = step_data['energy']
@@ -1096,13 +1105,24 @@ def create_xyz_content(trajectory_data, structure_name):
         xyz_content += f"{len(positions)}\n"
 
         a, b, c = np.linalg.norm(cell, axis=1)
-        alpha = np.degrees(np.arccos(np.dot(cell[1], cell[2]) / (b * c)))
-        beta = np.degrees(np.arccos(np.dot(cell[0], cell[2]) / (a * c)))
-        gamma = np.degrees(np.arccos(np.dot(cell[0], cell[1]) / (a * b)))
+        
+        def safe_angle(v1, v2):
+            """Calculate angle between vectors with numerical safety"""
+            cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+            cos_angle = np.clip(cos_angle, -1.0, 1.0)
+            return np.degrees(np.arccos(cos_angle))
+        
+        alpha = safe_angle(cell[1], cell[2])  
+        beta = safe_angle(cell[0], cell[2])  
+        gamma = safe_angle(cell[0], cell[1])  
 
-        comment = (f"Step {step} | Energy={energy:.6f} eV | Max_Force={max_force:.4f} eV/A | "
-                   f"Lattice=\"{a:.6f} {b:.6f} {c:.6f} {alpha:.2f} {beta:.2f} {gamma:.2f}\" | "
-                   f"Properties=species:S:1:pos:R:3:forces:R:3")
+        cell_flat = cell.flatten()
+        lattice_str = " ".join([f"{x:.6f}" for x in cell_flat])
+        
+        comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                   f'Lattice="{lattice_str}" '
+                   f'Properties=species:S:1:pos:R:3:forces:R:3')
+        
         xyz_content += f"{comment}\n"
 
         for i, (symbol, pos, force) in enumerate(zip(symbols, positions, forces)):
@@ -1168,8 +1188,13 @@ def pymatgen_to_ase(structure):
         cell=structure.lattice.matrix,
         pbc=True
     )
-
-    return wrap_positions_in_cell(atoms)
+    
+    wrapped_atoms = wrap_positions_in_cell(atoms)
+    
+    if hasattr(structure, 'constraints_info') and structure.constraints_info:
+        wrapped_atoms.set_constraint(structure.constraints_info)
+    
+    return wrapped_atoms
 
 
 def calculate_atomic_reference_energies(unique_elements, calculator, log_queue):
@@ -1261,9 +1286,22 @@ def create_cell_filter(atoms, optimization_params):
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+def check_selective_dynamics(atoms):
+    """Check if atoms have selective dynamics constraints"""
+    if hasattr(atoms, 'constraints') and atoms.constraints:
+        for constraint in atoms.constraints:
+            if isinstance(constraint, FixAtoms):
+                fixed_indices = constraint.get_indices()
+                total_atoms = len(atoms)
+                fixed_atoms = len(fixed_indices)
+                return True, fixed_atoms, total_atoms
+    return False, 0, len(atoms)
+
 
 def setup_optimization_constraints(atoms, optimization_params):
     opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
+    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
+    
 
     if opt_type == "Atoms only (fixed cell)":
         return atoms, None
@@ -1497,6 +1535,16 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                     log_queue.put(f"Optimization type: {opt_type}")
 
+                    atoms = pymatgen_to_ase(structure)
+                    atoms.calc = calculator
+                    
+                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
+                    
+                    if has_constraints:
+                        log_queue.put(f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are fixed")
+                        log_queue.put(f"  Fixed atoms will remain at their original positions during optimization")
+                    else:
+                        log_queue.put(f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
                     if optimization_params.get('cell_constraint'):
                         log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
 
@@ -1932,6 +1980,7 @@ with tab1:
         if show_preview:
             st.header("2. Structure Preview & MACE Compatibility")
 
+
             structure_names = list(st.session_state.structures.keys())
 
             for i, (name, structure) in enumerate(st.session_state.structures.items()):
@@ -1957,7 +2006,11 @@ with tab1:
                             st.error(f"❌ Unsupported elements: {', '.join(unsupported)}")
 
                         st.write(f"**Elements:** {', '.join(elements)}")
-
+                        if hasattr(structure, 'constraints_info') and structure.constraints_info:
+                            st.write("📌 **Selective Dynamics:** Present (some atoms fixed)")
+                        else:
+                            st.write("🔄 **Selective Dynamics:** None (all atoms free to move)")
+                
         st.divider()
 
         st.header("Calculation Setup")
