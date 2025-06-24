@@ -1867,13 +1867,14 @@ with st.sidebar:
             step=1,
             help="Number of CPU threads for calculations"
         )
+        
     with col_c2:
         if st.button("💾 Save Thread"):
             with open(THREAD_COUNT_FILE, 'w') as f:
                 f.write(str(st.session_state.thread_count))
             os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
             torch.set_num_threads(st.session_state.thread_count)
-            st.toast("Thread count saved and applied.")
+            st.toast("✅ Thread count saved and applied.")
 css = '''
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
@@ -2250,7 +2251,7 @@ with tab1:
                     )
                 with col_press2:
                     hydrostatic_strain = st.checkbox(
-                        "Hydrostatic strain only",
+                        "Hydrostatic strain only (preserve cell shape)",
                         value=False,
                         help="Constrain cell to change hydrostatically (preserve shape)"
                     )
@@ -4704,7 +4705,7 @@ with tab3:
                         label="📥 Download Elastic Data (JSON)",
                         data=elastic_json,
                         file_name=f"elastic_data_{selected_elastic['name'].replace('.', '_')}.json",
-                        mime="application/json"
+                        mime="application/json", type='primary'
                     )
             else:
                 st.info(
@@ -4777,7 +4778,7 @@ with tab3:
                             label="📥 Download Lattice Parameters (CSV)",
                             data=lattice_csv,
                             file_name="lattice_parameters_comparison.csv",
-                            mime="text/csv"
+                            mime="text/csv", type = 'primary'
                         )
 
                     if len(lattice_data) > 1:
@@ -5273,7 +5274,7 @@ with tab4:
                             file_name=filename,
                             mime="text/plain",
                             key=f"download_{structure_name}",
-                            help="Extended XYZ format with lattice parameters, energies, and forces"
+                            help="Extended XYZ format with lattice parameters, energies, and forces", type = 'primary'
                         )
 
                     with col3:
@@ -5343,35 +5344,35 @@ with tab4:
                     data=zip_buffer.getvalue(),
                     file_name="optimization_trajectories.zip",
                     mime="application/zip",
-                    help="ZIP file containing all optimization trajectories in XYZ format"
+                    help="ZIP file containing all optimization trajectories in XYZ format", type = 'primary'
                 )
 
-        with st.expander("📖 XYZ File Format Information"):
-            st.markdown("""
-            **Extended XYZ Format with Lattice Parameters:**
-
-            Each XYZ file contains all optimization steps with:
-            - **Line 1**: Number of atoms
-            - **Line 2**: Comment line with:
-              - Step number
-              - Energy (eV)
-              - Maximum force (eV/Å)
-              - Lattice parameters (a, b, c, α, β, γ)
-              - Properties specification
-            - **Lines 3+**: Atomic coordinates and forces
-              - Format: `Symbol X Y Z Fx Fy Fz`
-
-            **Example:**
-            ```
-            8
-            Step 1 | Energy=-123.456789 eV | Max_Force=0.1234 eV/A | Lattice="5.123456 5.123456 5.123456 90.00 90.00 90.00" | Properties=species:S:1:pos:R:3:forces:R:3
-            Ti  0.000000  0.000000  0.000000  0.001234 -0.002345  0.000123
-            O   1.234567  1.234567  1.234567 -0.001234  0.002345 -0.000123
-            ...
-            ```
-
-            This format can be read by visualization software like OVITO, VMD, or ASE for trajectory analysis.
-            """)
+        #with st.expander("📖 XYZ File Format Information"):
+        #    st.markdown("""
+        #    **Extended XYZ Format with Lattice Parameters:**#
+        #
+        #    Each XYZ file contains all optimization steps with:
+        #    - **Line 1**: Number of atoms
+        #    - **Line 2**: Comment line with:
+        #      - Step number
+        #      - Energy (eV)
+        #      - Maximum force (eV/Å)
+        #      - Lattice parameters (a, b, c, α, β, γ)
+        #      - Properties specification
+        #    - **Lines 3+**: Atomic coordinates and forces
+        #      - Format: `Symbol X Y Z Fx Fy Fz`
+        #
+        #    **Example:**
+        #    ```
+        #    8
+        #    Step 1 | Energy=-123.456789 eV | Max_Force=0.1234 eV/A | Lattice="5.123456 5.123456 5.123456 90.00 90.00 90.00" | Properties=species:S:1:pos:R:3:forces:R:3
+        #    Ti  0.000000  0.000000  0.000000  0.001234 -0.002345  0.000123
+        #    O   1.234567  1.234567  1.234567 -0.001234  0.002345 -0.000123
+        #    ...
+        #    ```
+        #
+        #    This format can be read by visualization software like OVITO, VMD, or ASE for trajectory analysis.
+        #    """)
 
     else:
         st.info("🔄 Optimization trajectories will appear here after geometry optimization calculations complete.")
