@@ -56,6 +56,23 @@ try:
 except ImportError:
     ELASTIC_AVAILABLE = False
 
+import torch
+#os.environ['OMP_NUM_THREADS'] = '8'
+#torch.set_num_threads(8)
+THREAD_COUNT_FILE = "thread_count.txt"
+default_thread_count = 1
+if os.path.exists(THREAD_COUNT_FILE):
+    try:
+        with open(THREAD_COUNT_FILE, 'r') as f:
+            default_thread_count = int(f.read().strip())
+    except (ValueError, FileNotFoundError):
+        default_thread_count = 1
+os.environ['OMP_NUM_THREADS'] = str(default_thread_count)
+torch.set_num_threads(default_thread_count)
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = default_thread_count
+
 if 'structures_locked' not in st.session_state:
     st.session_state.structures_locked = False
 if 'uploaded_files_processed' not in st.session_state:
@@ -1840,7 +1857,23 @@ with st.sidebar:
         help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
     )
     device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
-
+    col_c1, col_c2 = st.columns([1,1])
+    with col_c1:
+        st.session_state.thread_count = st.number_input(
+            "CPU Threads", 
+            min_value=1, 
+            max_value=32, 
+            value=st.session_state.thread_count,
+            step=1,
+            help="Number of CPU threads for calculations"
+        )
+    with col_c2:
+        if st.button("💾 Save Thread"):
+            with open(THREAD_COUNT_FILE, 'w') as f:
+                f.write(str(st.session_state.thread_count))
+            os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+            torch.set_num_threads(st.session_state.thread_count)
+            st.toast("Thread count saved and applied.")
 css = '''
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
@@ -1875,8 +1908,8 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📁 Structure Upload & Setup", "🖥️ Calculation Console", "📊 Results & Analysis",
+tab1, tab_st, tab2, tab3, tab4 = st.tabs(
+    ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
      "📈 Optimization Trajectories and Convergence"])
 
 with tab1:
@@ -1948,7 +1981,7 @@ with tab1:
     else:
         st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
         st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
-
+        
         with st.expander("📋 Locked Structures", expanded=True):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
                 col1, col2, col3 = st.columns([3, 2, 2])
@@ -2354,7 +2387,13 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
-        col1, col2 = st.columns(2)  # Changed from 2 to 3 columns
+        
+        
+    else:
+        st.info("Upload structure files to begin")
+with tab_st:           
+    if st.session_state.structures_locked:
+        col1, col2 = st.columns(2) 
 
         st.markdown("""
             <style>
@@ -2463,7 +2502,7 @@ with tab1:
             st.rerun()
 
     else:
-        st.info("Upload structure files to begin")
+        st.info("**Upload** or **Lock** structure files to begin")
 with st.sidebar:
     st.info(f"**Selected Model:** {selected_model}")
     st.info(f"**Device:** {device}")
@@ -3266,26 +3305,11 @@ with tab3:
                     data=csv_data,
                     file_name="mace_batch_results.csv",
                     mime="text/csv",
-                    key=f"download_csv_{len(successful_results)}"
+                    key=f"download_csv_{len(successful_results)}", type = 'primary'
                 )
 
                 optimized_structures = [r for r in successful_results if r['calc_type'] == 'Geometry Optimization']
-                if optimized_structures:
-                    st.subheader("Download Optimized Structures")
-
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                        for result in optimized_structures:
-                            poscar_content = create_wrapped_poscar_content(result['structure'])
-                            zip_file.writestr(f"optimized_{result['name']}", poscar_content)
-
-                    st.download_button(
-                        label="📦 Download Optimized Structures (ZIP)",
-                        data=zip_buffer.getvalue(),
-                        file_name="optimized_structures.zip",
-                        mime="application/zip",
-                        key=f"download_zip_{len(optimized_structures)}"
-                    )
+                
 
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
@@ -3513,7 +3537,7 @@ with tab3:
                         label="📥 Download Phonon Data (JSON)",
                         data=phonon_json,
                         file_name=f"phonon_data_{selected_phonon['name'].replace('.', '_')}.json",
-                        mime="application/json"
+                        mime="application/json", type = 'primary'
                     )
                 if phonon_data.get('thermal_properties_dict'):
                     st.write("**Temperature-Dependent Analysis**")
