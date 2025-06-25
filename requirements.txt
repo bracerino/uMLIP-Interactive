@@ -1,4 +1,4 @@
-streamlit
+streamlit==1.45.1
 plotly
 pymatgen
 ase
