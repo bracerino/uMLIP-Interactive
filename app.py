@@ -1197,11 +1197,30 @@ def create_xyz_content(trajectory_data, structure_name):
     return xyz_content
 
 
+
 MACE_MODELS = {
-    "MACE-MP-0 (small)": "small",
-    "MACE-MP-0 (medium)": "medium",
-    "MACE-MP-0 (large)": "large"
+    "MACE-MP-0b3 (medium) - Latest": "medium-0b3", 
+    "MACE-MP-0 (small) - Original": "small",
+    "MACE-MP-0 (medium) - Original": "medium", 
+    "MACE-MP-0 (large) - Original": "large",
+    
+    "MACE-MP-0b (small) - Improved": "small-0b",
+    "MACE-MP-0b (medium) - Improved": "medium-0b",
+    
+    "MACE-MP-0b2 (small) - Enhanced": "small-0b2",
+    "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
+    "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
+     
+    
+    "MACE-MPA-0 (medium) - Latest": "medium-mpa-0",
+    
+    "MACE-OMAT-0 (medium)": "medium-omat-0",
+    
+    # ========== MATPES MODELS (need full URLs) ==========
+    "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
+    "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
 }
+
 PHONON_ZERO_THRESHOLD = 0.001  # meV
 
 
