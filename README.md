@@ -36,7 +36,7 @@ Open your terminal console and write the following commands (the bold text):
 
 6) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4):  
       **streamlit run app.py**
-7) To update the application, write in the main folder:
+7) To update the application, write in the main folder:  
       **git pull**
  
 ### **Tested Python packages**  
