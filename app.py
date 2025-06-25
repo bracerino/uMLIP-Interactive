@@ -24,6 +24,7 @@ from helpers.phonons_help import *
 from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
+from helpers.mace_cards import *
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -2042,10 +2043,28 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab_st, tab2, tab3, tab4 = st.tabs(
+tab1, tab_st, tab2, tab3, tab4, tab5 = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence"])
+     "📈 Optimization Trajectories and Convergence", "🔬 MACE Models Info"])
 
+with tab5:
+    display_mace_models_info()    
+    st.markdown("---")
+    
+    create_citation_info()
+    
+    st.markdown("---")
+    
+    st.info("""
+    💡 **Tips for Model Selection:**
+    
+    • **For general use**: MACE-MP-0b3 (medium) - Latest and most stable
+    • **For highest accuracy**: MACE-MPA-0 (medium) - State-of-the-art performance  
+    • **For phonon calculations**: MACE-OMAT-0 (medium) - Excellent vibrational properties
+    • **For fast screening**: Any small model - Lower computational cost
+    • **For complex systems**: Large models - Higher accuracy for difficult cases
+    """)
+    
 with tab1:
     st.sidebar.header("Upload Structure Files")
     if not st.session_state.structures_locked:
