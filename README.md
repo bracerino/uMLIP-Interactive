@@ -1,6 +1,6 @@
 # mace-md-gui
 
-Run basic molecular dynamics/static simulations (single-point energy, geometry optimization, elastic properties, phonons) in interactive interface with MACE interatomic potential.
+Run basic molecular dynamics/static simulations (single-point energy, geometry optimization, elastic properties, phonons) in interactive interface with machine learning MACE interatomic potential.
 **Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.
 
 ---
