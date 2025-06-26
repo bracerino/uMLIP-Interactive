@@ -2135,7 +2135,7 @@ with tab1:
         st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
         st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
         
-        with st.expander("📋 Locked Structures", expanded=True):
+        with st.expander("📋 Locked Structures", expanded=False):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
                 col1, col2, col3 = st.columns([3, 2, 2])
                 with col1:
