@@ -1,4 +1,9 @@
 import streamlit as st
+
+
+st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+
+
 import os
 import pandas as pd
 import plotly.express as px
@@ -59,6 +64,9 @@ except ImportError:
     ELASTIC_AVAILABLE = False
 
 import torch
+
+
+
 #os.environ['OMP_NUM_THREADS'] = '8'
 #torch.set_num_threads(8)
 THREAD_COUNT_FILE = "thread_count.txt"
@@ -1934,7 +1942,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+
 st.title("MACE Molecular Dynamic Batch Structure Calculator")
 
 if 'structures' not in st.session_state:
