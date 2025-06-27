@@ -6,6 +6,7 @@ st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculato
 
 import os
 import pandas as pd
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -95,6 +96,8 @@ if 'structure_start_times' not in st.session_state:
     st.session_state.structure_start_times = {}
 if 'total_calculation_start_time' not in st.session_state:
     st.session_state.total_calculation_start_time = None
+if 'results_backup_file' not in st.session_state:
+    st.session_state.results_backup_file = None
 
 st.markdown("""
     <style>
@@ -410,6 +413,38 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
         }
 
 
+
+
+def append_to_backup_file(result, backup_file_path):
+    """Append result information to backup file"""
+    try:
+        backup_dir = os.path.dirname(backup_file_path)
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        name = result['name']
+        energy = result.get('energy', 'N/A')
+        formation_energy = result.get('formation_energy', 'N/A')
+        
+        if 'structure' in result and result['structure']:
+            structure = result['structure']
+            lattice = structure.lattice
+            lattice_info = f"a={lattice.a:.4f}, b={lattice.b:.4f}, c={lattice.c:.4f}, α={lattice.alpha:.2f}°, β={lattice.beta:.2f}°, γ={lattice.gamma:.2f}°"
+        else:
+            lattice_info = "N/A"
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"{timestamp}\t{name}\t{energy}\t{formation_energy}\t{lattice_info}\n"
+        
+        write_header = not os.path.exists(backup_file_path)
+        
+        with open(backup_file_path, 'a', encoding='utf-8') as f:
+            if write_header:
+                header = "Time\tStructure_Name\tTotal_Energy(eV)\tFormation_Energy(eV/atom)\tLattice_Parameters\n"
+                f.write(header)
+            f.write(line)
+            
+    except Exception as e:
+        pass
 def check_mechanical_stability(C, log_queue):
     try:
         criteria = {}
@@ -2554,6 +2589,9 @@ with tab1:
         st.info("Upload structure files to begin")
 with tab_st:           
     if st.session_state.structures_locked:
+        current_script_folder = os.getcwd()
+        backup_folder = os.path.join(current_script_folder, "results_backup")
+        st.info(f"💾 **Auto-backup**: Results (energies & lattice parameters) will be automatically saved to: `{backup_folder}`")
         col1, col2 = st.columns(2) 
 
         st.markdown("""
@@ -2652,6 +2690,10 @@ with tab_st:
             st.session_state.optimization_trajectories = {}
             st.session_state.stop_event.clear()
             st.session_state.last_update_time = 0
+
+            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"results_{current_time}.txt"
+            st.session_state.results_backup_file = os.path.join("results_backup", backup_filename)
 
             thread = threading.Thread(
                 target=run_mace_calculation,
@@ -2763,6 +2805,8 @@ with tab2:
                 st.session_state.optimization_trajectories[message['structure']] = message['trajectory']
             elif message.get('type') == 'result':
                 st.session_state.results.append(message)
+                if st.session_state.results_backup_file:
+                    append_to_backup_file(message, st.session_state.results_backup_file)
         elif message == "CALCULATION_FINISHED":
             st.session_state.calculation_running = False
             st.session_state.current_structure_progress = {}
@@ -4991,7 +5035,7 @@ with tab3:
                             mime="text/csv", type = 'primary'
                         )
 
-                    if len(lattice_data) > 1:
+                    if len(lattice_data) >= 1:
                         st.subheader("📊 Lattice Parameter Changes")
 
                         col_vis1, col_vis2 = st.columns(2)
