@@ -1,4 +1,9 @@
 import streamlit as st
+
+
+st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+
+
 import os
 import pandas as pd
 import plotly.express as px
@@ -13,14 +18,18 @@ from pathlib import Path
 from plotly.subplots import make_subplots
 import psutil
 import GPUtil
+from collections import deque
 import streamlit as st
 import threading
 import time
+from ase.constraints import FixAtoms
+from ase.io import read, write
 
 from helpers.phonons_help import *
 from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
+from helpers.mace_cards import *
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -53,6 +62,26 @@ try:
     ELASTIC_AVAILABLE = True
 except ImportError:
     ELASTIC_AVAILABLE = False
+
+import torch
+
+
+
+#os.environ['OMP_NUM_THREADS'] = '8'
+#torch.set_num_threads(8)
+THREAD_COUNT_FILE = "thread_count.txt"
+default_thread_count = 1
+if os.path.exists(THREAD_COUNT_FILE):
+    try:
+        with open(THREAD_COUNT_FILE, 'r') as f:
+            default_thread_count = int(f.read().strip())
+    except (ValueError, FileNotFoundError):
+        default_thread_count = 1
+os.environ['OMP_NUM_THREADS'] = str(default_thread_count)
+torch.set_num_threads(default_thread_count)
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = default_thread_count
 
 if 'structures_locked' not in st.session_state:
     st.session_state.structures_locked = False
@@ -170,7 +199,16 @@ def load_structure(file):
             mg_structure = lammps_data.structure
         else:
             atoms = read(file.name)
+            
+            constraints_info = None
+            if hasattr(atoms, 'constraints') and atoms.constraints:
+                constraints_info = atoms.constraints
+            
             mg_structure = AseAtomsAdaptor.get_structure(atoms)
+            
+
+            if constraints_info:
+                mg_structure.constraints_info = constraints_info
 
         if os.path.exists(file.name):
             os.remove(file.name)
@@ -638,26 +676,22 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
         log_queue.put("  Calculating phonon band structure with enhanced k-point density...")
 
-        # Enhanced k-point path generation with more points and proper labeling
         try:
             from pymatgen.symmetry.bandstructure import HighSymmKpath
             from ase.dft.kpoints import bandpath
 
-            # Get high-symmetry path using pymatgen
             kpath = HighSymmKpath(pmg_structure)
             path = kpath.kpath["path"]
             kpoints = kpath.kpath["kpoints"]
 
-            # Convert to ASE format for better handling
             ase_cell = atoms.get_cell()
 
-            # Create enhanced k-point path with more points
-            npoints_per_segment = phonon_params.get('npoints', 151)  # Increased default from 101 to 151
-            total_npoints = phonon_params.get('total_npoints', 501)  # New parameter for total points
+
+            npoints_per_segment = phonon_params.get('npoints', 151)  
+            total_npoints = phonon_params.get('total_npoints', 501)  
 
             log_queue.put(f"  Using {npoints_per_segment} points per segment")
 
-            # Build the band structure path with labels
             path_kpoints = []
             path_labels = []
             path_connections = []
@@ -676,29 +710,24 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     segment_points.append(point_coords)
                     segment_labels.append(point_name)
 
-                # Generate interpolated points for this segment
                 for i in range(len(segment_points) - 1):
                     start_point = np.array(segment_points[i])
                     end_point = np.array(segment_points[i + 1])
 
-                    # Create dense sampling between points
                     for j in range(npoints_per_segment):
                         t = j / (npoints_per_segment - 1)
                         interpolated_point = start_point + t * (end_point - start_point)
                         path_kpoints.append(interpolated_point.tolist())
 
-                        # Calculate distance for x-axis
                         if len(path_kpoints) > 1:
                             prev_point = np.array(path_kpoints[-2])
                             curr_point = np.array(path_kpoints[-1])
-                            # Convert to Cartesian coordinates for distance calculation
                             prev_cart = prev_point @ ase_cell.reciprocal()
                             curr_cart = curr_point @ ase_cell.reciprocal()
                             current_distance += np.linalg.norm(curr_cart - prev_cart)
 
                         cumulative_distance.append(current_distance)
 
-                        # Label assignment
                         if j == 0:
                             path_labels.append(segment_labels[i])
                         elif j == npoints_per_segment - 1:
@@ -706,7 +735,6 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                         else:
                             path_labels.append('')
 
-            # Create the band structure calculation
             bands = []
             current_band = []
 
@@ -718,7 +746,6 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
             log_queue.put(f"  Generated enhanced k-point path with {len(path_kpoints)} points")
 
-            # Find unique labels and their positions for plotting
             unique_label_positions = []
             unique_labels = []
             seen_labels = set()
@@ -728,7 +755,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     unique_label_positions.append(cumulative_distance[i])
                     unique_labels.append(label)
                     seen_labels.add(label)
-                elif label and i == len(path_labels) - 1:  # Always include the last point
+                elif label and i == len(path_labels) - 1: 
                     unique_label_positions.append(cumulative_distance[i])
                     if label not in unique_labels:
                         unique_labels.append(label)
@@ -739,13 +766,11 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             log_queue.put(f"  ⚠️ High-symmetry path detection failed: {str(path_error)}")
             log_queue.put("  Using simple Γ-X-M-Γ path with enhanced density")
 
-            # Fallback path with more points
             npoints_fallback = phonon_params.get('npoints', 151)
             gamma = [0, 0, 0]
             x_point = [0.5, 0, 0]
             m_point = [0.5, 0.5, 0]
 
-            # Create dense path
             path_kpoints = []
             cumulative_distance = [0.0]
             current_distance = 0.0
@@ -961,12 +986,12 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
         return {
             'success': True,
-            'frequencies': frequencies,  # meV, shape (nkpts, nbands)
+            'frequencies': frequencies,  
             'kpoints': kpoints_band,
             'kpoint_distances': np.array(cumulative_distance[:-1]) if len(cumulative_distance) > len(
-                kpoints_band) else np.array(cumulative_distance),  # Distance along path
-            'kpoint_labels': unique_labels,  # High-symmetry point labels
-            'kpoint_label_positions': unique_label_positions,  # Positions of labels along path
+                kpoints_band) else np.array(cumulative_distance),  
+            'kpoint_labels': unique_labels,  
+            'kpoint_label_positions': unique_label_positions,  
             'dos_energies': dos_frequencies,  # meV
             'dos': dos_values,
             'thermodynamics': thermo_props,
@@ -975,7 +1000,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             'imaginary_modes': int(imaginary_count),
             'min_frequency': float(min_frequency),
             'method': 'Pymatgen+Phonopy',
-            'enhanced_kpoints': True  # Flag to indicate enhanced k-point sampling
+            'enhanced_kpoints': True  
         }
 
     except Exception as e:
@@ -1029,7 +1054,6 @@ except ImportError:
         except ImportError:
             MACE_AVAILABLE = False
 
-
 class OptimizationLogger:
     def __init__(self, log_queue, structure_name):
         self.log_queue = log_queue
@@ -1037,8 +1061,20 @@ class OptimizationLogger:
         self.step_count = 0
         self.trajectory = []
         self.previous_energy = None
-
+        
+        self.step_start_time = None
+        self.step_times = deque(maxlen=10)  # Keep last 10 step times for averaging
+        self.optimization_start_time = time.time()
+        
     def __call__(self, optimizer=None):
+        current_time = time.time()
+        
+        if self.step_start_time is not None:
+            step_duration = current_time - self.step_start_time
+            self.step_times.append(step_duration)
+        
+        self.step_start_time = current_time
+        
         if optimizer is not None and hasattr(optimizer, 'atoms'):
             atoms = optimizer.atoms
             self.step_count += 1
@@ -1057,12 +1093,28 @@ class OptimizationLogger:
                 'positions': atoms.positions.copy(),
                 'cell': atoms.cell.array.copy(),
                 'symbols': atoms.get_chemical_symbols(),
-                'forces': forces.copy()
+                'forces': forces.copy(),
+                'timestamp': current_time
             }
             self.trajectory.append(trajectory_step)
 
-            self.log_queue.put(
-                f"  Step {self.step_count}: Energy = {energy:.6f} eV, Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+            avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
+            
+            elapsed_time = current_time - self.optimization_start_time
+            log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                          f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+            
+            #if avg_step_time > 0:
+            #    log_message += f" | Avg/step: {avg_step_time:.1f}s"
+            #    if estimated_remaining_time:
+            #        log_message += f" | Est. remaining: {self._format_time(estimated_remaining_time)}"
+            #        log_message += f" | Total est.: {self._format_time(total_estimated_time)}"
+            
+            #log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
+            
+            self.log_queue.put(log_message)
+            
+            # Send enhanced progress data
             self.log_queue.put({
                 'type': 'opt_step',
                 'structure': self.structure_name,
@@ -1070,7 +1122,11 @@ class OptimizationLogger:
                 'energy': energy,
                 'max_force': max_force,
                 'energy_change': energy_change,
-                'total_steps': None
+                'total_steps': getattr(optimizer, 'max_steps', None),
+                'avg_step_time': avg_step_time,
+                'estimated_remaining_time': estimated_remaining_time,
+                'total_estimated_time': total_estimated_time,
+                'elapsed_time': elapsed_time
             })
 
             self.log_queue.put({
@@ -1080,10 +1136,38 @@ class OptimizationLogger:
                 'trajectory_data': trajectory_step
             })
 
+    def _calculate_time_estimates(self, optimizer):
+        """Calculate time estimates based on recent step times"""
+        if len(self.step_times) < 2:
+            return 0, None, None
+        
+        avg_step_time = np.mean(list(self.step_times)[1:]) if len(self.step_times) > 1 else self.step_times[0]
+        
+        max_steps = getattr(optimizer, 'max_steps', None)
+        if max_steps is None:
+            return avg_step_time, None, None
+        
+        remaining_steps = max_steps - self.step_count
+        estimated_remaining_time = remaining_steps * avg_step_time if remaining_steps > 0 else 0
+        
+        elapsed_time = time.time() - self.optimization_start_time
+        total_estimated_time = elapsed_time + estimated_remaining_time
+        
+        return avg_step_time, estimated_remaining_time, total_estimated_time
+
+    def _format_time(self, seconds):
+        """Format time in human-readable format"""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            minutes = seconds / 60
+            return f"{minutes:.1f}m"
+        else:
+            hours = seconds / 3600
+            return f"{hours:.1f}h"
 
 def create_xyz_content(trajectory_data, structure_name):
     xyz_content = ""
-
     for step_data in trajectory_data:
         step = step_data['step']
         energy = step_data['energy']
@@ -1096,13 +1180,24 @@ def create_xyz_content(trajectory_data, structure_name):
         xyz_content += f"{len(positions)}\n"
 
         a, b, c = np.linalg.norm(cell, axis=1)
-        alpha = np.degrees(np.arccos(np.dot(cell[1], cell[2]) / (b * c)))
-        beta = np.degrees(np.arccos(np.dot(cell[0], cell[2]) / (a * c)))
-        gamma = np.degrees(np.arccos(np.dot(cell[0], cell[1]) / (a * b)))
+        
+        def safe_angle(v1, v2):
+            """Calculate angle between vectors with numerical safety"""
+            cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+            cos_angle = np.clip(cos_angle, -1.0, 1.0)
+            return np.degrees(np.arccos(cos_angle))
+        
+        alpha = safe_angle(cell[1], cell[2])  
+        beta = safe_angle(cell[0], cell[2])  
+        gamma = safe_angle(cell[0], cell[1])  
 
-        comment = (f"Step {step} | Energy={energy:.6f} eV | Max_Force={max_force:.4f} eV/A | "
-                   f"Lattice=\"{a:.6f} {b:.6f} {c:.6f} {alpha:.2f} {beta:.2f} {gamma:.2f}\" | "
-                   f"Properties=species:S:1:pos:R:3:forces:R:3")
+        cell_flat = cell.flatten()
+        lattice_str = " ".join([f"{x:.6f}" for x in cell_flat])
+        
+        comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                   f'Lattice="{lattice_str}" '
+                   f'Properties=species:S:1:pos:R:3:forces:R:3')
+        
         xyz_content += f"{comment}\n"
 
         for i, (symbol, pos, force) in enumerate(zip(symbols, positions, forces)):
@@ -1111,11 +1206,30 @@ def create_xyz_content(trajectory_data, structure_name):
     return xyz_content
 
 
+
 MACE_MODELS = {
-    "MACE-MP-0 (small)": "small",
-    "MACE-MP-0 (medium)": "medium",
-    "MACE-MP-0 (large)": "large"
+    "MACE-MP-0b3 (medium) - Latest": "medium-0b3", 
+    "MACE-MP-0 (small) - Original": "small",
+    "MACE-MP-0 (medium) - Original": "medium", 
+    "MACE-MP-0 (large) - Original": "large",
+    
+    "MACE-MP-0b (small) - Improved": "small-0b",
+    "MACE-MP-0b (medium) - Improved": "medium-0b",
+    
+    "MACE-MP-0b2 (small) - Enhanced": "small-0b2",
+    "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
+    "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
+     
+    
+    "MACE-MPA-0 (medium) - Latest": "medium-mpa-0",
+    
+    "MACE-OMAT-0 (medium)": "medium-omat-0",
+    
+    # ========== MATPES MODELS (need full URLs) ==========
+    "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
+    "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
 }
+
 PHONON_ZERO_THRESHOLD = 0.001  # meV
 
 
@@ -1168,8 +1282,13 @@ def pymatgen_to_ase(structure):
         cell=structure.lattice.matrix,
         pbc=True
     )
-
-    return wrap_positions_in_cell(atoms)
+    
+    wrapped_atoms = wrap_positions_in_cell(atoms)
+    
+    if hasattr(structure, 'constraints_info') and structure.constraints_info:
+        wrapped_atoms.set_constraint(structure.constraints_info)
+    
+    return wrapped_atoms
 
 
 def calculate_atomic_reference_energies(unique_elements, calculator, log_queue):
@@ -1261,9 +1380,22 @@ def create_cell_filter(atoms, optimization_params):
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+def check_selective_dynamics(atoms):
+    """Check if atoms have selective dynamics constraints"""
+    if hasattr(atoms, 'constraints') and atoms.constraints:
+        for constraint in atoms.constraints:
+            if isinstance(constraint, FixAtoms):
+                fixed_indices = constraint.get_indices()
+                total_atoms = len(atoms)
+                fixed_atoms = len(fixed_indices)
+                return True, fixed_atoms, total_atoms
+    return False, 0, len(atoms)
+
 
 def setup_optimization_constraints(atoms, optimization_params):
     opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
+    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
+    
 
     if opt_type == "Atoms only (fixed cell)":
         return atoms, None
@@ -1275,9 +1407,7 @@ def setup_optimization_constraints(atoms, optimization_params):
         cell_filter = create_cell_filter(atoms, optimization_params)
         return cell_filter, "both"
 
-
 class CellOptimizationLogger:
-
     def __init__(self, log_queue, structure_name, opt_mode="both"):
         self.log_queue = log_queue
         self.structure_name = structure_name
@@ -1285,8 +1415,21 @@ class CellOptimizationLogger:
         self.trajectory = []
         self.previous_energy = None
         self.opt_mode = opt_mode
+        
+        self.step_start_time = None
+        self.step_times = deque(maxlen=10)  
+        self.optimization_start_time = time.time()
 
     def __call__(self, optimizer=None):
+        current_time = time.time()
+        
+
+        if self.step_start_time is not None:
+            step_duration = current_time - self.step_start_time
+            self.step_times.append(step_duration)
+        
+        self.step_start_time = current_time
+        
         if optimizer is not None:
             if hasattr(optimizer.atoms, 'atoms'):
                 atoms = optimizer.atoms.atoms
@@ -1301,6 +1444,7 @@ class CellOptimizationLogger:
                 energy = atoms.get_potential_energy()
                 stress = None
                 max_stress = 0.0
+                
                 if self.opt_mode in ["cell_only", "both"]:
                     try:
                         stress_voigt = atoms.get_stress(voigt=True)
@@ -1322,19 +1466,35 @@ class CellOptimizationLogger:
                     'cell': atoms.cell.array.copy(),
                     'symbols': atoms.get_chemical_symbols(),
                     'forces': forces.copy(),
-                    'stress': stress.copy() if stress is not None else None
+                    'stress': stress.copy() if stress is not None else None,
+                    'timestamp': current_time
                 }
                 self.trajectory.append(trajectory_step)
 
+                avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
+                
+                elapsed_time = current_time - self.optimization_start_time
+                
                 if self.opt_mode == "cell_only":
-                    self.log_queue.put(
-                        f"  Step {self.step_count}: Energy = {energy:.6f} eV, Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
+                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                                  f"Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
                 elif self.opt_mode == "both":
-                    self.log_queue.put(
-                        f"  Step {self.step_count}: Energy = {energy:.6f} eV, Max Force = {max_force:.4f} eV/Å, Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
+                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                                  f"Max Force = {max_force:.4f} eV/Å, Max Stress = {max_stress:.4f} GPa, "
+                                  f"ΔE = {energy_change:.2e} eV")
                 else:
-                    self.log_queue.put(
-                        f"  Step {self.step_count}: Energy = {energy:.6f} eV, Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                                  f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+
+                #if avg_step_time > 0:
+                #    log_message += f" | Avg/step: {avg_step_time:.1f}s"
+                #    if estimated_remaining_time:
+                #        log_message += f" | Est. remaining: {self._format_time(estimated_remaining_time)}"
+                #        log_message += f" | Total est.: {self._format_time(total_estimated_time)}"
+                
+                #log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
+                
+                self.log_queue.put(log_message)
 
                 self.log_queue.put({
                     'type': 'opt_step',
@@ -1344,7 +1504,11 @@ class CellOptimizationLogger:
                     'max_force': max_force,
                     'max_stress': max_stress,
                     'energy_change': energy_change,
-                    'total_steps': None
+                    'total_steps': getattr(optimizer, 'max_steps', None),
+                    'avg_step_time': avg_step_time,
+                    'estimated_remaining_time': estimated_remaining_time,
+                    'total_estimated_time': total_estimated_time,
+                    'elapsed_time': elapsed_time
                 })
 
                 self.log_queue.put({
@@ -1356,6 +1520,38 @@ class CellOptimizationLogger:
 
             except Exception as e:
                 self.log_queue.put(f"  Error in optimization step {self.step_count}: {str(e)}")
+
+    def _calculate_time_estimates(self, optimizer):
+        """Calculate time estimates based on recent step times"""
+        if len(self.step_times) < 2:
+            return 0, None, None
+        
+        # Average time per step (excluding first step which is usually slower)
+        avg_step_time = np.mean(list(self.step_times)[1:]) if len(self.step_times) > 1 else self.step_times[0]
+        
+        # Get maximum steps from optimizer
+        max_steps = getattr(optimizer, 'max_steps', None)
+        if max_steps is None:
+            return avg_step_time, None, None
+        
+        remaining_steps = max_steps - self.step_count
+        estimated_remaining_time = remaining_steps * avg_step_time if remaining_steps > 0 else 0
+        
+        elapsed_time = time.time() - self.optimization_start_time
+        total_estimated_time = elapsed_time + estimated_remaining_time
+        
+        return avg_step_time, estimated_remaining_time, total_estimated_time
+
+    def _format_time(self, seconds):
+        """Format time in human-readable format"""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            minutes = seconds / 60
+            return f"{minutes:.1f}m"
+        else:
+            hours = seconds / 3600
+            return f"{hours:.1f}h"
 
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
@@ -1497,6 +1693,16 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                     log_queue.put(f"Optimization type: {opt_type}")
 
+                    atoms = pymatgen_to_ase(structure)
+                    atoms.calc = calculator
+                    
+                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
+                    
+                    if has_constraints:
+                        log_queue.put(f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are fixed")
+                        log_queue.put(f"  Fixed atoms will remain at their original positions during optimization")
+                    else:
+                        log_queue.put(f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
                     if optimization_params.get('cell_constraint'):
                         log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
 
@@ -1526,6 +1732,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             optimizer = LBFGS(optimization_object, logfile=None)
                         else:
                             optimizer = BFGS(optimization_object, logfile=None)
+                        optimizer.max_steps = optimization_params['max_steps']
                         optimizer.attach(lambda: logger(optimizer), interval=1)
                         if opt_type == "Cell only (fixed atoms)":
                             fmax_criterion = 0.1
@@ -1735,7 +1942,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+
 st.title("MACE Molecular Dynamic Batch Structure Calculator")
 
 if 'structures' not in st.session_state:
@@ -1792,7 +1999,24 @@ with st.sidebar:
         help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
     )
     device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
-
+    col_c1, col_c2 = st.columns([1,1])
+    with col_c1:
+        st.session_state.thread_count = st.number_input(
+            "CPU Threads", 
+            min_value=1, 
+            max_value=32, 
+            value=st.session_state.thread_count,
+            step=1,
+            help="Number of CPU threads for calculations"
+        )
+        
+    with col_c2:
+        if st.button("💾 Save Thread"):
+            with open(THREAD_COUNT_FILE, 'w') as f:
+                f.write(str(st.session_state.thread_count))
+            os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+            torch.set_num_threads(st.session_state.thread_count)
+            st.toast("✅ Thread count saved and applied.")
 css = '''
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
@@ -1827,10 +2051,28 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📁 Structure Upload & Setup", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence"])
+tab1, tab_st, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
+     "📈 Optimization Trajectories and Convergence", "🔬 MACE Models Info"])
 
+with tab5:
+    display_mace_models_info()    
+    st.markdown("---")
+    
+    create_citation_info()
+    
+    st.markdown("---")
+    
+    st.info("""
+    💡 **Tips for Model Selection:**
+    
+    • **For general use**: MACE-MP-0b3 (medium) - Latest and most stable
+    • **For highest accuracy**: MACE-MPA-0 (medium) - State-of-the-art performance  
+    • **For phonon calculations**: MACE-OMAT-0 (medium) - Excellent vibrational properties
+    • **For fast screening**: Any small model - Lower computational cost
+    • **For complex systems**: Large models - Higher accuracy for difficult cases
+    """)
+    
 with tab1:
     st.sidebar.header("Upload Structure Files")
     if not st.session_state.structures_locked:
@@ -1900,8 +2142,8 @@ with tab1:
     else:
         st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
         st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
-
-        with st.expander("📋 Locked Structures", expanded=True):
+        
+        with st.expander("📋 Locked Structures", expanded=False):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
                 col1, col2, col3 = st.columns([3, 2, 2])
                 with col1:
@@ -1932,6 +2174,7 @@ with tab1:
         if show_preview:
             st.header("2. Structure Preview & MACE Compatibility")
 
+
             structure_names = list(st.session_state.structures.keys())
 
             for i, (name, structure) in enumerate(st.session_state.structures.items()):
@@ -1957,7 +2200,11 @@ with tab1:
                             st.error(f"❌ Unsupported elements: {', '.join(unsupported)}")
 
                         st.write(f"**Elements:** {', '.join(elements)}")
-
+                        if hasattr(structure, 'constraints_info') and structure.constraints_info:
+                            st.write("📌 **Selective Dynamics:** Present (some atoms fixed)")
+                        else:
+                            st.write("🔄 **Selective Dynamics:** None (all atoms free to move)")
+                
         st.divider()
 
         st.header("Calculation Setup")
@@ -2164,7 +2411,7 @@ with tab1:
                     )
                 with col_press2:
                     hydrostatic_strain = st.checkbox(
-                        "Hydrostatic strain only",
+                        "Hydrostatic strain only (preserve cell shape)",
                         value=False,
                         help="Constrain cell to change hydrostatically (preserve shape)"
                     )
@@ -2301,7 +2548,13 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
-        col1, col2 = st.columns(2)  # Changed from 2 to 3 columns
+        
+        
+    else:
+        st.info("Upload structure files to begin")
+with tab_st:           
+    if st.session_state.structures_locked:
+        col1, col2 = st.columns(2) 
 
         st.markdown("""
             <style>
@@ -2410,7 +2663,7 @@ with tab1:
             st.rerun()
 
     else:
-        st.info("Upload structure files to begin")
+        st.info("**Upload** or **Lock** structure files to begin")
 with st.sidebar:
     st.info(f"**Selected Model:** {selected_model}")
     st.info(f"**Device:** {device}")
@@ -2493,7 +2746,11 @@ with tab2:
                         'current_energy': message['energy'],
                         'current_max_force': message['max_force'],
                         'current_max_stress': message.get('max_stress', 0.0),
-                        'current_energy_change': message.get('energy_change', 0)
+                        'current_energy_change': message.get('energy_change', 0),
+                        'avg_step_time': message.get('avg_step_time', 0),
+                        'estimated_remaining_time': message.get('estimated_remaining_time'),
+                        'total_estimated_time': message.get('total_estimated_time'),
+                        'elapsed_time': message.get('elapsed_time', 0)
                     })
             elif message.get('type') == 'opt_complete':
                 st.session_state.current_optimization_info = {}
@@ -2521,8 +2778,7 @@ with tab2:
             progress_data = st.session_state.current_structure_progress
             st.progress(progress_data['progress'], text=progress_data['text'])
 
-        if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get(
-                'is_optimizing'):
+        if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get('is_optimizing'):
             opt_info = st.session_state.current_optimization_info
 
             opt_progress = opt_info.get('current_step', 0) / opt_info['max_steps'] if opt_info['max_steps'] > 0 else 0
@@ -2537,6 +2793,17 @@ with tab2:
             if 'current_max_stress' in opt_info:
                 opt_text += f" | Max Stress: {opt_info['current_max_stress']:.4f} GPa"
 
+            # Add time estimation to display
+            if 'estimated_remaining_time' in opt_info and opt_info['estimated_remaining_time']:
+                remaining_time = opt_info['estimated_remaining_time']
+                if remaining_time < 60:
+                    time_str = f"{remaining_time:.0f}s"
+                elif remaining_time < 3600:
+                    time_str = f"{remaining_time/60:.1f}m"
+                else:
+                    time_str = f"{remaining_time/3600:.1f}h"
+                opt_text += f" | Est. remaining: {time_str}"
+
             if 'current_energy_change' in opt_info:
                 opt_text += f" | ΔE: {opt_info['current_energy_change']:.2e} eV"
 
@@ -2546,11 +2813,11 @@ with tab2:
                 opt_type = opt_info.get('optimization_type', 'both')
 
                 if opt_type == "Atoms only (fixed cell)":
-                    col1, col2, col3, col4 = st.columns(4)
-                elif opt_type == "Cell only (fixed atoms)":
-                    col1, col2, col3, col4 = st.columns(4)
-                else:
                     col1, col2, col3, col4, col5 = st.columns(5)
+                elif opt_type == "Cell only (fixed atoms)":
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                else:
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
                 with col1:
                     st.metric("Current Step", f"{opt_info['current_step']}/{opt_info['max_steps']}")
@@ -2564,7 +2831,7 @@ with tab2:
                         if 'current_max_force' in opt_info:
                             force_converged = opt_info['current_max_force'] < opt_info['fmax']
                             st.metric("Max Force (eV/Å)", f"{opt_info['current_max_force']:.4f}",
-                                      delta="✅ Converged" if force_converged else "❌ Not converged")
+                                    delta="✅ Converged" if force_converged else "❌ Not converged")
 
                 if opt_type in ["Cell only (fixed atoms)", "Both atoms and cell"]:
                     stress_col = col3 if opt_type == "Cell only (fixed atoms)" else col4
@@ -2573,15 +2840,55 @@ with tab2:
                             stress_threshold = opt_info.get('stress_threshold', 0.1)
                             stress_converged = opt_info['current_max_stress'] < stress_threshold
                             st.metric("Max Stress (GPa)", f"{opt_info['current_max_stress']:.4f}",
-                                      delta="✅ Converged" if stress_converged else "❌ Not converged")
+                                    delta="✅ Converged" if stress_converged else "❌ Not converged")
 
-                energy_col = col4 if opt_type == "Atoms only (fixed cell)" else (
+                # Time estimation metrics
+                time_col = col4 if opt_type == "Atoms only (fixed cell)" else (
                     col4 if opt_type == "Cell only (fixed atoms)" else col5)
-                with energy_col:
+                with time_col:
+                    if 'avg_step_time' in opt_info and opt_info['avg_step_time'] > 0:
+                        st.metric("Avg Time/Step", f"{opt_info['avg_step_time']:.1f}s")
+
+                remaining_time_col = col5 if opt_type in ["Atoms only (fixed cell)", "Cell only (fixed atoms)"] else col6
+                with remaining_time_col:
+                    if 'estimated_remaining_time' in opt_info and opt_info['estimated_remaining_time']:
+                        remaining_time = opt_info['estimated_remaining_time']
+                        if remaining_time < 60:
+                            time_display = f"{remaining_time:.0f}s"
+                        elif remaining_time < 3600:
+                            time_display = f"{remaining_time/60:.1f}m"
+                        else:
+                            time_display = f"{remaining_time/3600:.1f}h"
+                        
+                        # Color code based on remaining time
+                        if remaining_time < 300:  # < 5 minutes
+                            delta_color = "< less than, ✅ Soon"
+                        elif remaining_time < 1800:  # < 30 minutes
+                            delta_color = "less than, 🟡 Medium"
+                        else:
+                            delta_color = "less than, 🔴 Long"
+                        
+                        st.metric("Est. Remaining", time_display, delta=delta_color)
+
+                # Energy convergence metric (always last)
+                energy_col = col5 if opt_type == "Cell only (fixed atoms)" else (
+                    col5 if opt_type == "Atoms only (fixed cell)" else col6)
+                
+                if opt_type == "Both atoms and cell" and 'estimated_remaining_time' in opt_info:
                     if 'current_energy_change' in opt_info:
-                        energy_converged = opt_info['current_energy_change'] < opt_info['ediff']
-                        st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
-                                  delta="✅ Converged" if energy_converged else "❌ Not converged")
+                        st.markdown("---")
+                        col_energy = st.columns(1)[0]
+                        with col_energy:
+                            energy_converged = opt_info['current_energy_change'] < opt_info['ediff']
+                            st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
+                                    delta="✅ Converged" if energy_converged else "❌ Not converged")
+                            st.info('ΔE is not convergence criterion, it is shown only for control.')
+                else:
+                    with energy_col:
+                        if 'current_energy_change' in opt_info:
+                            energy_converged = opt_info['current_energy_change'] < opt_info['ediff']
+                            st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
+                                    delta="✅ Converged" if energy_converged else "❌ Not converged")
 
     if st.session_state.log_messages:
         recent_messages = st.session_state.log_messages[-20:]
@@ -3213,26 +3520,11 @@ with tab3:
                     data=csv_data,
                     file_name="mace_batch_results.csv",
                     mime="text/csv",
-                    key=f"download_csv_{len(successful_results)}"
+                    key=f"download_csv_{len(successful_results)}", type = 'primary'
                 )
 
                 optimized_structures = [r for r in successful_results if r['calc_type'] == 'Geometry Optimization']
-                if optimized_structures:
-                    st.subheader("Download Optimized Structures")
-
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                        for result in optimized_structures:
-                            poscar_content = create_wrapped_poscar_content(result['structure'])
-                            zip_file.writestr(f"optimized_{result['name']}", poscar_content)
-
-                    st.download_button(
-                        label="📦 Download Optimized Structures (ZIP)",
-                        data=zip_buffer.getvalue(),
-                        file_name="optimized_structures.zip",
-                        mime="application/zip",
-                        key=f"download_zip_{len(optimized_structures)}"
-                    )
+                
 
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
@@ -3261,7 +3553,6 @@ with tab3:
                     frequencies = np.array(phonon_data['frequencies'])
                     nkpts, nbands = frequencies.shape
 
-                    # Use enhanced k-point information if available
                     if phonon_data.get('enhanced_kpoints') and 'kpoint_distances' in phonon_data:
                         x_axis = phonon_data['kpoint_distances']
                         x_title = "Distance along k-path"
@@ -3273,7 +3564,6 @@ with tab3:
 
                     fig_disp = go.Figure()
 
-                    # Plot phonon branches
                     for band in range(nbands):
                         fig_disp.add_trace(go.Scatter(
                             x=x_axis,
@@ -3460,7 +3750,7 @@ with tab3:
                         label="📥 Download Phonon Data (JSON)",
                         data=phonon_json,
                         file_name=f"phonon_data_{selected_phonon['name'].replace('.', '_')}.json",
-                        mime="application/json"
+                        mime="application/json", type = 'primary'
                     )
                 if phonon_data.get('thermal_properties_dict'):
                     st.write("**Temperature-Dependent Analysis**")
@@ -4579,8 +4869,10 @@ with tab3:
                 stability = elastic_data['mechanical_stability']
                 if stability.get('mechanically_stable', False):
                     st.success("✅ Crystal is mechanically stable")
-
-                    with st.expander("Detailed Stability Criteria"):
+                else:
+                    st.error("❌ Crystal may be mechanically unstable")
+                    st.warning("Check the elastic tensor eigenvalues and Born stability criteria")
+                with st.expander("Detailed Stability Criteria"):
                         stability_details = []
                         for criterion, value in stability.items():
                             if criterion != 'mechanically_stable' and isinstance(value, bool):
@@ -4593,10 +4885,6 @@ with tab3:
                         if stability_details:
                             df_stability = pd.DataFrame(stability_details)
                             st.dataframe(df_stability, use_container_width=True, hide_index=True)
-                else:
-                    st.error("❌ Crystal may be mechanically unstable")
-                    st.warning("Check the elastic tensor eigenvalues and Born stability criteria")
-
                 if bulk_data['reuss'] and shear_data['reuss'] and shear_data['reuss'] != 0 and bulk_data['reuss'] != 0:
                     A_U = 5 * (shear_data['voigt'] / shear_data['reuss']) + (
                             bulk_data['voigt'] / bulk_data['reuss']) - 6
@@ -4627,7 +4915,7 @@ with tab3:
                         label="📥 Download Elastic Data (JSON)",
                         data=elastic_json,
                         file_name=f"elastic_data_{selected_elastic['name'].replace('.', '_')}.json",
-                        mime="application/json"
+                        mime="application/json", type='primary'
                     )
             else:
                 st.info(
@@ -4700,7 +4988,7 @@ with tab3:
                             label="📥 Download Lattice Parameters (CSV)",
                             data=lattice_csv,
                             file_name="lattice_parameters_comparison.csv",
-                            mime="text/csv"
+                            mime="text/csv", type = 'primary'
                         )
 
                     if len(lattice_data) > 1:
@@ -4798,7 +5086,8 @@ with tab3:
                             col_struct, col_btn = st.columns([3, 1])
 
                             with col_struct:
-                                convergence_icon = "✅" if "CONVERGED" in result.get('convergence_status', '') else "⚠️"
+                                convergence_status = result.get('convergence_status', '')
+                                convergence_icon = "✅" if convergence_status and "CONVERGED" in convergence_status else "⚠️"
                                 st.write(
                                     f"{convergence_icon} **{result['name']}** - {result.get('convergence_status', 'Unknown')}")
 
@@ -5196,7 +5485,7 @@ with tab4:
                             file_name=filename,
                             mime="text/plain",
                             key=f"download_{structure_name}",
-                            help="Extended XYZ format with lattice parameters, energies, and forces"
+                            help="Extended XYZ format with lattice parameters, energies, and forces", type = 'primary'
                         )
 
                     with col3:
@@ -5266,35 +5555,35 @@ with tab4:
                     data=zip_buffer.getvalue(),
                     file_name="optimization_trajectories.zip",
                     mime="application/zip",
-                    help="ZIP file containing all optimization trajectories in XYZ format"
+                    help="ZIP file containing all optimization trajectories in XYZ format", type = 'primary'
                 )
 
-        with st.expander("📖 XYZ File Format Information"):
-            st.markdown("""
-            **Extended XYZ Format with Lattice Parameters:**
-
-            Each XYZ file contains all optimization steps with:
-            - **Line 1**: Number of atoms
-            - **Line 2**: Comment line with:
-              - Step number
-              - Energy (eV)
-              - Maximum force (eV/Å)
-              - Lattice parameters (a, b, c, α, β, γ)
-              - Properties specification
-            - **Lines 3+**: Atomic coordinates and forces
-              - Format: `Symbol X Y Z Fx Fy Fz`
-
-            **Example:**
-            ```
-            8
-            Step 1 | Energy=-123.456789 eV | Max_Force=0.1234 eV/A | Lattice="5.123456 5.123456 5.123456 90.00 90.00 90.00" | Properties=species:S:1:pos:R:3:forces:R:3
-            Ti  0.000000  0.000000  0.000000  0.001234 -0.002345  0.000123
-            O   1.234567  1.234567  1.234567 -0.001234  0.002345 -0.000123
-            ...
-            ```
-
-            This format can be read by visualization software like OVITO, VMD, or ASE for trajectory analysis.
-            """)
+        #with st.expander("📖 XYZ File Format Information"):
+        #    st.markdown("""
+        #    **Extended XYZ Format with Lattice Parameters:**#
+        #
+        #    Each XYZ file contains all optimization steps with:
+        #    - **Line 1**: Number of atoms
+        #    - **Line 2**: Comment line with:
+        #      - Step number
+        #      - Energy (eV)
+        #      - Maximum force (eV/Å)
+        #      - Lattice parameters (a, b, c, α, β, γ)
+        #      - Properties specification
+        #    - **Lines 3+**: Atomic coordinates and forces
+        #      - Format: `Symbol X Y Z Fx Fy Fz`
+        #
+        #    **Example:**
+        #    ```
+        #    8
+        #    Step 1 | Energy=-123.456789 eV | Max_Force=0.1234 eV/A | Lattice="5.123456 5.123456 5.123456 90.00 90.00 90.00" | Properties=species:S:1:pos:R:3:forces:R:3
+        #    Ti  0.000000  0.000000  0.000000  0.001234 -0.002345  0.000123
+        #    O   1.234567  1.234567  1.234567 -0.001234  0.002345 -0.000123
+        #    ...
+        #    ```
+        #
+        #    This format can be read by visualization software like OVITO, VMD, or ASE for trajectory analysis.
+        #    """)
 
     else:
         st.info("🔄 Optimization trajectories will appear here after geometry optimization calculations complete.")
