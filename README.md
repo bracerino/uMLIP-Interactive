@@ -1,8 +1,8 @@
 # mace-md-gui
 
-Run basic molecular dynamics/static simulations (single-point energy, geometry optimization, elastic properties, phonons) in an interactive interface for multiple input structure files (POSCAR, CIF, LMP, XYZ with lattice) with a machine learning MACE MP interatomic potential.
-**Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.
-If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features. 
+Run basic molecular dynamics/static simulations (single-point energy, geometry optimization, elastic properties, phonons) in an interactive interface for multiple input structure files (POSCAR, CIF, LMP, XYZ with lattice) with a machine learning MACE MP interatomic potential.  
+**Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.  
+If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**
 
 ---
