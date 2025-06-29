@@ -4,7 +4,12 @@ Run basic molecular dynamics/static simulations (single-point energy, geometry o
 **Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.  
 If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**
-
+Supported MACE MLIPs:  
+**Anorganic**:  
+- MP-0, MP-0b3, MPA, OMAT,  
+- MATPES-PBE-0, MATPES-r2SCAN-0  
+**Organic**:  
+- MACE-OFF23  
 ---
 ![MACE GUI illustration](images/Mace-1.png)
 
