@@ -184,6 +184,51 @@ MACE_MODELS_INFO = {
         "license": "ASL",
         "color": "#FFA07A",  # Light Salmon - Advanced
         "recommended": False
+    },
+    "MACE-OFF23 (small) - Organic": {
+        "official_name": "MACE-OFF23",
+        "size": "small",
+        "elements": 10,
+        "element_list": "H, C, N, O, F, P, S, Cl, Br, I",
+        "training_dataset": "SPICE",
+        "level_of_theory": "DFT (ωB97M-D3)",
+        "target_system": "Organic molecules",
+        "version_required": ">=v0.3.6",
+        "description": "Fast organic force field for drug-like molecules",
+        "features": ["Fast inference", "Organic chemistry", "Drug-like molecules"],
+        "license": "ASL",
+        "recommended": False,
+        "model_type": "MACE-OFF"
+    },
+    "MACE-OFF23 (medium) - Organic": {
+        "official_name": "MACE-OFF23",
+        "size": "medium",
+        "elements": 10,
+        "element_list": "H, C, N, O, F, P, S, Cl, Br, I",
+        "training_dataset": "SPICE",
+        "level_of_theory": "DFT (ωB97M-D3)",
+        "target_system": "Organic molecules",
+        "version_required": ">=v0.3.6",
+        "description": "Balanced organic force field for biomolecular simulations",
+        "features": ["Balanced accuracy", "Biomolecules", "Molecular dynamics"],
+        "license": "ASL",
+        "recommended": True,
+        "model_type": "MACE-OFF"
+    },
+    "MACE-OFF23 (large) - Organic": {
+        "official_name": "MACE-OFF23",
+        "size": "large",
+        "elements": 10,
+        "element_list": "H, C, N, O, F, P, S, Cl, Br, I",
+        "training_dataset": "SPICE",
+        "level_of_theory": "DFT (ωB97M-D3)",
+        "target_system": "Organic molecules",
+        "version_required": ">=v0.3.6",
+        "description": "High-accuracy organic force field for demanding applications",
+        "features": ["High accuracy", "Complex organics", "Torsion barriers"],
+        "license": "ASL",
+        "recommended": False,
+        "model_type": "MACE-OFF"
     }
 }
 
@@ -270,12 +315,3 @@ def display_models_info_tab():
     
     st.markdown("---")
     
-    st.info("""
-    💡 **Tips for Model Selection:**
-    
-    • **For general use**: MACE-MP-0b3 (medium) - Latest and most stable
-    • **For highest accuracy**: MACE-MPA-0 (medium) - State-of-the-art performance  
-    • **For phonon calculations**: MACE-OMAT-0 (medium) - Excellent vibrational properties
-    • **For fast screening**: Any small model - Lower computational cost
-    • **For complex systems**: Large models - Higher accuracy for difficult cases
-    """)
