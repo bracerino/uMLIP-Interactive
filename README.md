@@ -8,7 +8,8 @@ Supported MACE MLIPs:
 **Anorganic**:  
 - MP-0, MP-0b3, MPA, OMAT,  
 - MATPES-PBE-0, MATPES-r2SCAN-0  
-**Organic**:  
+
+**Organic**:
 - MACE-OFF23  
 ---
 ![MACE GUI illustration](images/Mace-1.png)
