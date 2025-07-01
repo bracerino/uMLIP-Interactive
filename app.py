@@ -1637,8 +1637,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         calculator = None
 
-        is_mace_off = any("OFF" in key for key,
-                          value in MACE_MODELS.items() if value == model_size)
+        is_mace_off = "OFF" in selected_model
 
         if is_mace_off and not MACE_OFF_AVAILABLE:
             log_queue.put(
