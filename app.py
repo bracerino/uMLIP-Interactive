@@ -678,7 +678,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put(f"  Generating displacements (distance={displacement_distance} Å)...")
         phonon.generate_displacements(distance=displacement_distance)
 
-        supercells = phonon.get_supercells_with_displacements()
+        supercells = phonon.supercells_with_displacements
         log_queue.put(f"  Generated {len(supercells)} displaced supercells")
 
         log_queue.put("  Calculating forces for displaced supercells...")
