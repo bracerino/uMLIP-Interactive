@@ -1,142 +1,635 @@
-# Function for generating Python script that can be run separately with the settings in GUI
+"""
+Python Script Generator for MACE Calculations
+This module generates standalone Python scripts for MACE molecular dynamics calculations.
+"""
+
+import json
+from datetime import datetime
+
 
 def generate_python_script(structures, calc_type, model_size, device, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy):
-    """Generate a standalone Python script with current settings"""
+    """
+    Generate a complete Python script for MACE calculations with all parameters properly configured.
+    """
 
-    structure_files = list(structures.keys())
+    structure_creation_code = _generate_structure_creation_code(structures)
+    calculator_setup_code = _generate_calculator_setup_code(model_size, device)
 
-    script = f'''#!/usr/bin/env python3
-"""
-MACE Batch Structure Calculator - Standalone Script
-Generated from Streamlit GUI settings
+    if calc_type == "Energy Only":
+        calculation_code = _generate_energy_only_code(calc_formation_energy)
+    elif calc_type == "Geometry Optimization":
+        calculation_code = _generate_optimization_code(
+            optimization_params, calc_formation_energy)
+    elif calc_type == "Phonon Calculation":
+        calculation_code = _generate_phonon_code(
+            phonon_params, optimization_params, calc_formation_energy)
+    elif calc_type == "Elastic Properties":
+        calculation_code = _generate_elastic_code(
+            elastic_params, optimization_params, calc_formation_energy)
+    else:
+        calculation_code = _generate_energy_only_code(calc_formation_energy)
 
-Usage: python mace_calculation_script.py
-Make sure POSCAR files are in the same directory as this script.
-"""
+    script = f"""#!/usr/bin/env python3
+\"\"\"
+MACE Calculation Script
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Calculation Type: {calc_type}
+Model: {model_size}
+Device: {device}
+\"\"\"
 
 import os
-import json
+import time
 import numpy as np
+import json
+import pandas as pd
+from datetime import datetime
 from pathlib import Path
+
+# Set threading before other imports
+os.environ['OMP_NUM_THREADS'] = '4'
+
+import torch
+torch.set_num_threads(4)
+
+# ASE imports
 from ase import Atoms
 from ase.io import read, write
 from ase.optimize import BFGS, LBFGS
-from pymatgen.core import Structure
-from pymatgen.io.cif import CifWriter
+from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
-# Import MACE
+# PyMatGen imports
+from pymatgen.core import Structure
+from pymatgen.io.ase import AseAtomsAdaptor
+
+# MACE imports
 try:
-    from mace.calculators import mace_mp
+    from mace.calculators import mace_mp, mace_off
     MACE_AVAILABLE = True
-    print("✅ MACE imported successfully")
 except ImportError:
     try:
         from mace.calculators import MACECalculator
         MACE_AVAILABLE = True
-        print("✅ MACE imported successfully (MACECalculator)")
     except ImportError:
-        print("❌ MACE not available. Install with: pip install mace-torch")
+        MACE_AVAILABLE = False
+        print("❌ MACE not available. Please install with: pip install mace-torch")
         exit(1)
 
-# Import additional modules for advanced calculations
-try:
-    from phonopy import Phonopy
-    from phonopy.structure.atoms import PhonopyAtoms
-    from pymatgen.io.ase import AseAtomsAdaptor
+{_generate_utility_functions()}
+
+def main():
+    start_time = time.time()
+    print("🚀 Starting MACE calculation script...")
+    print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
+    print(f"🔬 Calculation type: {calc_type}")
+    print(f"🤖 Model: {model_size}")
+    print(f"💻 Device: {device}")
+    print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
+
+    # Create output directories
+    Path("optimized_structures").mkdir(exist_ok=True)
+    Path("results").mkdir(exist_ok=True)
+
+    # Create structure files
+    print("\\n📁 Creating structure files...")
+{structure_creation_code}
+
+    # Setup calculator
+    print("\\n🔧 Setting up MACE calculator...")
+{calculator_setup_code}
+
+    # Run calculations
+    print("\\n⚡ Starting calculations...")
+    calc_start_time = time.time()
+{calculation_code}
+
+    total_time = time.time() - start_time
+    calc_time = time.time() - calc_start_time
+    print(f"\\n✅ All calculations completed!")
+    print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
+    print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
+    print("📊 Check the results/ directory for output files")
+
+if __name__ == "__main__":
+    main()
+"""
+
+    return script
+
+
+def _generate_structure_creation_code(structures):
+    """Generate code to create POSCAR files from structures."""
+    code_lines = []
+
+    for name, structure_data in structures.items():
+        # Always use .vasp extension for consistency (without using os.path)
+        if '.' in name:
+            # Remove extension by splitting on last dot
+            base_name = name.rsplit('.', 1)[0]
+        else:
+            base_name = name
+        vasp_filename = f"{base_name}.vasp"
+
+        # Check if structure_data is already a pymatgen Structure
+        if hasattr(structure_data, 'to'):
+            # Already a pymatgen Structure object
+            poscar_content = structure_data.to(fmt="poscar")
+            poscar_content_escaped = repr(poscar_content)
+
+            code_lines.append(f"""    with open("{vasp_filename}", "w") as f:
+        f.write({poscar_content_escaped})
+    print(f"✅ Created {{'{vasp_filename}'}}")""")
+        else:
+            # Assume it's a file path or needs to be converted
+            code_lines.append(f"""    try:
+        # Try to read the structure file
+        from pathlib import Path
+        if Path("{structure_data}").exists():
+            # Read from file using ASE, then convert to pymatgen
+            from ase.io import read
+            from pymatgen.io.ase import AseAtomsAdaptor
+            
+            ase_atoms = read("{structure_data}")
+            adaptor = AseAtomsAdaptor()
+            pmg_structure = adaptor.get_structure(ase_atoms)
+            poscar_content = pmg_structure.to(fmt="poscar")
+        else:
+            # Assume it's already POSCAR content
+            poscar_content = "{structure_data}"
+        
+        with open("{vasp_filename}", "w") as f:
+            f.write(poscar_content)
+        print(f"✅ Created {{'{vasp_filename}'}}")
+    except Exception as e:
+        print(f"❌ Failed to create {{'{vasp_filename}'}}: {{e}}")""")
+
+    return "\n".join(code_lines)
+
+
+def _generate_calculator_setup_code(model_size, device):
+    """Generate calculator setup code."""
+    is_mace_off = "OFF" in model_size
+
+    if is_mace_off:
+        calc_code = f"""    device = "{device}"
+    print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
-        # Try new import first
-        from phonopy import physical_units
-        units_phonopy = physical_units
-    except ImportError:
-        try:
-            # Alternative new import
-            import phonopy.physical_units as units_phonopy
-        except ImportError:
-            # Fallback to deprecated import
-            import phonopy.units as units_phonopy
-    PHONOPY_AVAILABLE = True
-except ImportError:
-    PHONOPY_AVAILABLE = False
-    print("⚠️ Phonopy not available for phonon calculations")
-
-try:
-    from ase.eos import EquationOfState
-    from ase.build import bulk
-    ELASTIC_AVAILABLE = True
-except ImportError:
+        calculator = mace_off(
+            model="{model_size}", default_dtype="float64", device=device)
+        print(f"✅ MACE-OFF calculator initialized successfully on {{device}}")
+    except Exception as e:
+        print(f"❌ MACE-OFF initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = mace_off(
+                    model="{model_size}", default_dtype="float64", device="cpu")
+                print("✅ MACE-OFF calculator initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e"""
+    else:
+        calc_code = f"""    device = "{device}"
+    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
     try:
-        # Alternative import path
-        from ase.utils.eos import EquationOfState
-        from ase.build import bulk
-        ELASTIC_AVAILABLE = True
-    except ImportError:
-        ELASTIC_AVAILABLE = False
-        print("⚠️ Elastic calculations not available - install latest ASE version")
+        calculator = mace_mp(
+            model="{model_size}", dispersion=False, default_dtype="float64", device=device)
+        print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
+    except Exception as e:
+        print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = mace_mp(
+                    model="{model_size}", dispersion=False, default_dtype="float64", device="cpu")
+                print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e"""
+
+    return calc_code
 
 
-class CalculationLogger:
-    def __init__(self, log_file="calculation.log"):
-        self.log_file = log_file
-        # Create directory if it doesn't exist
-        log_dir = os.path.dirname(log_file)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
-        self.clear_log()
+def _generate_energy_only_code(calc_formation_energy):
+    """Generate code for energy-only calculations."""
+    code = '''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    results = []
+    print(f"📊 Found {len(structure_files)} structure files")
 
-    def clear_log(self):
-        with open(self.log_file, 'w') as f:
-            f.write("")
+    reference_energies = {}'''
 
-    def log(self, message):
-        print(message)
-        with open(self.log_file, 'a') as f:
-            f.write(message + "\\n")
+    if calc_formation_energy:
+        code += '''
+    print("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for filename in structure_files:
+        atoms = read(filename)
+        for symbol in atoms.get_chemical_symbols():
+            all_elements.add(symbol)
 
+    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
+    
+    for i, element in enumerate(sorted(all_elements)):
+        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
+        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
+        atom.calc = calculator
+        reference_energies[element] = atom.get_potential_energy()
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
 
-def pymatgen_to_ase(structure):
-    atoms = Atoms(
-        symbols=[str(site.specie) for site in structure],
-        positions=structure.cart_coords,
-        cell=structure.lattice.matrix,
-        pbc=True
-    )
-    return atoms
+    code += '''
 
-
-def create_directories():
-    dirs = ['optimized_structures', 'trajectories', 'results', 'phonon_data', 'elastic_data']
-    for dir_name in dirs:
-        Path(dir_name).mkdir(exist_ok=True)
-
-
-def calculate_atomic_reference_energies(elements, calculator, logger):
-    reference_energies = {{}}
-    logger.log("Calculating atomic reference energies...")
-
-    for element in elements:
+    for i, filename in enumerate(structure_files):
+        print(f"\\n📊 Processing structure {i+1}/{len(structure_files)}: {filename}")
+        structure_start_time = time.time()
         try:
-            logger.log(f"  Calculating reference energy for {{element}}...")
-            atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
-            atom.calc = calculator
-            energy = atom.get_potential_energy()
-            reference_energies[element] = energy
-            logger.log(f"  ✅ {{element}}: {{energy:.6f}} eV")
+            atoms = read(filename)
+            atoms.calc = calculator
+            
+            print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
+            energy = atoms.get_potential_energy()
+
+            result = {
+                "structure": filename,
+                "energy_eV": energy,
+                "calculation_type": "energy_only",
+                "num_atoms": len(atoms)
+            }'''
+
+    if calc_formation_energy:
+        code += '''
+
+            formation_energy = calculate_formation_energy(energy, atoms, reference_energies)
+            result["formation_energy_eV_per_atom"] = formation_energy
+
+            print(f"  ✅ Energy: {energy:.6f} eV")
+            if formation_energy is not None:
+                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
+            else:
+                print(f"  ⚠️ Could not calculate formation energy")'''
+    else:
+        code += '''
+            print(f"  ✅ Energy: {energy:.6f} eV")'''
+
+    code += '''
+            structure_time = time.time() - structure_start_time
+            print(f"  ⏱️ Structure time: {structure_time:.1f}s")
+
+
+            results.append(result)
+            
+            # Save results after each structure completes
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/energy_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+
         except Exception as e:
-            logger.log(f"  ❌ Failed to calculate reference energy for {{element}}: {{str(e)}}")
-            reference_energies[element] = None
+            print(f"  ❌ Failed: {e}")
+            results.append({"structure": filename, "error": str(e)})
+            
+            # Save results even for failed structures
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/energy_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
 
-    return reference_energies
+    # Final summary save
+    df_results = pd.DataFrame(results)
+    df_results.to_csv("results/energy_results.csv", index=False)
+
+    print(f"\\n💾 Saved results to results/energy_results.csv")
+
+    with open("results/energy_summary.txt", "w") as f:
+        f.write("MACE Energy Calculation Results\\n")
+        f.write("=" * 40 + "\\n\\n")
+        for result in results:
+            if "error" not in result:
+                f.write(f"Structure: {result['structure']}\\n")
+                f.write(f"Energy: {result['energy_eV']:.6f} eV\\n")
+                f.write(f"Atoms: {result['num_atoms']}\\n")'''
+
+    if calc_formation_energy:
+        code += '''
+                if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
+                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")'''
+
+    code += '''
+                f.write("\\n")
+            else:
+                f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
+    
+    print(f"💾 Saved summary to results/energy_summary.txt")
+'''
+    return code
 
 
-def calculate_formation_energy(structure_energy, structure, reference_energies):
+def _generate_elastic_code(elastic_params, optimization_params, calc_formation_energy):
+    """Generate code for elastic property calculations."""
+    strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
+
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    results = []
+    print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
+
+    strain_magnitude = {strain_magnitude}
+    pre_opt_steps = {optimization_params.get('max_steps', 100)}
+    print(f"⚙️ Using strain magnitude: {{strain_magnitude*100:.1f}}%")
+
+    reference_energies = {{}}'''
+
+    if calc_formation_energy:
+        code += '''
+    print("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for filename in structure_files:
+        atoms = read(filename)
+        for symbol in atoms.get_chemical_symbols():
+            all_elements.add(symbol)
+
+    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
+    
+    for i, element in enumerate(sorted(all_elements)):
+        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
+        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
+        atom.calc = calculator
+        reference_energies[element] = atom.get_potential_energy()
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
+
+    code += '''
+
+    for i, filename in enumerate(structure_files):
+        print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
+        structure_start_time = time.time()
+        try:
+            atoms = read(filename)
+            atoms.calc = calculator
+            print(f"  📊 Structure has {len(atoms)} atoms")
+
+            print("  🔧 Running pre-optimization for stability...")
+            temp_atoms = atoms.copy()
+            temp_atoms.calc = calculator
+            temp_optimizer = LBFGS(temp_atoms, logfile=None)
+            temp_optimizer.run(fmax=0.015, steps=pre_opt_steps)
+            atoms = temp_atoms
+            print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
+
+            print("  ⚖️ Calculating equilibrium energy and stress...")
+            E0 = atoms.get_potential_energy()
+            stress0 = atoms.get_stress(voigt=True)
+
+            print(f"    Equilibrium energy: {E0:.6f} eV")
+            print(f"    Equilibrium stress: {np.max(np.abs(stress0)):.6f} GPa")
+
+            C = np.zeros((6, 6))
+            original_cell = atoms.get_cell().copy()
+            volume = atoms.get_volume()
+
+            print(f"  📏 Applying strains and calculating elastic constants...")
+
+            strain_tensors = []
+
+            for idx in range(3):
+                strain = np.zeros((3, 3))
+                strain[idx, idx] = strain_magnitude
+                strain_tensors.append(strain)
+
+            shear_pairs = [(1, 2), (0, 2), (0, 1)]
+            for i, j in shear_pairs:
+                strain = np.zeros((3, 3))
+                strain[i, j] = strain[j, i] = strain_magnitude / 2
+                strain_tensors.append(strain)
+
+            for strain_idx, strain_tensor in enumerate(strain_tensors):
+                print(f"    📐 Strain {strain_idx + 1}/6...")
+
+                deformed_cell = original_cell @ (np.eye(3) + strain_tensor)
+                atoms.set_cell(deformed_cell, scale_atoms=True)
+                stress_pos = atoms.get_stress(voigt=True)
+
+                deformed_cell = original_cell @ (np.eye(3) - strain_tensor)
+                atoms.set_cell(deformed_cell, scale_atoms=True)
+                stress_neg = atoms.get_stress(voigt=True)
+
+                stress_derivative = (stress_pos - stress_neg) / (2 * strain_magnitude)
+                C[strain_idx, :] = stress_derivative
+
+                atoms.set_cell(original_cell, scale_atoms=True)
+
+            eV_to_GPa = 160.2176
+            C_GPa = C * eV_to_GPa
+
+            print("  📊 Calculating elastic moduli...")
+
+            K_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] +
+                       2*(C_GPa[0, 1] + C_GPa[0, 2] + C_GPa[1, 2])) / 9
+            G_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] - C_GPa[0, 1] - C_GPa[0, 2] - C_GPa[1, 2] +
+                       3*(C_GPa[3, 3] + C_GPa[4, 4] + C_GPa[5, 5])) / 15
+
+            try:
+                S_GPa = np.linalg.inv(C_GPa)
+                K_reuss = 1 / (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2] +
+                               2*(S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]))
+                G_reuss = 15 / (4*(S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2]) - 4*(S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]) +
+                               3*(S_GPa[3, 3] + S_GPa[4, 4] + S_GPa[5, 5]))
+                K_hill = (K_voigt + K_reuss) / 2
+                G_hill = (G_voigt + G_reuss) / 2
+                reuss_available = True
+            except np.linalg.LinAlgError:
+                print("    ⚠️ Elastic tensor is singular - using Voigt averages only")
+                K_reuss = G_reuss = K_hill = G_hill = None
+                reuss_available = False
+
+            K = K_hill if K_hill is not None else K_voigt
+            G = G_hill if G_hill is not None else G_voigt
+
+            E = (9 * K * G) / (3 * K + G)
+            nu = (3 * K - 2 * G) / (2 * (3 * K + G))
+
+            total_mass_amu = np.sum(atoms.get_masses())
+            density = (total_mass_amu * 1.66053906660) / volume
+            density_kg_m3 = density * 1000
+
+            v_l = np.sqrt((K + 4*G/3) * 1e9 / density_kg_m3)
+            v_t = np.sqrt(G * 1e9 / density_kg_m3)
+            v_avg = ((1/v_l**3 + 2/v_t**3) / 3)**(-1/3)
+
+            h = 6.626e-34
+            kB = 1.381e-23
+            N_atoms = len(atoms)
+            total_mass_kg = total_mass_amu * 1.66054e-27
+            theta_D = (h / kB) * v_avg * (3 * N_atoms * density_kg_m3 / (4 * np.pi * total_mass_kg))**(1/3)
+
+            eigenvals = np.linalg.eigvals(C_GPa)
+            mechanically_stable = bool(np.all(eigenvals > 0) and np.linalg.det(C_GPa) > 0)
+
+            # Create result dictionary with flat structure to avoid unhashable type error
+            result = {{
+                "structure": filename,
+                "energy_eV": float(E0),
+                "calculation_type": "elastic_properties",
+                "elastic_tensor_GPa": C_GPa.tolist(),
+                "bulk_modulus_voigt_GPa": float(K_voigt),
+                "bulk_modulus_reuss_GPa": float(K_reuss) if reuss_available else None,
+                "bulk_modulus_hill_GPa": float(K_hill) if reuss_available else None,
+                "shear_modulus_voigt_GPa": float(G_voigt),
+                "shear_modulus_reuss_GPa": float(G_reuss) if reuss_available else None,
+                "shear_modulus_hill_GPa": float(G_hill) if reuss_available else None,
+                "youngs_modulus_GPa": float(E),
+                "poisson_ratio": float(nu),
+                "density_g_cm3": float(density),
+                "longitudinal_velocity_ms": float(v_l),
+                "transverse_velocity_ms": float(v_t),
+                "average_velocity_ms": float(v_avg),
+                "debye_temperature_K": float(theta_D),
+                "mechanically_stable": bool(mechanically_stable),
+                "strain_magnitude": float(strain_magnitude),
+                "num_atoms": int(len(atoms))
+            }}'''
+
+    if calc_formation_energy:
+        code += '''
+
+            formation_energy = calculate_formation_energy(E0, atoms, reference_energies)
+            result["formation_energy_eV_per_atom"] = formation_energy'''
+
+    code += '''
+
+            # Create separate CSV data for detailed output
+            elastic_data_dict = {{
+                "structure_name": [filename],
+                "energy_eV": [float(E0)],
+                "C11_GPa": [float(C_GPa[0, 0])],
+                "C22_GPa": [float(C_GPa[1, 1])],
+                "C33_GPa": [float(C_GPa[2, 2])],
+                "C44_GPa": [float(C_GPa[3, 3])],
+                "C55_GPa": [float(C_GPa[4, 4])],
+                "C66_GPa": [float(C_GPa[5, 5])],
+                "C12_GPa": [float(C_GPa[0, 1])],
+                "C13_GPa": [float(C_GPa[0, 2])],
+                "C23_GPa": [float(C_GPa[1, 2])],
+                "bulk_modulus_voigt_GPa": [float(K_voigt)],
+                "bulk_modulus_reuss_GPa": [float(K_reuss) if reuss_available else None],
+                "bulk_modulus_hill_GPa": [float(K_hill) if reuss_available else None],
+                "shear_modulus_voigt_GPa": [float(G_voigt)],
+                "shear_modulus_reuss_GPa": [float(G_reuss) if reuss_available else None],
+                "shear_modulus_hill_GPa": [float(G_hill) if reuss_available else None],
+                "youngs_modulus_GPa": [float(E)],
+                "poisson_ratio": [float(nu)],
+                "density_g_cm3": [float(density)],
+                "longitudinal_velocity_ms": [float(v_l)],
+                "transverse_velocity_ms": [float(v_t)],
+                "average_velocity_ms": [float(v_avg)],
+                "debye_temperature_K": [float(theta_D)],
+                "mechanically_stable": [bool(mechanically_stable)],
+                "strain_magnitude": [float(strain_magnitude)],
+                "num_atoms": [int(len(atoms))]
+            }}'''
+
+    if calc_formation_energy:
+        code += '''
+            if formation_energy is not None:
+                elastic_data_dict["formation_energy_eV_per_atom"] = [formation_energy]'''
+
+    code += '''
+
+            df_elastic = pd.DataFrame(elastic_data_dict)
+            df_elastic.to_csv(f"results/elastic_data_{filename.replace('.', '_')}.csv", index=False)
+
+            elastic_tensor_df = pd.DataFrame(C_GPa,
+                                           columns=['C11', 'C22', 'C33', 'C23', 'C13', 'C12'],
+                                           index=['C11', 'C22', 'C33', 'C23', 'C13', 'C12'])
+            elastic_tensor_df.to_csv(f"results/elastic_tensor_{filename.replace('.', '_')}.csv")
+
+            structure_time = time.time() - structure_start_time
+            print(f"  ✅ Elastic calculation completed in {structure_time:.1f}s")
+            print(f"  ✅ Energy: {E0:.6f} eV")
+            print(f"  ✅ Bulk modulus: {K:.1f} GPa")
+            print(f"  ✅ Shear modulus: {G:.1f} GPa")
+            print(f"  ✅ Young's modulus: {E:.1f} GPa")
+            print(f"  ✅ Poisson's ratio: {nu:.3f}")
+            print(f"  ✅ Mechanically stable: {mechanically_stable}")'''
+
+    if calc_formation_energy:
+        code += '''
+            if formation_energy is not None:
+                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")'''
+
+    code += '''
+
+            results.append(result)
+            
+            # Save results after each structure completes
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/elastic_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+
+        except Exception as e:
+            print(f"  ❌ Elastic calculation failed: {e}")
+            results.append({{"structure": filename, "error": str(e)}})
+
+            # Save results even for failed structures
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/elastic_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+
+    # Final summary save
+    df_results = pd.DataFrame(results)
+    df_results.to_csv("results/elastic_results.csv", index=False)
+
+    print(f"\\n💾 Saved results to results/elastic_results.csv")
+
+    with open("results/elastic_summary.txt", "w") as f:
+        f.write("MACE Elastic Properties Results\\n")
+        f.write("=" * 40 + "\\n\\n")
+        for result in results:
+            if "error" not in result:
+                f.write(f"Structure: {result['structure']}\\n")
+                f.write(f"Energy: {result['energy_eV']:.6f} eV\\n")
+                bulk_mod = result.get('bulk_modulus_hill_GPa') or result.get('bulk_modulus_voigt_GPa')
+                shear_mod = result.get('shear_modulus_hill_GPa') or result.get('shear_modulus_voigt_GPa')
+                f.write(f"Bulk Modulus: {bulk_mod:.1f} GPa\\n")
+                f.write(f"Shear Modulus: {shear_mod:.1f} GPa\\n")
+                f.write(f"Young's Modulus: {result['youngs_modulus_GPa']:.1f} GPa\\n")
+                f.write(f"Poisson's Ratio: {result['poisson_ratio']:.3f}\\n")
+                f.write(f"Density: {result['density_g_cm3']:.3f} g/cm³\\n")
+                f.write(f"Debye Temperature: {result['debye_temperature_K']:.1f} K\\n")
+                f.write(f"Mechanically Stable: {result['mechanically_stable']}\\n")
+                f.write(f"Atoms: {result['num_atoms']}\\n")
+                if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
+                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")
+                f.write("\\n")
+            else:
+                f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
+    
+    print(f"💾 Saved summary to results/elastic_summary.txt")'''
+
+    return code
+
+
+def _generate_utility_functions():
+    """Generate utility functions needed by the script."""
+    return '''
+
+def wrap_positions_in_cell(atoms):
+    """Wrap atomic positions within the unit cell."""
+    wrapped_atoms = atoms.copy()
+    fractional_coords = wrapped_atoms.get_scaled_positions()
+    wrapped_fractional = fractional_coords % 1.0
+    wrapped_atoms.set_scaled_positions(wrapped_fractional)
+    return wrapped_atoms
+
+
+def calculate_formation_energy(structure_energy, atoms, reference_energies):
+    """Calculate formation energy per atom."""
     if structure_energy is None:
         return None
 
-    element_counts = {{}}
-    for site in structure:
-        element = site.specie.symbol
-        element_counts[element] = element_counts.get(element, 0) + 1
+    element_counts = {}
+    for symbol in atoms.get_chemical_symbols():
+        element_counts[symbol] = element_counts.get(symbol, 0) + 1
 
     total_reference_energy = 0
     for element, count in element_counts.items():
@@ -146,519 +639,628 @@ def calculate_formation_energy(structure_energy, structure, reference_energies):
 
     total_atoms = sum(element_counts.values())
     formation_energy_per_atom = (structure_energy - total_reference_energy) / total_atoms
-
     return formation_energy_per_atom
 
 
-def calculate_phonons_pymatgen(atoms, calculator, phonon_params, logger, structure_name):
-    if not PHONOPY_AVAILABLE:
-        logger.log("❌ Phonopy not available for phonon calculations")
-        return {{'success': False, 'error': 'Phonopy not available'}}
+def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain):
+    """Create appropriate cell filter for optimization."""
+    pressure_eV_A3 = pressure * 0.00624150913
+
+    if cell_constraint == "Full cell (lattice + angles)":
+        if hydrostatic_strain:
+            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
+        else:
+            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+    else:
+        if hydrostatic_strain:
+            return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
+        else:
+            mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
+            return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+
+class OptimizationLogger:
+    def __init__(self, filename, max_steps):
+        self.filename = filename
+        self.step_count = 0
+        self.max_steps = max_steps
+        self.step_times = []
+        self.step_start_time = time.time()
+        
+    def __call__(self, optimizer=None):
+        current_time = time.time()
+        
+        if self.step_count > 0:  # Skip timing for first step
+            step_time = current_time - self.step_start_time
+            self.step_times.append(step_time)
+        
+        self.step_count += 1
+        self.step_start_time = current_time
+        
+        if optimizer is not None and hasattr(optimizer, 'atoms'):
+            atoms = optimizer.atoms
+            forces = atoms.get_forces()
+            max_force = np.max(np.linalg.norm(forces, axis=1))
+            energy = atoms.get_potential_energy()
+            
+            # Calculate timing statistics
+            if len(self.step_times) > 0:
+                avg_time = np.mean(self.step_times)
+                remaining_steps = max(0, self.max_steps - self.step_count)
+                estimated_remaining_time = avg_time * remaining_steps
+                
+                # Format time display
+                if avg_time < 60:
+                    avg_time_str = f"{avg_time:.1f}s"
+                else:
+                    avg_time_str = f"{avg_time/60:.1f}m"
+                
+                if estimated_remaining_time < 60:
+                    remaining_time_str = f"{estimated_remaining_time:.1f}s"
+                elif estimated_remaining_time < 3600:
+                    remaining_time_str = f"{estimated_remaining_time/60:.1f}m"
+                else:
+                    remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
+                
+                print(f"    Step {self.step_count}: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å | "
+                      f"Avg: {avg_time_str}/step, Est. remaining: {remaining_time_str} ({remaining_steps} steps)")
+            else:
+                print(f"    Step {self.step_count}: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å")
+'''
+
+
+def _generate_optimization_code(optimization_params, calc_formation_energy):
+    """Generate code for geometry optimization."""
+    optimizer = optimization_params.get('optimizer', 'BFGS')
+    fmax = optimization_params.get('fmax', 0.05)
+    max_steps = optimization_params.get('max_steps', 200)
+    opt_type = optimization_params.get(
+        'optimization_type', 'Both atoms and cell')
+    cell_constraint = optimization_params.get(
+        'cell_constraint', 'Lattice parameters only (fix angles)')
+    pressure = optimization_params.get('pressure', 0.0)
+    hydrostatic_strain = optimization_params.get('hydrostatic_strain', False)
+    optimize_lattice = optimization_params.get(
+        'optimize_lattice', {'a': True, 'b': True, 'c': True})
+
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    results = []
+    print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
+
+    optimizer_type = "{optimizer}"
+    fmax = {fmax}
+    max_steps = {max_steps}
+    optimization_type = "{opt_type}"
+    cell_constraint = "{cell_constraint}"
+    pressure = {pressure}
+    hydrostatic_strain = {hydrostatic_strain}
+    optimize_lattice = {optimize_lattice}
+    
+    print(f"⚙️ Optimization settings:")
+    print(f"  - Optimizer: {{optimizer_type}}")
+    print(f"  - Force threshold: {{fmax}} eV/Å")
+    print(f"  - Max steps: {{max_steps}}")
+    print(f"  - Type: {{optimization_type}}")
+    if pressure > 0:
+        print(f"  - Pressure: {{pressure}} GPa")
+
+    reference_energies = {{}}'''
+
+    if calc_formation_energy:
+        code += '''
+    print("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for filename in structure_files:
+        atoms = read(filename)
+        for symbol in atoms.get_chemical_symbols():
+            all_elements.add(symbol)
+
+    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
+    
+    for i, element in enumerate(sorted(all_elements)):
+        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
+        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
+        atom.calc = calculator
+        reference_energies[element] = atom.get_potential_energy()
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
+
+    code += '''
+
+    for i, filename in enumerate(structure_files):
+        print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
+        structure_start_time = time.time()
+        try:
+            atoms = read(filename)
+            atoms.calc = calculator
+            print(f"  📊 Structure has {len(atoms)} atoms")
+
+            has_constraints = hasattr(atoms, 'constraints') and atoms.constraints
+            if has_constraints:
+                print(f"  📌 Selective dynamics detected")
+
+            initial_energy = atoms.get_potential_energy()
+            initial_forces = atoms.get_forces()
+            initial_max_force = np.max(np.linalg.norm(initial_forces, axis=1))
+            print(f"  📊 Initial energy: {initial_energy:.6f} eV")
+            print(f"  📊 Initial max force: {initial_max_force:.4f} eV/Å")
+
+            if optimization_type == "Atoms only (fixed cell)":
+                optimization_object = atoms
+                opt_mode = "atoms_only"
+                print(f"  🔒 Optimizing atoms only (fixed cell)")
+            elif optimization_type == "Cell only (fixed atoms)":
+                atoms.set_constraint(FixAtoms(mask=[True] * len(atoms)))
+                optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
+                opt_mode = "cell_only"
+                print(f"  🔒 Optimizing cell only (fixed atoms)")
+            else:
+                optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
+                opt_mode = "both"
+                print(f"  🔄 Optimizing both atoms and cell")
+
+            logger = OptimizationLogger(filename, max_steps)
+            
+            if optimizer_type == "LBFGS":
+                optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
+            else:
+                optimizer = BFGS(optimization_object, logfile=f"results/{filename}_opt.log")
+
+            optimizer.attach(lambda: logger(optimizer), interval=1)
+
+            print(f"  🏃 Running {optimizer_type} optimization...")
+            if opt_mode == "cell_only":
+                optimizer.run(fmax=0.1, steps=max_steps)
+            else:
+                optimizer.run(fmax=fmax, steps=max_steps)
+
+            if hasattr(optimization_object, 'atoms'):
+                final_atoms = optimization_object.atoms
+            else:
+                final_atoms = optimization_object
+
+            final_energy = final_atoms.get_potential_energy()
+            final_forces = final_atoms.get_forces()
+            max_final_force = np.max(np.linalg.norm(final_forces, axis=1))
+
+            force_converged = max_final_force < fmax
+            if opt_mode in ["cell_only", "both"]:
+                try:
+                    final_stress = final_atoms.get_stress(voigt=True)
+                    max_final_stress = np.max(np.abs(final_stress))
+                    stress_converged = max_final_stress < 0.1
+                except:
+                    stress_converged = True
+                    max_final_stress = 0.0
+            else:
+                stress_converged = True
+                max_final_stress = 0.0
+
+            if opt_mode == "atoms_only":
+                convergence_status = "CONVERGED" if force_converged else "MAX_STEPS_REACHED"
+            elif opt_mode == "cell_only":
+                convergence_status = "CONVERGED" if stress_converged else "MAX_STEPS_REACHED"
+            else:
+                convergence_status = "CONVERGED" if (force_converged and stress_converged) else "MAX_STEPS_REACHED"
+
+            output_filename = f"optimized_structures/optimized_{filename}"
+            write(output_filename, final_atoms)
+
+            result = {
+                "structure": filename,
+                "initial_energy_eV": initial_energy,
+                "final_energy_eV": final_energy,
+                "energy_change_eV": final_energy - initial_energy,
+                "initial_max_force_eV_per_A": initial_max_force,
+                "final_max_force_eV_per_A": max_final_force,
+                "max_stress_GPa": max_final_stress,
+                "convergence_status": convergence_status,
+                "optimization_steps": optimizer.nsteps,
+                "calculation_type": "geometry_optimization",
+                "num_atoms": len(atoms),
+                "opt_mode": opt_mode,
+                "optimizer_type": optimizer_type,
+                "fmax": fmax,
+                "max_steps": max_steps,
+                "optimization_type": optimization_type,
+                "cell_constraint": cell_constraint,
+                "pressure": pressure,
+                "hydrostatic_strain": hydrostatic_strain,
+                # Convert dict to string for CSV compatibility
+                "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
+                "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,
+                "optimize_lattice_c": optimize_lattice.get('c', True) if isinstance(optimize_lattice, dict) else True
+            }'''
+
+    if calc_formation_energy:
+        code += '''
+
+            formation_energy = calculate_formation_energy(final_energy, final_atoms, reference_energies)
+            result["formation_energy_eV_per_atom"] = formation_energy'''
+
+    code += '''
+
+            structure_time = time.time() - structure_start_time
+            print(f"  ✅ Optimization completed: {convergence_status}")
+            print(f"  ✅ Final energy: {final_energy:.6f} eV (Δ={final_energy - initial_energy:.6f} eV)")
+            print(f"  ✅ Final max force: {max_final_force:.4f} eV/Å")
+            if opt_mode in ["cell_only", "both"]:
+                print(f"  ✅ Final max stress: {max_final_stress:.4f} GPa")
+            print(f"  ✅ Steps: {optimizer.nsteps}")
+            print(f"  ⏱️ Structure time: {structure_time:.1f}s")'''
+
+    if calc_formation_energy:
+        code += '''
+            if formation_energy is not None:
+                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")'''
+
+    code += '''
+            results.append(result)
+            
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/optimization_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+
+        except Exception as e:
+            print(f"  ❌ Optimization failed: {e}")
+            results.append({"structure": filename, "error": str(e)})
+            
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/optimization_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+
+    # Final summary save
+    df_results = pd.DataFrame(results)
+    df_results.to_csv("results/optimization_results.csv", index=False)
+
+
+    with open("results/optimization_summary.txt", "w") as f:
+        f.write("MACE Geometry Optimization Results\\n")
+        f.write("=" * 50 + "\\n\\n")
+        for result in results:
+            if "error" not in result:
+                f.write(f"Structure: {result['structure']}\\n")
+                f.write(f"Initial Energy: {result['initial_energy_eV']:.6f} eV\\n")
+                f.write(f"Final Energy: {result['final_energy_eV']:.6f} eV\\n")
+                f.write(f"Energy Change: {result['energy_change_eV']:.6f} eV\\n")
+                f.write(f"Final Max Force: {result['final_max_force_eV_per_A']:.4f} eV/Å\\n")
+                f.write(f"Max Stress: {result['max_stress_GPa']:.4f} GPa\\n")
+                f.write(f"Convergence: {result['convergence_status']}\\n")
+                f.write(f"Steps: {result['optimization_steps']}\\n")
+                f.write(f"Atoms: {result['num_atoms']}\\n")'''
+
+    if calc_formation_energy:
+        code += '''
+                if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
+                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")'''
+
+    code += '''
+                f.write("\\n")
+            else:
+                f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
+    
+    print(f"💾 Saved summary to results/optimization_summary.txt")'''
+
+    return code
+
+
+def _generate_phonon_code(phonon_params, optimization_params, calc_formation_energy):
+    """Generate code for phonon calculations."""
+    auto_supercell = phonon_params.get('auto_supercell', True)
+    if auto_supercell:
+        target_length = phonon_params.get('target_supercell_length', 15.0)
+        max_multiplier = phonon_params.get('max_supercell_multiplier', 4)
+        max_atoms = phonon_params.get('max_supercell_atoms', 800)
+    else:
+        supercell_size = phonon_params.get('supercell_size', (2, 2, 2))
+
+    delta = phonon_params.get('delta', 0.01)
+    temperature = phonon_params.get('temperature', 300)
+    npoints = phonon_params.get('npoints', 100)
+
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    results = []
+    print(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
 
     try:
-        logger.log(f"Starting phonon calculation for {{structure_name}}")
-        atoms.calc = calculator
+        from phonopy import Phonopy
+        from phonopy.structure.atoms import PhonopyAtoms
+        import phonopy.units as units_phonopy
+        PHONOPY_AVAILABLE = True
+        print("✅ Phonopy available")
+    except ImportError:
+        print("❌ Phonopy not available. Please install with: pip install phonopy")
+        return
 
-        # Brief optimization
-        logger.log("  Running brief pre-phonon optimization...")
-        temp_atoms = atoms.copy()
-        temp_atoms.calc = calculator
-        temp_optimizer = LBFGS(temp_atoms, logfile=None)
-        temp_optimizer.run(fmax=0.01, steps=50)
-        atoms = temp_atoms
+    auto_supercell = {auto_supercell}'''
 
-        # Convert to pymatgen and phonopy
-        adaptor = AseAtomsAdaptor()
-        pmg_structure = adaptor.get_structure(atoms)
-        phonopy_atoms = PhonopyAtoms(
-            symbols=[str(site.specie) for site in pmg_structure],
-            scaled_positions=pmg_structure.frac_coords,
-            cell=pmg_structure.lattice.matrix
-        )
+    if auto_supercell:
+        code += f'''
+    target_supercell_length = {target_length}
+    max_supercell_multiplier = {max_multiplier}
+    max_supercell_atoms = {max_atoms}
+    print(f"⚙️ Auto supercell: target length {target_supercell_length} Å, max multiplier {max_supercell_multiplier}")'''
+    else:
+        code += f'''
+    supercell_size = {supercell_size}
+    print(f"⚙️ Manual supercell: {supercell_size}")'''
 
-        # Determine supercell
-        if phonon_params.get('auto_supercell', True):
-            target_length = phonon_params.get('target_supercell_length', 15.0)
-            max_multiplier = phonon_params.get('max_supercell_multiplier', 4)
-            
+    code += f'''
+    displacement_distance = {delta}
+    temperature = {temperature}
+    npoints_per_segment = {npoints}
+    pre_opt_steps = {optimization_params.get('max_steps', 50)}
+    
+    print(f"⚙️ Phonon settings:")
+    print(f"  - Displacement: {{displacement_distance}} Å")
+    print(f"  - Temperature: {{temperature}} K")
+    print(f"  - Pre-opt steps: {{pre_opt_steps}}")
+
+    reference_energies = {{}}'''
+
+    if calc_formation_energy:
+        code += '''
+    print("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for filename in structure_files:
+        atoms = read(filename)
+        for symbol in atoms.get_chemical_symbols():
+            all_elements.add(symbol)
+
+    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
+    
+    for i, element in enumerate(sorted(all_elements)):
+        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
+        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
+        atom.calc = calculator
+        reference_energies[element] = atom.get_potential_energy()
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
+
+    code += '''
+
+    for i, filename in enumerate(structure_files):
+        print(f"\\n🎵 Processing structure {i+1}/{len(structure_files)}: {filename}")
+        structure_start_time = time.time()
+        try:
+            atoms = read(filename)
+            atoms.calc = calculator
+            print(f"  📊 Structure has {len(atoms)} atoms")
+
+            print("  🔧 Running pre-optimization...")
+            temp_atoms = atoms.copy()
+            temp_atoms.calc = calculator
+            temp_optimizer = LBFGS(temp_atoms, logfile=None)
+            temp_optimizer.run(fmax=0.02, steps=pre_opt_steps)
+            atoms = temp_atoms
+            print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            adaptor = AseAtomsAdaptor()
+            pmg_structure = adaptor.get_structure(atoms)
+
+            phonopy_atoms = PhonopyAtoms(
+                symbols=[str(site.specie) for site in pmg_structure],
+                scaled_positions=pmg_structure.frac_coords,
+                cell=pmg_structure.lattice.matrix
+            )'''
+
+    if auto_supercell:
+        code += '''
             a, b, c = pmg_structure.lattice.abc
-            na = max(1, min(max_multiplier, int(np.ceil(target_length / a))))
-            nb = max(1, min(max_multiplier, int(np.ceil(target_length / b))))
-            nc = max(1, min(max_multiplier, int(np.ceil(target_length / c))))
-            
+            na = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / a))))
+            nb = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / b))))
+            nc = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / c))))
+
             if len(atoms) > 50:
                 na = max(1, na - 1)
                 nb = max(1, nb - 1)
                 nc = max(1, nc - 1)
-                
+
             supercell_matrix = [[na, 0, 0], [0, nb, 0], [0, 0, nc]]
-        else:
-            sc = phonon_params.get('supercell_size', (2, 2, 2))
-            supercell_matrix = [[sc[0], 0, 0], [0, sc[1], 0], [0, 0, sc[2]]]
+            total_atoms = len(atoms) * na * nb * nc
 
-        logger.log(f"  Supercell matrix: {{supercell_matrix}}")
+            if total_atoms > max_supercell_atoms:
+                print(f"  ⚠️ Supercell too large ({total_atoms} atoms), using 1x1x1")
+                supercell_matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+                total_atoms = len(atoms)'''
+    else:
+        code += f'''
+            supercell_matrix = [[{supercell_size[0]}, 0, 0], [0, {supercell_size[1]}, 0], [0, 0, {supercell_size[2]}]]
+            total_atoms = len(atoms) * {supercell_size[0]} * {supercell_size[1]} * {supercell_size[2]}'''
 
-        # Initialize Phonopy
-        phonon = Phonopy(phonopy_atoms, supercell_matrix=supercell_matrix, primitive_matrix='auto')
-        
-        # Generate displacements and calculate forces
-        displacement_distance = phonon_params.get('delta', 0.01)
-        phonon.generate_displacements(distance=displacement_distance)
-        supercells = phonon.get_supercells_with_displacements()
-        
-        logger.log(f"  Calculating forces for {{len(supercells)}} displaced supercells...")
-        forces = []
-        
-        for i, supercell in enumerate(supercells):
-            ase_supercell = Atoms(
-                symbols=supercell.symbols,
-                positions=supercell.positions,
-                cell=supercell.cell,
-                pbc=True
-            )
-            ase_supercell.calc = calculator
-            supercell_forces = ase_supercell.get_forces()
-            forces.append(supercell_forces)
-
-        phonon.forces = forces
-        phonon.produce_force_constants()
-
-        # Calculate band structure
-        logger.log("  Calculating phonon band structure...")
-        try:
-            from pymatgen.symmetry.bandstructure import HighSymmKpath
-            kpath = HighSymmKpath(pmg_structure)
-            path = kpath.kpath["path"]
-            kpoints = kpath.kpath["kpoints"]
-            bands = []
-            for segment in path:
-                segment_points = [kpoints[point_name] for point_name in segment]
-                bands.append(segment_points)
-        except:
-            bands = [[[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]]
-
-        phonon.run_band_structure(bands, is_band_connection=False, with_eigenvectors=False)
-        band_dict = phonon.get_band_structure_dict()
-        
-        # Process frequencies
-        raw_frequencies = band_dict['frequencies']
-        if isinstance(raw_frequencies, list):
-            all_freqs = []
-            for freq_array in raw_frequencies:
-                freq_np = np.array(freq_array)
-                if freq_np.ndim == 1:
-                    all_freqs.append(freq_np)
-                elif freq_np.ndim == 2:
-                    all_freqs.extend(freq_np)
-            frequencies = np.array(all_freqs)
-        else:
-            frequencies = np.array(raw_frequencies)
-
-        # Convert THz to meV
-        frequencies = frequencies * units_phonopy.THzToEv * 1000
-
-        # Process k-points
-        raw_kpoints = band_dict['qpoints']
-        if isinstance(raw_kpoints, list):
-            kpoints_flat = []
-            for kpt_group in raw_kpoints:
-                kpt_array = np.array(kpt_group)
-                if kpt_array.ndim == 1:
-                    kpoints_flat.append(kpt_array)
-                elif kpt_array.ndim == 2:
-                    kpoints_flat.extend(kpt_array)
-            kpoints_band = np.array(kpoints_flat)
-        else:
-            kpoints_band = np.array(raw_kpoints)
-
-        # Calculate DOS
-        logger.log("  Calculating phonon DOS...")
-        mesh = [20, 20, 20] if len(atoms) > 100 else [30, 30, 30]
-        phonon.run_mesh(mesh)
-        phonon.run_total_dos()
-        dos_dict = phonon.get_total_dos_dict()
-        dos_frequencies = dos_dict['frequency_points'] * units_phonopy.THzToEv * 1000
-        dos_values = dos_dict['total_dos']
-
-        # Check for imaginary modes
-        valid_frequencies = frequencies[~np.isnan(frequencies)]
-        imaginary_count = np.sum(valid_frequencies < 0)
-        min_frequency = np.min(valid_frequencies) if len(valid_frequencies) > 0 else 0
-
-        # Calculate thermodynamics
-        temp = phonon_params.get('temperature', 300)
-        logger.log(f"  Calculating thermodynamics at {{temp}} K...")
-        
-        phonon.run_thermal_properties(t_step=10, t_max=1500, t_min=0)
-        thermal_dict = phonon.get_thermal_properties_dict()
-        temps = np.array(thermal_dict['temperatures'])
-        temp_idx = np.argmin(np.abs(temps - temp))
-
-        thermo_props = {{
-            'temperature': float(temps[temp_idx]),
-            'zero_point_energy': float(thermal_dict['zero_point_energy']),
-            'internal_energy': float(thermal_dict['internal_energy'][temp_idx]),
-            'heat_capacity': float(thermal_dict['heat_capacity'][temp_idx]),
-            'entropy': float(thermal_dict['entropy'][temp_idx]),
-            'free_energy': float(thermal_dict['free_energy'][temp_idx])
-        }}
-
-        logger.log(f"✅ Phonon calculation completed for {{structure_name}}")
-
-        return {{
-            'success': True,
-            'frequencies': frequencies,
-            'kpoints': kpoints_band,
-            'dos_energies': dos_frequencies,
-            'dos': dos_values,
-            'thermodynamics': thermo_props,
-            'supercell_size': tuple([supercell_matrix[i][i] for i in range(3)]),
-            'imaginary_modes': int(imaginary_count),
-            'min_frequency': float(min_frequency),
-            'method': 'Pymatgen+Phonopy'
-        }}
-
-    except Exception as e:
-        logger.log(f"❌ Phonon calculation failed for {{structure_name}}: {{str(e)}}")
-        return {{'success': False, 'error': str(e)}}
-
-
-def calculate_elastic_properties(atoms, calculator, elastic_params, logger, structure_name):
-    if not ELASTIC_AVAILABLE:
-        logger.log("❌ Elastic calculations not available")
-        return {{'success': False, 'error': 'Elastic calculations not available'}}
-
-    try:
-        logger.log(f"Starting elastic calculation for {{structure_name}}")
-        atoms.calc = calculator
-
-        # Brief optimization
-        logger.log("  Running brief pre-elastic optimization...")
-        temp_atoms = atoms.copy()
-        temp_atoms.calc = calculator
-        temp_optimizer = LBFGS(temp_atoms, logfile=None)
-        temp_optimizer.run(fmax=0.015, steps=100)
-        atoms = temp_atoms
-
-        strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
-        logger.log(f"  Using strain magnitude: {{strain_magnitude * 100:.1f}}%")
-
-        # Initialize elastic tensor
-        C = np.zeros((6, 6))
-        original_cell = atoms.get_cell().copy()
-
-        # Define strain tensors
-        strain_tensors = []
-        for i in range(3):
-            strain = np.zeros((3, 3))
-            strain[i, i] = strain_magnitude
-            strain_tensors.append(strain)
-
-        for i, j in [(1, 2), (0, 2), (0, 1)]:
-            strain = np.zeros((3, 3))
-            strain[i, j] = strain[j, i] = strain_magnitude / 2
-            strain_tensors.append(strain)
-
-        # Apply strains and calculate elastic constants
-        for strain_idx, strain_tensor in enumerate(strain_tensors):
-            # Positive strain
-            deformed_cell = original_cell @ (np.eye(3) + strain_tensor)
-            atoms.set_cell(deformed_cell, scale_atoms=True)
-            stress_pos = atoms.get_stress(voigt=True)
-
-            # Negative strain
-            deformed_cell = original_cell @ (np.eye(3) - strain_tensor)
-            atoms.set_cell(deformed_cell, scale_atoms=True)
-            stress_neg = atoms.get_stress(voigt=True)
-
-            # Calculate elastic constants
-            stress_derivative = (stress_pos - stress_neg) / (2 * strain_magnitude)
-            C[strain_idx, :] = stress_derivative
-
-            # Restore original cell
-            atoms.set_cell(original_cell, scale_atoms=True)
-
-        # Convert to GPa
-        eV_to_GPa = 160.2176
-        C_GPa = C * eV_to_GPa
-
-        # Calculate moduli
-        K_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] + 2 * (C_GPa[0, 1] + C_GPa[0, 2] + C_GPa[1, 2])) / 9
-        G_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] - C_GPa[0, 1] - C_GPa[0, 2] - C_GPa[1, 2] + 3 * (
-                C_GPa[3, 3] + C_GPa[4, 4] + C_GPa[5, 5])) / 15
-
-        try:
-            S_GPa = np.linalg.inv(C_GPa)
-            K_reuss = 1 / (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2] + 2 * (S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]))
-            G_reuss = 15 / (4 * (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2]) - 4 * (
-                    S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]) + 3 * (S_GPa[3, 3] + S_GPa[4, 4] + S_GPa[5, 5]))
-            K_hill = (K_voigt + K_reuss) / 2
-            G_hill = (G_voigt + G_reuss) / 2
-        except:
-            K_reuss = G_reuss = K_hill = G_hill = None
-
-        K = K_hill if K_hill else K_voigt
-        G = G_hill if G_hill else G_voigt
-
-        E = (9 * K * G) / (3 * K + G)
-        nu = (3 * K - 2 * G) / (2 * (3 * K + G))
-
-        # Estimate density
-        total_mass_amu = np.sum(atoms.get_masses())
-        volume = atoms.get_volume()
-        density = (total_mass_amu * 1.66053906660) / volume
-
-        # Wave velocities
-        density_kg_m3 = density * 1000
-        v_l = np.sqrt((K + 4 * G / 3) * 1e9 / density_kg_m3)
-        v_t = np.sqrt(G * 1e9 / density_kg_m3)
-        v_avg = ((1 / v_l ** 3 + 2 / v_t ** 3) / 3) ** (-1 / 3)
-
-        # Debye temperature
-        h = 6.626e-34
-        kB = 1.381e-23
-        N_atoms = len(atoms)
-        total_mass_kg = np.sum(atoms.get_masses()) * 1.66054e-27
-        theta_D = (h / kB) * v_avg * (3 * N_atoms * density_kg_m3 / (4 * np.pi * total_mass_kg)) ** (1 / 3)
-
-        # Stability check
-        eigenvals = np.linalg.eigvals(C_GPa)
-        stable = bool(np.all(eigenvals > 0) and np.linalg.det(C_GPa) > 0)
-
-        logger.log(f"✅ Elastic calculation completed for {{structure_name}}")
-
-        return {{
-            'success': True,
-            'elastic_tensor': C_GPa.tolist(),
-            'bulk_modulus': {{'voigt': K_voigt, 'reuss': K_reuss, 'hill': K_hill}},
-            'shear_modulus': {{'voigt': G_voigt, 'reuss': G_reuss, 'hill': G_hill}},
-            'youngs_modulus': E,
-            'poisson_ratio': nu,
-            'wave_velocities': {{'longitudinal': v_l, 'transverse': v_t, 'average': v_avg}},
-            'debye_temperature': theta_D,
-            'density': density,
-            'mechanical_stability': {{'mechanically_stable': stable}},
-            'strain_magnitude': strain_magnitude
-        }}
-
-    except Exception as e:
-        logger.log(f"❌ Elastic calculation failed for {{structure_name}}: {{str(e)}}")
-        return {{'success': False, 'error': str(e)}}
-
-
-def main():
-    # Configuration from GUI settings
-    MODEL_SIZE = "{model_size}"
-    DEVICE = "{device}"
-    CALC_TYPE = "{calc_type}"
-    CALC_FORMATION_ENERGY = {calc_formation_energy}
-    STRUCTURE_FILES = {structure_files}
-    OPTIMIZATION_PARAMS = {optimization_params}
-    PHONON_PARAMS = {phonon_params}
-    ELASTIC_PARAMS = {elastic_params}
-
-    # Initialize logger and directories
-    logger = CalculationLogger("results/calculation.log")
-    logger.log("="*60)
-    logger.log("MACE Batch Structure Calculator")
-    logger.log("="*60)
-    logger.log(f"Model: {{MODEL_SIZE}}")
-    logger.log(f"Device: {{DEVICE}}")
-    logger.log(f"Calculation Type: {{CALC_TYPE}}")
-    logger.log("")
-
-    create_directories()
-
-    # Initialize MACE calculator
-    logger.log("Setting up MACE calculator...")
-    try:
-        calculator = mace_mp(model=MODEL_SIZE, dispersion=False, default_dtype="float64", device=DEVICE)
-        logger.log("✅ MACE calculator initialized successfully")
-    except Exception as e:
-        logger.log(f"❌ MACE initialization failed: {{str(e)}}")
-        if DEVICE == "cuda":
-            logger.log("⚠️ Trying CPU fallback...")
-            try:
-                calculator = mace_mp(model=MODEL_SIZE, dispersion=False, default_dtype="float64", device="cpu")
-                logger.log("✅ MACE calculator initialized on CPU")
-            except Exception as cpu_error:
-                logger.log(f"❌ CPU fallback failed: {{str(cpu_error)}}")
-                return
-        else:
-            return
-
-    # Load structures
-    structures = {{}}
-    logger.log("Loading structures...")
-    for filename in STRUCTURE_FILES:
-        if os.path.exists(filename):
-            try:
-                with open(filename, 'r') as f:
-                    content = f.read()
-                structure = Structure.from_str(content, fmt="poscar")
-                structures[filename] = structure
-                logger.log(f"✅ Loaded {{filename}} - {{structure.composition.reduced_formula}}")
-            except Exception as e:
-                logger.log(f"❌ Error loading {{filename}}: {{str(e)}}")
-        else:
-            logger.log(f"❌ File not found: {{filename}}")
-
-    if not structures:
-        logger.log("❌ No structures loaded. Make sure POSCAR files are in the current directory.")
-        return
-
-    # Calculate reference energies if needed
-    reference_energies = {{}}
-    if CALC_FORMATION_ENERGY:
-        all_elements = set()
-        for structure in structures.values():
-            for site in structure:
-                all_elements.add(site.specie.symbol)
-        reference_energies = calculate_atomic_reference_energies(all_elements, calculator, logger)
-
-    # Main calculation loop
-    results = []
-    for i, (name, structure) in enumerate(structures.items()):
-        logger.log(f"\\nProcessing structure {{i+1}}/{{len(structures)}}: {{name}}")
-        logger.log("-" * 50)
-
-        try:
-            atoms = pymatgen_to_ase(structure)
-            atoms.calc = calculator
-
-            # Test calculator
-            test_energy = atoms.get_potential_energy()
-            logger.log(f"✅ Calculator test successful - Initial energy: {{test_energy:.6f}} eV")
-
-            energy = None
-            final_structure = structure
-
-            if CALC_TYPE == "Energy Only":
-                energy = atoms.get_potential_energy()
-                logger.log(f"✅ Energy: {{energy:.6f}} eV")
-
-            elif CALC_TYPE == "Geometry Optimization":
-                logger.log("Starting geometry optimization...")
-                
-                class OptTracker:
-                    def __init__(self):
-                        self.trajectory = []
-                        self.step_count = 0
-
-                    def __call__(self, optimizer):
-                        self.step_count += 1
-                        forces = optimizer.atoms.get_forces()
-                        max_force = np.max(np.linalg.norm(forces, axis=1))
-                        energy = optimizer.atoms.get_potential_energy()
-                        
-                        self.trajectory.append({{
-                            'step': self.step_count,
-                            'energy': energy,
-                            'max_force': max_force,
-                            'positions': optimizer.atoms.positions.copy(),
-                            'cell': optimizer.atoms.cell.array.copy(),
-                            'symbols': optimizer.atoms.get_chemical_symbols(),
-                            'forces': forces.copy()
-                        }})
-                        
-                        logger.log(f"  Step {{self.step_count}}: E={{energy:.6f}} eV, F_max={{max_force:.4f}} eV/Å")
-
-                tracker = OptTracker()
-                optimizer = LBFGS(atoms, logfile=None) if OPTIMIZATION_PARAMS['optimizer'] == "LBFGS" else BFGS(atoms, logfile=None)
-                optimizer.attach(lambda: tracker(optimizer), interval=1)
-                optimizer.run(fmax=OPTIMIZATION_PARAMS['fmax'], steps=OPTIMIZATION_PARAMS['max_steps'])
-
-                energy = atoms.get_potential_energy()
-                final_forces = atoms.get_forces()
-                max_final_force = np.max(np.linalg.norm(final_forces, axis=1))
-                force_converged = max_final_force < OPTIMIZATION_PARAMS['fmax']
-                
-                logger.log(f"✅ Optimization {{'CONVERGED' if force_converged else 'MAX STEPS'}}: Final energy = {{energy:.6f}} eV")
-
-                # Save optimized structure
-                optimized_structure = Structure(
-                    lattice=atoms.cell[:],
-                    species=[atom.symbol for atom in atoms],
-                    coords=atoms.positions,
-                    coords_are_cartesian=True
+    code += '''
+            
+            print(f"  📏 Using supercell: {supercell_matrix} ({total_atoms} total atoms)")
+            
+            phonon = Phonopy(phonopy_atoms, supercell_matrix=supercell_matrix, primitive_matrix='auto')
+            
+            print(f"  📍 Generating displacements...")
+            phonon.generate_displacements(distance=displacement_distance)
+            supercells = phonon.get_supercells_with_displacements()
+            print(f"  📊 Generated {len(supercells)} displaced supercells")
+            
+            print("  ⚡ Calculating forces...")
+            forces = []
+            for j, supercell in enumerate(supercells):
+                if j % max(1, len(supercells) // 5) == 0:
+                    print(f"    📊 Progress: {j+1}/{len(supercells)} ({100*(j+1)/len(supercells):.1f}%)")
+                    
+                ase_supercell = Atoms(
+                    symbols=supercell.symbols,
+                    positions=supercell.positions,
+                    cell=supercell.cell,
+                    pbc=True
                 )
-                final_structure = optimized_structure
+                ase_supercell.calc = calculator
+                supercell_forces = ase_supercell.get_forces()
+                forces.append(supercell_forces)
+            
+            print("  ✅ All force calculations completed")
+            phonon.forces = forces
+            print("  🔧 Calculating force constants...")
+            phonon.produce_force_constants()
+            
+            print("  📈 Calculating phonon band structure...")
+            try:
+                from pymatgen.symmetry.bandstructure import HighSymmKpath
+                kpath = HighSymmKpath(pmg_structure)
+                path = kpath.kpath["path"]
+                kpoints_dict = kpath.kpath["kpoints"]
                 
-                with open(f"optimized_structures/optimized_{{name}}", 'w') as f:
-                    f.write(optimized_structure.to(fmt="poscar"))
-
-            elif CALC_TYPE == "Phonon Calculation":
-                phonon_results = calculate_phonons_pymatgen(atoms, calculator, PHONON_PARAMS, logger, name)
-                if phonon_results['success']:
-                    energy = atoms.get_potential_energy()
-                    # Save phonon data
-                    with open(f"phonon_data/phonon_{{name.replace('.', '_')}}.json", 'w') as f:
-                        json.dump(phonon_results, f, indent=2, default=lambda x: x.tolist() if hasattr(x, 'tolist') else float(x) if isinstance(x, np.number) else x)
-
-            elif CALC_TYPE == "Elastic Properties":
-                elastic_results = calculate_elastic_properties(atoms, calculator, ELASTIC_PARAMS, logger, name)
-                if elastic_results['success']:
-                    energy = atoms.get_potential_energy()
-                    # Save elastic data
-                    with open(f"elastic_data/elastic_{{name.replace('.', '_')}}.json", 'w') as f:
-                        json.dump(elastic_results, f, indent=2)
-
-            # Calculate formation energy
-            formation_energy = None
-            if CALC_FORMATION_ENERGY and energy is not None:
-                formation_energy = calculate_formation_energy(energy, structure, reference_energies)
-                if formation_energy is not None:
-                    logger.log(f"✅ Formation energy: {{formation_energy:.6f}} eV/atom")
-
-            # Store result
-            result = {{
-                'name': name,
-                'energy': energy,
-                'formation_energy': formation_energy,
-                'calc_type': CALC_TYPE
+                path_kpoints = []
+                for segment in path:
+                    if len(segment) >= 2:
+                        start_point = np.array(kpoints_dict[segment[0]])
+                        end_point = np.array(kpoints_dict[segment[-1]])
+                        for j in range(npoints_per_segment):
+                            t = j / (npoints_per_segment - 1)
+                            kpt = start_point + t * (end_point - start_point)
+                            path_kpoints.append(kpt.tolist())
+                
+                bands = [path_kpoints]
+                print(f"  📍 Generated {len(path_kpoints)} k-points along high-symmetry path")
+                
+            except Exception:
+                print("  ⚠️ Using fallback k-point path")
+                bands = [[[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]]
+            
+            phonon.run_band_structure(bands, is_band_connection=False, with_eigenvectors=False)
+            band_dict = phonon.get_band_structure_dict()
+            
+            print("  📊 Calculating phonon DOS...")
+            mesh_density = [30, 30, 30] if len(atoms) <= 100 else [20, 20, 20]
+            phonon.run_mesh(mesh_density)
+            phonon.run_total_dos()
+            dos_dict = phonon.get_total_dos_dict()
+            
+            print(f"  🌡️ Calculating thermodynamics at {temperature} K...")
+            phonon.run_thermal_properties(t_step=10, t_max=1500, t_min=0)
+            thermal_dict = phonon.get_thermal_properties_dict()
+            
+            frequencies = np.array(band_dict['frequencies']) * units_phonopy.THzToEv * 1000
+            dos_frequencies = dos_dict['frequency_points'] * units_phonopy.THzToEv * 1000
+            dos_values = dos_dict['total_dos']
+            
+            valid_frequencies = frequencies[~np.isnan(frequencies)]
+            imaginary_modes = np.sum(valid_frequencies < -0.001)
+            min_frequency = np.min(valid_frequencies) if len(valid_frequencies) > 0 else 0
+            max_frequency = np.max(valid_frequencies) if len(valid_frequencies) > 0 else 0
+            
+            temps = np.array(thermal_dict['temperatures'])
+            temp_idx = np.argmin(np.abs(temps - temperature))
+            
+            thermo_props = {{
+                'temperature': float(temps[temp_idx]),
+                'zero_point_energy': float(thermal_dict['zero_point_energy']),
+                'internal_energy': float(thermal_dict['internal_energy'][temp_idx]),
+                'heat_capacity': float(thermal_dict['heat_capacity'][temp_idx]),
+                'entropy': float(thermal_dict['entropy'][temp_idx]),
+                'free_energy': float(thermal_dict['free_energy'][temp_idx])
             }}
+            
+            result = {{
+                "structure": filename,
+                "calculation_type": "phonon_calculation",
+                "supercell_matrix": supercell_matrix,
+                "imaginary_modes": int(imaginary_modes),
+                "min_frequency_meV": float(min_frequency),
+                "max_frequency_meV": float(max_frequency),
+                "thermodynamics": thermo_props,
+                "num_atoms": len(atoms),
+                "total_supercell_atoms": total_atoms
+            }}
+            
+            phonon_data_dict = {{
+                "structure_name": [filename],
+                "supercell_matrix_00": [supercell_matrix[0][0]],
+                "supercell_matrix_11": [supercell_matrix[1][1]], 
+                "supercell_matrix_22": [supercell_matrix[2][2]],
+                "imaginary_modes": [int(imaginary_modes)],
+                "min_frequency_meV": [float(min_frequency)],
+                "max_frequency_meV": [float(max_frequency)],
+                "zero_point_energy_eV": [thermo_props['zero_point_energy']],
+                "internal_energy_eV": [thermo_props['internal_energy']],
+                "heat_capacity_eV_K": [thermo_props['heat_capacity']],
+                "entropy_eV_K": [thermo_props['entropy']],
+                "free_energy_eV": [thermo_props['free_energy']],
+                "temperature_K": [thermo_props['temperature']],
+                "num_atoms": [len(atoms)],
+                "total_supercell_atoms": [total_atoms]
+            }}
+            
+            df_phonon = pd.DataFrame(phonon_data_dict)
+            df_phonon.to_csv(f"results/phonon_data_{filename.replace('.', '_')}.csv", index=False)
+            
+            if len(valid_frequencies) > 0:
+                freq_data = {{
+                    "frequency_meV": valid_frequencies[~np.isnan(valid_frequencies)].flatten(),
+                    "structure": [filename] * len(valid_frequencies[~np.isnan(valid_frequencies)].flatten())
+                }}
+                df_freq = pd.DataFrame(freq_data)
+                df_freq.to_csv(f"results/phonon_frequencies_{filename.replace('.', '_')}.csv", index=False)
+            
+            dos_data = {{
+                "energy_meV": dos_frequencies,
+                "dos_states_per_meV": dos_values,
+                "structure": [filename] * len(dos_frequencies)
+            }}
+            df_dos = pd.DataFrame(dos_data)
+            df_dos.to_csv(f"results/phonon_dos_{filename.replace('.', '_')}.csv", index=False)
+            
+            final_energy = atoms.get_potential_energy()
+            result["energy_eV"] = final_energy
+            
+            if calc_formation_energy:
+                formation_energy = calculate_formation_energy(final_energy, atoms, reference_energies)
+                result["formation_energy_eV_per_atom"] = formation_energy
+            
+            structure_time = time.time() - structure_start_time
+            print(f"  ✅ Phonon calculation completed in {structure_time:.1f}s")
+            print(f"  ✅ Energy: {final_energy:.6f} eV")
+            print(f"  ✅ Imaginary modes: {imaginary_modes}")
+            print(f"  ✅ Frequency range: {min_frequency:.3f} to {max_frequency:.3f} meV")
+            if imaginary_modes > 0:
+                print(f"  ⚠️ Structure may be dynamically unstable")
+            else:
+                print(f"  ✅ Structure appears dynamically stable")
+            
+                
             results.append(result)
-
+            
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/phonon_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+            
         except Exception as e:
-            logger.log(f"❌ Error calculating {{name}}: {{str(e)}}")
+            print(f"  ❌ Phonon calculation failed: {e}")
+            results.append({"structure": filename, "error": str(e)}")
+            
+            df_results = pd.DataFrame(results)
+            df_results.to_csv("results/phonon_results.csv", index=False)
+            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+    
+    df_results = pd.DataFrame(results)
+    df_results.to_csv("results/phonon_results.csv", index=False)
 
-    # Save results summary
-    logger.log("\\n" + "="*60)
-    logger.log("CALCULATION SUMMARY")
-    logger.log("="*60)
-
-    with open("results/results_summary.txt", 'w') as f:
-        f.write("MACE Batch Calculation Results\\n")
-        f.write("="*50 + "\\n\\n")
-        f.write(f"Model: {{MODEL_SIZE}}\\n")
-        f.write(f"Device: {{DEVICE}}\\n")
-        f.write(f"Calculation Type: {{CALC_TYPE}}\\n\\n")
-
-        successful_results = [r for r in results if r['energy'] is not None]
-        f.write(f"Successful calculations: {{len(successful_results)}}/{{len(results)}}\\n\\n")
-
-        if successful_results:
-            f.write("Structure\\tEnergy (eV)\\tFormation Energy (eV/atom)\\n")
-            f.write("-" * 70 + "\\n")
-
-            for result in successful_results:
-                name = result['name']
-                energy = result['energy']
-                form_energy = result.get('formation_energy')
-                f.write(f"{{name:<20}}\\t{{energy:12.6f}}\\t")
-                if form_energy is not None:
-                    f.write(f"{{form_energy:12.6f}}")
-                else:
-                    f.write("N/A")
+    print(f"\\n💾 Saved results to results/phonon_results.csv")
+    
+    with open("results/phonon_summary.txt", "w") as f:
+        f.write("MACE Phonon Calculation Results\\n")
+        f.write("=" * 40 + "\\n\\n")
+        for result in results:
+            if "error" not in result:
+                f.write(f"Structure: {result['structure']}\\n")
+                f.write(f"Energy: {result['energy_eV']:.6f} eV\\n")
+                f.write(f"Imaginary modes: {result['imaginary_modes']}\\n")
+                f.write(f"Min frequency: {result['min_frequency_meV']:.3f} meV\\n")
+                f.write(f"Max frequency: {result['max_frequency_meV']:.3f} meV\\n")
+                f.write(f"Atoms: {result['num_atoms']}\\n")
+                f.write(f"Supercell atoms: {result['total_supercell_atoms']}\\n")
+                if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
+                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")
                 f.write("\\n")
-                logger.log(f"{{name:<20}} | Energy: {{energy:12.6f}} eV | Formation: {{form_energy:12.6f if form_energy else 'N/A'}} eV/atom")
-
-    logger.log("\\n✅ Results summary saved to results/results_summary.txt")
-    logger.log("✅ Calculation completed successfully!")
-
-
-if __name__ == "__main__":
-    main()
+            else:
+                f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
+    
+    print(f"💾 Saved summary to results/phonon_summary.txt")
 '''
-
-    return script
+    return code
