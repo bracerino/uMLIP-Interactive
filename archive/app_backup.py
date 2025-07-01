@@ -6,6 +6,7 @@ st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculato
 
 import os
 import pandas as pd
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -49,6 +50,8 @@ except ImportError:
 
 MACE_IMPORT_METHOD = None
 MACE_AVAILABLE = False
+MACE_OFF_AVAILABLE = False
+
 
 import numpy as np
 from ase.phonons import Phonons
@@ -95,6 +98,8 @@ if 'structure_start_times' not in st.session_state:
     st.session_state.structure_start_times = {}
 if 'total_calculation_start_time' not in st.session_state:
     st.session_state.total_calculation_start_time = None
+if 'results_backup_file' not in st.session_state:
+    st.session_state.results_backup_file = None
 
 st.markdown("""
     <style>
@@ -410,6 +415,38 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
         }
 
 
+
+
+def append_to_backup_file(result, backup_file_path):
+    """Append result information to backup file"""
+    try:
+        backup_dir = os.path.dirname(backup_file_path)
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        name = result['name']
+        energy = result.get('energy', 'N/A')
+        formation_energy = result.get('formation_energy', 'N/A')
+        
+        if 'structure' in result and result['structure']:
+            structure = result['structure']
+            lattice = structure.lattice
+            lattice_info = f"a={lattice.a:.4f}, b={lattice.b:.4f}, c={lattice.c:.4f}, α={lattice.alpha:.2f}°, β={lattice.beta:.2f}°, γ={lattice.gamma:.2f}°"
+        else:
+            lattice_info = "N/A"
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"{timestamp}\t{name}\t{energy}\t{formation_energy}\t{lattice_info}\n"
+        
+        write_header = not os.path.exists(backup_file_path)
+        
+        with open(backup_file_path, 'a', encoding='utf-8') as f:
+            if write_header:
+                header = "Time\tStructure_Name\tTotal_Energy(eV)\tFormation_Energy(eV/atom)\tLattice_Parameters\n"
+                f.write(header)
+            f.write(line)
+            
+    except Exception as e:
+        pass
 def check_mechanical_stability(C, log_queue):
     try:
         criteria = {}
@@ -1034,25 +1071,31 @@ except ImportError:
     print("⚠️ Phonopy not available for phonon calculations")
 
 try:
-    from mace.calculators import mace_mp
-
-    MACE_IMPORT_METHOD = "mace_mp"
+    from mace.calculators import mace_mp, mace_off  # Import both
+    MACE_IMPORT_METHOD = "mace_mp_and_off"
     MACE_AVAILABLE = True
+    MACE_OFF_AVAILABLE = True
 except ImportError:
     try:
-        from mace.calculators import MACECalculator
-
-        MACE_IMPORT_METHOD = "MACECalculator"
+        from mace.calculators import mace_mp
+        MACE_IMPORT_METHOD = "mace_mp"
         MACE_AVAILABLE = True
+        MACE_OFF_AVAILABLE = False
     except ImportError:
         try:
-            import mace
             from mace.calculators import MACECalculator
-
             MACE_IMPORT_METHOD = "MACECalculator"
             MACE_AVAILABLE = True
+            MACE_OFF_AVAILABLE = False
         except ImportError:
-            MACE_AVAILABLE = False
+            try:
+                import mace
+                from mace.calculators import MACECalculator
+                MACE_IMPORT_METHOD = "MACECalculator"
+                MACE_AVAILABLE = True
+                MACE_OFF_AVAILABLE = False
+            except ImportError:
+                MACE_AVAILABLE = False
 
 class OptimizationLogger:
     def __init__(self, log_queue, structure_name):
@@ -1228,6 +1271,11 @@ MACE_MODELS = {
     # ========== MATPES MODELS (need full URLs) ==========
     "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
     "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
+
+    # ========== MACE-OFF MODELS (Organic Force Fields) ==========
+    "MACE-OFF23 (small) - Organic": "small",
+    "MACE-OFF23 (medium) - Organic": "medium",
+    "MACE-OFF23 (large) - Organic": "large",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1248,7 +1296,10 @@ MACE_ELEMENTS = {
                   "Xe",
                   "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
                   "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra",
-                  "Ac", "Th", "Pa", "U", "Np", "Pu"]
+                  "Ac", "Th", "Pa", "U", "Np", "Pu"],
+    "MACE-OFF": ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
+
+
 }
 
 
@@ -1267,12 +1318,25 @@ def view_structure(structure, height=300, width=400):
     except:
         return f"<div style='height:{height}px;width:{width}px;background-color:#f0f0f0;display:flex;align-items:center;justify-content:center;'>Structure preview unavailable</div>"
 
-
-def check_mace_compatibility(structure, model_name="MACE-MP-0"):
+def check_mace_compatibility(structure, selected_model_key="MACE-MP-0 (medium) - Original"):
     elements = list(set([site.specie.symbol for site in structure]))
-    supported_elements = MACE_ELEMENTS[model_name]
+    
+    if "OFF" in selected_model_key:
+        model_type = "MACE-OFF"
+    else:
+        model_type = "MACE-MP-0"
+    
+    supported_elements = MACE_ELEMENTS[model_type]
     unsupported = [elem for elem in elements if elem not in supported_elements]
-    return len(unsupported) == 0, unsupported, elements
+    
+    return len(unsupported) == 0, unsupported, elements, model_type
+
+
+def get_model_type_from_selection(selected_model_name):
+    if "OFF" in selected_model_name:
+        return "MACE-OFF", "Organic molecules (H, C, N, O, F, P, S, Cl, Br, I)"
+    else:
+        return "MACE-MP", "General materials (89 elements)"
 
 
 def pymatgen_to_ase(structure):
@@ -1572,47 +1636,111 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         calculator = None
 
-        if MACE_IMPORT_METHOD == "mace_mp":
+        is_mace_off = any("OFF" in key for key,
+                          value in MACE_MODELS.items() if value == model_size)
+
+        if is_mace_off and not MACE_OFF_AVAILABLE:
+            log_queue.put(
+                "❌ MACE-OFF models requested but not available. Please update your MACE installation.")
+            return
+
+        if MACE_IMPORT_METHOD == "mace_mp_and_off":
             try:
-                log_queue.put(f"Initializing mace_mp calculator on {device}...")
-                calculator = mace_mp(model=model_size, dispersion=False, default_dtype="float64", device=device)
-                log_queue.put(f"✅ mace_mp calculator initialized successfully on {device}")
+                if is_mace_off:
+                    log_queue.put(
+                        f"Initializing MACE-OFF calculator on {device}...")
+                    calculator = mace_off(
+                        model=model_size, default_dtype="float64", device=device)
+                    log_queue.put(
+                        f"✅ MACE-OFF calculator initialized successfully on {device}")
+                else:
+                    log_queue.put(
+                        f"Initializing MACE-MP calculator on {device}...")
+                    calculator = mace_mp(
+                        model=model_size, dispersion=False, default_dtype="float64", device=device)
+                    log_queue.put(
+                        f"✅ MACE-MP calculator initialized successfully on {device}")
             except Exception as e:
-                log_queue.put(f"❌ mace_mp initialization failed on {device}: {str(e)}")
+                log_queue.put(
+                    f"❌ Calculator initialization failed on {device}: {str(e)}")
                 if device == "cuda":
-                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
-                        calculator = mace_mp(model=model_size, dispersion=False, default_dtype="float64", device="cpu")
-                        log_queue.put("✅ mace_mp calculator initialized successfully on CPU (fallback)")
+                        if is_mace_off:
+                            calculator = mace_off(
+                                model=model_size, default_dtype="float64", device="cpu")
+                        else:
+                            calculator = mace_mp(
+                                model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                        log_queue.put(
+                            "✅ Calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
-                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
-                        log_queue.put("This might be due to model download issues or device compatibility")
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
                         return
                 else:
-                    log_queue.put("This might be due to model download issues or device compatibility")
+                    return
+
+        elif MACE_IMPORT_METHOD == "mace_mp":
+            if is_mace_off:
+                log_queue.put(
+                    "❌ MACE-OFF models requested but only MACE-MP available. Please update your MACE installation.")
+                return
+            try:
+                log_queue.put(
+                    f"Initializing mace_mp calculator on {device}...")
+                calculator = mace_mp(
+                    model=model_size, dispersion=False, default_dtype="float64", device=device)
+                log_queue.put(
+                    f"✅ mace_mp calculator initialized successfully on {device}")
+            except Exception as e:
+                log_queue.put(
+                    f"❌ mace_mp initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        calculator = mace_mp(
+                            model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                        log_queue.put(
+                            "✅ mace_mp calculator initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
                     return
 
         elif MACE_IMPORT_METHOD == "MACECalculator":
-            log_queue.put("Warning: Using MACECalculator - you may need to provide model paths manually")
+            if is_mace_off:
+                log_queue.put(
+                    "❌ MACE-OFF models not supported with MACECalculator import method.")
+                return
+            log_queue.put(
+                "Warning: Using MACECalculator - you may need to provide model paths manually")
             try:
                 calculator = MACECalculator(device=device)
                 log_queue.put(f"✅ MACECalculator initialized on {device}")
             except Exception as e:
-                log_queue.put(f"❌ MACECalculator initialization failed on {device}: {str(e)}")
+                log_queue.put(
+                    f"❌ MACECalculator initialization failed on {device}: {str(e)}")
                 if device == "cuda":
-                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
                         calculator = MACECalculator(device="cpu")
-                        log_queue.put("✅ MACECalculator initialized on CPU (fallback)")
+                        log_queue.put(
+                            "✅ MACECalculator initialized on CPU (fallback)")
                     except Exception as cpu_error:
-                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
-                        log_queue.put("Please ensure you have MACE models downloaded locally")
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
                         return
                 else:
-                    log_queue.put("Please ensure you have MACE models downloaded locally")
                     return
         else:
-            log_queue.put("❌ MACE not available - please install with: pip install mace-torch")
+            log_queue.put(
+                "❌ MACE not available - please install with: pip install mace-torch")
             return
 
         if calculator is None:
@@ -1988,10 +2116,27 @@ with st.sidebar:
         st.error("Please install with: `pip install mace-torch`")
         st.stop()
 
-    st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
+    #st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
 
-    selected_model = st.selectbox("Choose MACE Model", list(MACE_MODELS.keys()))
+    if MACE_OFF_AVAILABLE:
+      #  st.success("✅ MACE-OFF (organic molecules) available")
+        pass
+    else:
+        st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
+
+    selected_model = st.selectbox(
+        "Choose MACE Model", list(MACE_MODELS.keys()))
     model_size = MACE_MODELS[selected_model]
+
+    # Show model type information
+    model_type, description = get_model_type_from_selection(selected_model)
+
+    if model_type == "MACE-OFF":
+        st.info(f"🧪 **{model_type}**: {description}")
+        if not MACE_OFF_AVAILABLE:
+            st.error("❌ MACE-OFF models require updated MACE installation!")
+    else:
+        st.info(f"🔬 **{model_type}**: {description}")
 
     device_option = st.radio(
         "Compute Device",
@@ -2192,10 +2337,10 @@ with tab1:
                         st.write(f"  b = {structure.lattice.b:.3f} Å")
                         st.write(f"  c = {structure.lattice.c:.3f} Å")
 
-                        is_compatible, unsupported, elements = check_mace_compatibility(structure)
+                        is_compatible, unsupported, elements, detected_model_type =  check_mace_compatibility(structure, selected_model)
 
                         if is_compatible:
-                            st.success("✅ Compatible with MACE-MP-0")
+                            st.success(f"✅ Compatible with {detected_model_type}")
                         else:
                             st.error(f"❌ Unsupported elements: {', '.join(unsupported)}")
 
@@ -2554,6 +2699,9 @@ with tab1:
         st.info("Upload structure files to begin")
 with tab_st:           
     if st.session_state.structures_locked:
+        current_script_folder = os.getcwd()
+        backup_folder = os.path.join(current_script_folder, "results_backup")
+        st.info(f"💾 **Auto-backup**: Results (energies & lattice parameters) will be automatically saved to: `{backup_folder}`")
         col1, col2 = st.columns(2) 
 
         st.markdown("""
@@ -2652,6 +2800,10 @@ with tab_st:
             st.session_state.optimization_trajectories = {}
             st.session_state.stop_event.clear()
             st.session_state.last_update_time = 0
+
+            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"results_{current_time}.txt"
+            st.session_state.results_backup_file = os.path.join("results_backup", backup_filename)
 
             thread = threading.Thread(
                 target=run_mace_calculation,
@@ -2763,6 +2915,8 @@ with tab2:
                 st.session_state.optimization_trajectories[message['structure']] = message['trajectory']
             elif message.get('type') == 'result':
                 st.session_state.results.append(message)
+                if st.session_state.results_backup_file:
+                    append_to_backup_file(message, st.session_state.results_backup_file)
         elif message == "CALCULATION_FINISHED":
             st.session_state.calculation_running = False
             st.session_state.current_structure_progress = {}
@@ -4991,7 +5145,7 @@ with tab3:
                             mime="text/csv", type = 'primary'
                         )
 
-                    if len(lattice_data) > 1:
+                    if len(lattice_data) >= 1:
                         st.subheader("📊 Lattice Parameter Changes")
 
                         col_vis1, col_vis2 = st.columns(2)
