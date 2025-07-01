@@ -5240,46 +5240,40 @@ with tab3:
 
                                         # Show format-specific options
                                         if output_format == "POSCAR":
-                                            col_pos1, col_pos2 = st.columns(2)
-                                            with col_pos1:
-                                                use_fractional = st.checkbox(
-                                                    "Fractional coordinates",
-                                                    value=True,
-                                                    key=f"poscar_frac_{result['name']}"
-                                                )
-                                            with col_pos2:
-                                                use_selective = st.checkbox(
-                                                    "Selective dynamics (all free)",
-                                                    value=False,
-                                                    key=f"poscar_sel_{result['name']}"
-                                                )
+                                            use_fractional = st.checkbox(
+                                                "Fractional coordinates",
+                                                value=True,
+                                                key=f"poscar_frac_{result['name']}"
+                                            )
+                                            use_selective = st.checkbox(
+                                                "Selective dynamics (all free)",
+                                                value=False,
+                                                key=f"poscar_sel_{result['name']}"
+                                            )
 
                                         elif output_format == "LAMMPS":
-                                            col_lmp1, col_lmp2 = st.columns(2)
-                                            with col_lmp1:
-                                                lmp_style = st.selectbox(
-                                                    "Atom style:",
-                                                    ["atomic", "charge", "full"],
-                                                    index=0,
-                                                    key=f"lmp_style_{result['name']}"
-                                                )
-                                                lmp_units = st.selectbox(
-                                                    "Units:",
-                                                    ["metal", "real", "si"],
-                                                    index=0,
-                                                    key=f"lmp_units_{result['name']}"
-                                                )
-                                            with col_lmp2:
-                                                lmp_masses = st.checkbox(
-                                                    "Include masses",
-                                                    value=True,
-                                                    key=f"lmp_masses_{result['name']}"
-                                                )
-                                                lmp_skew = st.checkbox(
-                                                    "Force triclinic",
-                                                    value=False,
-                                                    key=f"lmp_skew_{result['name']}"
-                                                )
+                                            lmp_style = st.selectbox(
+                                                "Atom style:",
+                                                ["atomic", "charge", "full"],
+                                                index=0,
+                                                key=f"lmp_style_{result['name']}"
+                                            )
+                                            lmp_units = st.selectbox(
+                                                "Units:",
+                                                ["metal", "real", "si"],
+                                                index=0,
+                                                key=f"lmp_units_{result['name']}"
+                                            )
+                                            lmp_masses = st.checkbox(
+                                                "Include masses",
+                                                value=True,
+                                                key=f"lmp_masses_{result['name']}"
+                                            )
+                                            lmp_skew = st.checkbox(
+                                                "Force triclinic",
+                                                value=False,
+                                                key=f"lmp_skew_{result['name']}"
+                                            )
 
                                         elif output_format == "CIF":
                                             cif_symprec = st.number_input(
@@ -5408,7 +5402,7 @@ with tab3:
                     with col_download2:
                         if len(geometry_results) > 1:
                             st.write("**Bulk Download Options:**")
-                            
+                        
                             # Format selection
                             bulk_formats = st.multiselect(
                                 "Select formats:",
@@ -5424,13 +5418,10 @@ with tab3:
                             
                             if "LAMMPS" in bulk_formats:
                                 st.write("**LAMMPS Options:**")
-                                col_lmp1, col_lmp2 = st.columns(2)
-                                with col_lmp1:
-                                    bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0, key="bulk_lmp_style")
-                                    bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0, key="bulk_lmp_units")
-                                with col_lmp2:
-                                    bulk_lmp_masses = st.checkbox("Include masses", value=True, key="bulk_lmp_masses")
-                                    bulk_lmp_skew = st.checkbox("Force triclinic", value=False, key="bulk_lmp_skew")
+                                bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0, key="bulk_lmp_style")
+                                bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0, key="bulk_lmp_units")
+                                bulk_lmp_masses = st.checkbox("Include masses", value=True, key="bulk_lmp_masses")
+                                bulk_lmp_skew = st.checkbox("Force triclinic", value=False, key="bulk_lmp_skew")
 
                             if bulk_formats and st.button("📦 Generate ZIP", type="primary", key="generate_bulk_zip"):
                                 try:
