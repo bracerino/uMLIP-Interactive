@@ -2957,7 +2957,7 @@ with tab2:
         if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get('is_optimizing'):
             opt_info = st.session_state.current_optimization_info
 
-            opt_progress = opt_info.get('current_step', 0) / opt_info['max_steps'] if opt_info['max_steps'] > 0 else 0
+            opt_progress = min(1.0, opt_info.get('current_step', 0) / opt_info['max_steps']) if opt_info['max_steps'] > 0 else 0
             opt_text = f"Optimizing {opt_info['structure']}: Step {opt_info.get('current_step', 0)}/{opt_info['max_steps']}"
 
             if 'current_energy' in opt_info:
