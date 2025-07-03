@@ -3366,66 +3366,7 @@ with tab3:
                             </div>
                             """, unsafe_allow_html=True)
 
-                if len(timing_data) > 2:
-                    st.subheader("📅 Calculation Timeline")
-                    timeline_data = []
-                    for structure_name, timing_info in st.session_state.computation_times.items():
-                        start_time = timing_info['start_time']
-                        end_time = timing_info['end_time']
-
-                        timeline_data.append({
-                            'Structure': structure_name,
-                            'Start': pd.to_datetime(start_time, unit='s'),
-                            'Finish': pd.to_datetime(end_time, unit='s'),
-                            'Duration': timing_info['duration'],
-                            'Status': "Success" if not timing_info.get('failed', False) else "Failed"
-                        })
-
-                    fig_timeline = go.Figure()
-
-                    for i, data in enumerate(timeline_data):
-                        color = 'green' if data['Status'] == 'Success' else 'red'
-
-                        fig_timeline.add_trace(go.Scatter(
-                            x=[data['Start'], data['Finish']],
-                            y=[i, i],
-                            mode='lines+markers',
-                            line=dict(color=color, width=8),
-                            marker=dict(size=8, color=color),
-                            name=data['Structure'],
-                            hovertemplate=f"<b>{data['Structure']}</b><br>" +
-                                          f"Start: %{{x}}<br>" +
-                                          f"Duration: {format_duration(data['Duration'])}<br>" +
-                                          f"Status: {data['Status']}<extra></extra>",
-                            showlegend=False
-                        ))
-
-                    fig_timeline.update_layout(
-                        title=dict(text="Calculation Timeline", font=dict(size=24)),
-                        xaxis_title="Time",
-                        yaxis=dict(
-                            tickmode='array',
-                            tickvals=list(range(len(timeline_data))),
-                            ticktext=[d['Structure'] for d in timeline_data],
-                            title="Structure",
-                            title_font=dict(size=18),
-                            tickfont=dict(size=14)
-                        ),
-                        height=max(650, len(timeline_data) * 40),
-                        font=dict(size=16),
-                        xaxis=dict(
-                            title_font=dict(size=18),
-                            tickfont=dict(size=14)
-                        ),
-                        hoverlabel=dict(
-                            bgcolor="white",
-                            bordercolor="black",
-                            font_size=20,
-                            font_family="Arial"
-                        )
-                    )
-
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    
                 st.subheader("🎯 Performance Insights")
 
                 if len(timing_data) > 1:
