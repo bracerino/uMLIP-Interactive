@@ -2832,7 +2832,8 @@ with tab_st:
                 optimization_params=optimization_params,
                 phonon_params=phonon_params,
                 elastic_params=elastic_params,
-                calc_formation_energy=calculate_formation_energy_flag
+                calc_formation_energy=calculate_formation_energy_flag,
+                selected_model_key=selected_model
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
