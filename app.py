@@ -1,3 +1,4 @@
+from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
@@ -193,25 +194,69 @@ def load_structure(file):
 
         filename = file.name.lower()
 
-        if filename.endswith(".cif"):
-            mg_structure = Structure.from_file(file.name)
-        elif filename.endswith(".data"):
-            lmp_filename = file.name.replace(".data", ".lmp")
-            os.rename(file.name, lmp_filename)
-            lammps_data = LammpsData.from_file(lmp_filename, atom_style="atomic")
-            mg_structure = lammps_data.structure
-        elif filename.endswith(".lmp"):
-            lammps_data = LammpsData.from_file(file.name, atom_style="atomic")
-            mg_structure = lammps_data.structure
+        if filename.endswith(".vasp") or filename.endswith("poscar") or filename.endswith("contcar"):
+            atoms = read(file.name, format='vasp')
+
+            selective_dynamics = None
+            constraints = []
+
+            with open(file.name, 'r') as f:
+                lines = f.readlines()
+
+            selective_line_idx = None
+            for i, line in enumerate(lines):
+                if line.strip().lower().startswith('selective'):
+                    selective_line_idx = i
+                    break
+
+            if selective_line_idx is not None:
+                coord_start = selective_line_idx + 2
+
+                fixed_indices = []
+                cartesian_constraints = []
+
+                for i, line in enumerate(lines[coord_start:]):
+                    if line.strip() == '' or line.startswith('#'):
+                        break
+
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        fx, fy, fz = parts[3:6]
+
+                        fix_x = fx.upper() == 'F'
+                        fix_y = fy.upper() == 'F'
+                        fix_z = fz.upper() == 'F'
+
+                        if fix_x and fix_y and fix_z:
+                            fixed_indices.append(i)
+                        elif fix_x or fix_y or fix_z:
+                            mask = [fix_x, fix_y, fix_z]
+                            cartesian_constraints.append((i, mask))
+
+                if fixed_indices:
+                    constraints.append(FixAtoms(indices=fixed_indices))
+
+                for atom_idx, mask in cartesian_constraints:
+                    constraints.append(FixCartesian(atom_idx, mask))
+
+                if constraints:
+                    atoms.set_constraint(constraints)
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            mg_structure = AseAtomsAdaptor.get_structure(atoms)
+
+            if constraints:
+                mg_structure.constraints_info = constraints
+
         else:
             atoms = read(file.name)
-            
+
             constraints_info = None
             if hasattr(atoms, 'constraints') and atoms.constraints:
                 constraints_info = atoms.constraints
-            
+
+            from pymatgen.io.ase import AseAtomsAdaptor
             mg_structure = AseAtomsAdaptor.get_structure(atoms)
-            
 
             if constraints_info:
                 mg_structure.constraints_info = constraints_info
@@ -223,9 +268,6 @@ def load_structure(file):
 
     except Exception as e:
         st.error(f"Failed to parse {file.name}: {e}")
-        st.error(
-            f"Failed to load structure file. Supported formats: CIF, POSCAR, LMP, XSF, PW, CFG, and other ASE-compatible formats. "
-            f"Please check your file format and try again. 😊")
         if os.path.exists(file.name):
             os.remove(file.name)
         raise e
@@ -1347,12 +1389,15 @@ def pymatgen_to_ase(structure):
         cell=structure.lattice.matrix,
         pbc=True
     )
-    
+
     wrapped_atoms = wrap_positions_in_cell(atoms)
-    
+
     if hasattr(structure, 'constraints_info') and structure.constraints_info:
-        wrapped_atoms.set_constraint(structure.constraints_info)
-    
+        if isinstance(structure.constraints_info, list):
+            wrapped_atoms.set_constraint(structure.constraints_info)
+        else:
+            wrapped_atoms.set_constraint([structure.constraints_info])
+
     return wrapped_atoms
 
 
@@ -1445,22 +1490,40 @@ def create_cell_filter(atoms, optimization_params):
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+
 def check_selective_dynamics(atoms):
-    """Check if atoms have selective dynamics constraints"""
-    if hasattr(atoms, 'constraints') and atoms.constraints:
-        for constraint in atoms.constraints:
+    if not hasattr(atoms, 'constraints') or not atoms.constraints:
+        return False, 0, len(atoms)
+
+    total_atoms = len(atoms)
+    constrained_atoms = set()
+
+    for constraint in atoms.constraints:
+        try:
             if isinstance(constraint, FixAtoms):
                 fixed_indices = constraint.get_indices()
-                total_atoms = len(atoms)
-                fixed_atoms = len(fixed_indices)
-                return True, fixed_atoms, total_atoms
-    return False, 0, len(atoms)
+                constrained_atoms.update(fixed_indices)
+            else:
+                constrained_atoms.add(0)
+        except Exception:
+            continue
+
+    has_constraints = len(constrained_atoms) > 0
+    total_constrained = len(constrained_atoms)
+
+    # Return empty dict as 4th value to match expected unpacking
+    return has_constraints, total_constrained, total_atoms
 
 
 def setup_optimization_constraints(atoms, optimization_params):
-    opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
-    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
-    
+    opt_type = optimization_params.get(
+        'optimization_type', 'Both atoms and cell')
+
+    has_constraints, total_constrained, total_atoms = check_selective_dynamics(
+        atoms)
+
+    existing_constraints = atoms.constraints if hasattr(
+        atoms, 'constraints') and atoms.constraints else []
 
     if opt_type == "Atoms only (fixed cell)":
         return atoms, None
@@ -1818,19 +1881,24 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(f"Starting geometry optimization for {name}")
 
                     opt_type = optimization_params['optimization_type']
-
                     log_queue.put(f"Optimization type: {opt_type}")
 
                     atoms = pymatgen_to_ase(structure)
                     atoms.calc = calculator
-                    
-                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
-                    
+
+                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(
+                        atoms)
+
+                    print("HER?")
                     if has_constraints:
-                        log_queue.put(f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are fixed")
-                        log_queue.put(f"  Fixed atoms will remain at their original positions during optimization")
+                        log_queue.put(
+                            f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
+                        log_queue.put(
+                            f"  Constrained atoms will respect their original selective dynamics during optimization")
                     else:
-                        log_queue.put(f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+                        log_queue.put(
+                            f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+
                     if optimization_params.get('cell_constraint'):
                         log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
 
@@ -1840,6 +1908,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if optimization_params.get('hydrostatic_strain'):
                         log_queue.put("Using hydrostatic strain constraint")
 
+
+                    print("NOTH ERE?")
                     log_queue.put({
                         'type': 'opt_start',
                         'structure': name,
