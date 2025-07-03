@@ -31,6 +31,7 @@ from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
 from helpers.mace_cards import *
+from helpers.generate_python_code import *
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -50,6 +51,8 @@ except ImportError:
 
 MACE_IMPORT_METHOD = None
 MACE_AVAILABLE = False
+MACE_OFF_AVAILABLE = False
+
 
 import numpy as np
 from ase.phonons import Phonons
@@ -675,7 +678,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put(f"  Generating displacements (distance={displacement_distance} Å)...")
         phonon.generate_displacements(distance=displacement_distance)
 
-        supercells = phonon.get_supercells_with_displacements()
+        supercells = phonon.supercells_with_displacements
         log_queue.put(f"  Generated {len(supercells)} displaced supercells")
 
         log_queue.put("  Calculating forces for displaced supercells...")
@@ -1069,25 +1072,31 @@ except ImportError:
     print("⚠️ Phonopy not available for phonon calculations")
 
 try:
-    from mace.calculators import mace_mp
-
-    MACE_IMPORT_METHOD = "mace_mp"
+    from mace.calculators import mace_mp, mace_off  # Import both
+    MACE_IMPORT_METHOD = "mace_mp_and_off"
     MACE_AVAILABLE = True
+    MACE_OFF_AVAILABLE = True
 except ImportError:
     try:
-        from mace.calculators import MACECalculator
-
-        MACE_IMPORT_METHOD = "MACECalculator"
+        from mace.calculators import mace_mp
+        MACE_IMPORT_METHOD = "mace_mp"
         MACE_AVAILABLE = True
+        MACE_OFF_AVAILABLE = False
     except ImportError:
         try:
-            import mace
             from mace.calculators import MACECalculator
-
             MACE_IMPORT_METHOD = "MACECalculator"
             MACE_AVAILABLE = True
+            MACE_OFF_AVAILABLE = False
         except ImportError:
-            MACE_AVAILABLE = False
+            try:
+                import mace
+                from mace.calculators import MACECalculator
+                MACE_IMPORT_METHOD = "MACECalculator"
+                MACE_AVAILABLE = True
+                MACE_OFF_AVAILABLE = False
+            except ImportError:
+                MACE_AVAILABLE = False
 
 class OptimizationLogger:
     def __init__(self, log_queue, structure_name):
@@ -1263,6 +1272,11 @@ MACE_MODELS = {
     # ========== MATPES MODELS (need full URLs) ==========
     "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
     "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
+
+    # ========== MACE-OFF MODELS (Organic Force Fields) ==========
+    "MACE-OFF23 (small) - Organic": "small",
+    "MACE-OFF23 (medium) - Organic": "medium",
+    "MACE-OFF23 (large) - Organic": "large",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1283,7 +1297,10 @@ MACE_ELEMENTS = {
                   "Xe",
                   "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
                   "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra",
-                  "Ac", "Th", "Pa", "U", "Np", "Pu"]
+                  "Ac", "Th", "Pa", "U", "Np", "Pu"],
+    "MACE-OFF": ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
+
+
 }
 
 
@@ -1302,12 +1319,25 @@ def view_structure(structure, height=300, width=400):
     except:
         return f"<div style='height:{height}px;width:{width}px;background-color:#f0f0f0;display:flex;align-items:center;justify-content:center;'>Structure preview unavailable</div>"
 
-
-def check_mace_compatibility(structure, model_name="MACE-MP-0"):
+def check_mace_compatibility(structure, selected_model_key="MACE-MP-0 (medium) - Original"):
     elements = list(set([site.specie.symbol for site in structure]))
-    supported_elements = MACE_ELEMENTS[model_name]
+    
+    if "OFF" in selected_model_key:
+        model_type = "MACE-OFF"
+    else:
+        model_type = "MACE-MP-0"
+    
+    supported_elements = MACE_ELEMENTS[model_type]
     unsupported = [elem for elem in elements if elem not in supported_elements]
-    return len(unsupported) == 0, unsupported, elements
+    
+    return len(unsupported) == 0, unsupported, elements, model_type
+
+
+def get_model_type_from_selection(selected_model_name):
+    if "OFF" in selected_model_name:
+        return "MACE-OFF", "Organic molecules (H, C, N, O, F, P, S, Cl, Br, I)"
+    else:
+        return "MACE-MP", "General materials (89 elements)"
 
 
 def pymatgen_to_ase(structure):
@@ -1607,47 +1637,110 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         calculator = None
 
-        if MACE_IMPORT_METHOD == "mace_mp":
+        is_mace_off = "OFF" in selected_model
+
+        if is_mace_off and not MACE_OFF_AVAILABLE:
+            log_queue.put(
+                "❌ MACE-OFF models requested but not available. Please update your MACE installation.")
+            return
+
+        if MACE_IMPORT_METHOD == "mace_mp_and_off":
             try:
-                log_queue.put(f"Initializing mace_mp calculator on {device}...")
-                calculator = mace_mp(model=model_size, dispersion=False, default_dtype="float64", device=device)
-                log_queue.put(f"✅ mace_mp calculator initialized successfully on {device}")
+                if is_mace_off:
+                    log_queue.put(
+                        f"Initializing MACE-OFF calculator on {device}...")
+                    calculator = mace_off(
+                        model=model_size, default_dtype="float64", device=device)
+                    log_queue.put(
+                        f"✅ MACE-OFF calculator initialized successfully on {device}")
+                else:
+                    log_queue.put(
+                        f"Initializing MACE-MP calculator on {device}...")
+                    calculator = mace_mp(
+                        model=model_size, dispersion=False, default_dtype="float64", device=device)
+                    log_queue.put(
+                        f"✅ MACE-MP calculator initialized successfully on {device}")
             except Exception as e:
-                log_queue.put(f"❌ mace_mp initialization failed on {device}: {str(e)}")
+                log_queue.put(
+                    f"❌ Calculator initialization failed on {device}: {str(e)}")
                 if device == "cuda":
-                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
-                        calculator = mace_mp(model=model_size, dispersion=False, default_dtype="float64", device="cpu")
-                        log_queue.put("✅ mace_mp calculator initialized successfully on CPU (fallback)")
+                        if is_mace_off:
+                            calculator = mace_off(
+                                model=model_size, default_dtype="float64", device="cpu")
+                        else:
+                            calculator = mace_mp(
+                                model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                        log_queue.put(
+                            "✅ Calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
-                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
-                        log_queue.put("This might be due to model download issues or device compatibility")
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
                         return
                 else:
-                    log_queue.put("This might be due to model download issues or device compatibility")
+                    return
+
+        elif MACE_IMPORT_METHOD == "mace_mp":
+            if is_mace_off:
+                log_queue.put(
+                    "❌ MACE-OFF models requested but only MACE-MP available. Please update your MACE installation.")
+                return
+            try:
+                log_queue.put(
+                    f"Initializing mace_mp calculator on {device}...")
+                calculator = mace_mp(
+                    model=model_size, dispersion=False, default_dtype="float64", device=device)
+                log_queue.put(
+                    f"✅ mace_mp calculator initialized successfully on {device}")
+            except Exception as e:
+                log_queue.put(
+                    f"❌ mace_mp initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        calculator = mace_mp(
+                            model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                        log_queue.put(
+                            "✅ mace_mp calculator initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
                     return
 
         elif MACE_IMPORT_METHOD == "MACECalculator":
-            log_queue.put("Warning: Using MACECalculator - you may need to provide model paths manually")
+            if is_mace_off:
+                log_queue.put(
+                    "❌ MACE-OFF models not supported with MACECalculator import method.")
+                return
+            log_queue.put(
+                "Warning: Using MACECalculator - you may need to provide model paths manually")
             try:
                 calculator = MACECalculator(device=device)
                 log_queue.put(f"✅ MACECalculator initialized on {device}")
             except Exception as e:
-                log_queue.put(f"❌ MACECalculator initialization failed on {device}: {str(e)}")
+                log_queue.put(
+                    f"❌ MACECalculator initialization failed on {device}: {str(e)}")
                 if device == "cuda":
-                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    log_queue.put(
+                        "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
                         calculator = MACECalculator(device="cpu")
-                        log_queue.put("✅ MACECalculator initialized on CPU (fallback)")
+                        log_queue.put(
+                            "✅ MACECalculator initialized on CPU (fallback)")
                     except Exception as cpu_error:
-                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
-                        log_queue.put("Please ensure you have MACE models downloaded locally")
+                        log_queue.put(
+                            f"❌ CPU fallback also failed: {str(cpu_error)}")
                         return
                 else:
-                    log_queue.put("Please ensure you have MACE models downloaded locally")
                     return
         else:
-            log_queue.put("❌ MACE not available - please install with: pip install mace-torch")
+            log_queue.put(
+                "❌ MACE not available - please install with: pip install mace-torch")
             return
 
         if calculator is None:
@@ -2023,10 +2116,27 @@ with st.sidebar:
         st.error("Please install with: `pip install mace-torch`")
         st.stop()
 
-    st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
+    #st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
 
-    selected_model = st.selectbox("Choose MACE Model", list(MACE_MODELS.keys()))
+    if MACE_OFF_AVAILABLE:
+      #  st.success("✅ MACE-OFF (organic molecules) available")
+        pass
+    else:
+        st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
+
+    selected_model = st.selectbox(
+        "Choose MACE Model", list(MACE_MODELS.keys()))
     model_size = MACE_MODELS[selected_model]
+
+    # Show model type information
+    model_type, description = get_model_type_from_selection(selected_model)
+
+    if model_type == "MACE-OFF":
+        st.info(f"🧪 **{model_type}**: {description}")
+        if not MACE_OFF_AVAILABLE:
+            st.error("❌ MACE-OFF models require updated MACE installation!")
+    else:
+        st.info(f"🔬 **{model_type}**: {description}")
 
     device_option = st.radio(
         "Compute Device",
@@ -2227,10 +2337,10 @@ with tab1:
                         st.write(f"  b = {structure.lattice.b:.3f} Å")
                         st.write(f"  c = {structure.lattice.c:.3f} Å")
 
-                        is_compatible, unsupported, elements = check_mace_compatibility(structure)
+                        is_compatible, unsupported, elements, detected_model_type =  check_mace_compatibility(structure, selected_model)
 
                         if is_compatible:
-                            st.success("✅ Compatible with MACE-MP-0")
+                            st.success(f"✅ Compatible with {detected_model_type}")
                         else:
                             st.error(f"❌ Unsupported elements: {', '.join(unsupported)}")
 
@@ -2655,15 +2765,39 @@ with tab_st:
                 calc_formation_energy=calculate_formation_energy_flag
             )
 
-            with st.expander("📋 Generated Python Script", expanded=True):
-                st.code(script_content, language='python')
-                st.download_button(
+            script_key = f"script_{hash(script_content) % 10000}"
+    
+            if f"copied_{script_key}" not in st.session_state:
+                st.session_state[f"copied_{script_key}"] = False
+            if st.button("📋 Copy All Code", key=f"copy_btn_{script_key}", type="secondary"):
+                # Store the script content in session state
+                st.session_state[f"script_content_{script_key}"] = script_content
+                st.session_state[f"copied_{script_key}"] = True
+                
+                # Create a JavaScript snippet to copy to clipboard
+                copy_js = f"""
+                <script>
+                navigator.clipboard.writeText(`{script_content.replace('`', '\\`').replace('$', '\\$')}`);
+                </script>
+                """
+                st.components.v1.html(copy_js, height=0)
+                st.success("✅ Code copied to clipboard!")
+                
+                # Reset the copied state after a delay
+                time.sleep(1)
+                st.session_state[f"copied_{script_key}"] = False
+
+            st.download_button(
                     label="💾 Download Script",
                     data=script_content,
                     file_name="mace_calculation_script.py",
                     mime="text/x-python",
                     help="Download the Python script file"
                 )
+
+            with st.expander("📋 Generated Python Script", expanded=True):
+                st.code(script_content, language='python')
+                
 
                 st.info("""
                         **Usage Instructions:**
@@ -2712,8 +2846,6 @@ with st.sidebar:
 
     if MACE_IMPORT_METHOD == "mace_mp":
         st.info("Using mace_mp - models downloaded automatically")
-    else:
-        st.warning("Using MACECalculator - may require local model files")
 with tab2:
     st.header("Calculation Console")
 
@@ -2825,7 +2957,7 @@ with tab2:
         if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get('is_optimizing'):
             opt_info = st.session_state.current_optimization_info
 
-            opt_progress = opt_info.get('current_step', 0) / opt_info['max_steps'] if opt_info['max_steps'] > 0 else 0
+            opt_progress = min(1.0, opt_info.get('current_step', 0) / opt_info['max_steps']) if opt_info['max_steps'] > 0 else 0
             opt_text = f"Optimizing {opt_info['structure']}: Step {opt_info.get('current_step', 0)}/{opt_info['max_steps']}"
 
             if 'current_energy' in opt_info:
@@ -3181,53 +3313,7 @@ with tab3:
                         - Type: {slowest['Calculation Type']}
                         """)
 
-                st.subheader("📥 Export Timing Data")
-
-                col_export1, col_export2 = st.columns(2)
-
-                with col_export1:
-                    timing_csv = df_timing.to_csv(index=False)
-                    st.download_button(
-                        label="📊 Download Timing Data (CSV)",
-                        data=timing_csv,
-                        file_name="computation_times.csv",
-                        mime="text/csv",
-                        help="Download detailed timing information as CSV"
-                    )
-
-                with col_export2:
-                    timing_report = {
-                        'summary': {
-                            'total_structures': len(st.session_state.computation_times),
-                            'successful_structures': successful_count,
-                            'total_time_seconds': total_successful_time + total_failed_time,
-                            'total_time_formatted': format_duration(total_successful_time + total_failed_time),
-                            'average_time_per_structure': format_duration(
-                                (total_successful_time + total_failed_time) / len(
-                                    st.session_state.computation_times)) if len(
-                                st.session_state.computation_times) > 0 else "0s"
-                        },
-                        'detailed_times': {
-                            name: {
-                                'duration_seconds': info['duration'],
-                                'duration_formatted': info['human_duration'],
-                                'calculation_type': info['calc_type'],
-                                'status': 'failed' if info.get('failed', False) else 'success',
-                                'start_timestamp': info['start_time'],
-                                'end_timestamp': info['end_time']
-                            }
-                            for name, info in st.session_state.computation_times.items()
-                        }
-                    }
-
-                    timing_json = json.dumps(timing_report, indent=2)
-                    st.download_button(
-                        label="📋 Download Timing Report (JSON)",
-                        data=timing_json,
-                        file_name="timing_report.json",
-                        mime="application/json",
-                        help="Download comprehensive timing report as JSON"
-                    )
+                
 
             else:
                 st.info("⏱️ Computation timing data will appear here after calculations complete.")
@@ -5127,46 +5213,365 @@ with tab3:
                         st.write("Download individual optimized POSCAR files:")
 
                         for result in geometry_results:
-                            col_struct, col_btn = st.columns([3, 1])
-
-                            with col_struct:
+                            with st.expander(f"📁 {result['name']} - {result.get('convergence_status', 'Unknown')}", expanded=False):
                                 convergence_status = result.get('convergence_status', '')
                                 convergence_icon = "✅" if convergence_status and "CONVERGED" in convergence_status else "⚠️"
-                                st.write(
-                                    f"{convergence_icon} **{result['name']}** - {result.get('convergence_status', 'Unknown')}")
 
-                            with col_btn:
-                                if 'structure' in result and result['structure']:
-                                    poscar_content = create_wrapped_poscar_content(result['structure'])
-                                    filename = f"optimized_{result['name']}"
+                                col_info, col_options = st.columns([1, 2])
 
-                                    st.download_button(
-                                        label="📥 POSCAR",
-                                        data=poscar_content,
-                                        file_name=filename,
-                                        mime="text/plain",
-                                        key=f"poscar_{result['name']}",
-                                        type='primary'
-                                    )
+                                with col_info:
+                                    st.write(
+                                        f"{convergence_icon} **Status:** {result.get('convergence_status', 'Unknown')}")
+                                    if 'structure' in result and result['structure']:
+                                        st.write(
+                                            f"**Formula:** {result['structure'].composition.reduced_formula}")
+                                        st.write(f"**Atoms:** {len(result['structure'])}")
+
+                                with col_options:
+                                    if 'structure' in result and result['structure']:
+                                        # Format selector
+                                        output_format = st.selectbox(
+                                            "Output format:",
+                                            ["POSCAR", "CIF", "LAMMPS", "XYZ"],
+                                            key=f"format_{result['name']}",
+                                            index=0
+                                        )
+
+                                        # Show format-specific options
+                                        if output_format == "POSCAR":
+                                            use_fractional = st.checkbox(
+                                                "Fractional coordinates",
+                                                value=True,
+                                                key=f"poscar_frac_{result['name']}"
+                                            )
+                                            use_selective = st.checkbox(
+                                                "Selective dynamics (all free)",
+                                                value=False,
+                                                key=f"poscar_sel_{result['name']}"
+                                            )
+
+                                        elif output_format == "LAMMPS":
+                                            lmp_style = st.selectbox(
+                                                "Atom style:",
+                                                ["atomic", "charge", "full"],
+                                                index=0,
+                                                key=f"lmp_style_{result['name']}"
+                                            )
+                                            lmp_units = st.selectbox(
+                                                "Units:",
+                                                ["metal", "real", "si"],
+                                                index=0,
+                                                key=f"lmp_units_{result['name']}"
+                                            )
+                                            lmp_masses = st.checkbox(
+                                                "Include masses",
+                                                value=True,
+                                                key=f"lmp_masses_{result['name']}"
+                                            )
+                                            lmp_skew = st.checkbox(
+                                                "Force triclinic",
+                                                value=False,
+                                                key=f"lmp_skew_{result['name']}"
+                                            )
+
+                                        elif output_format == "CIF":
+                                            cif_symprec = st.number_input(
+                                                "Symmetry precision:",
+                                                value=0.1,
+                                                min_value=0.001,
+                                                max_value=1.0,
+                                                step=0.001,
+                                                format="%.3f",
+                                                key=f"cif_symprec_{result['name']}"
+                                            )
+
+                                        # Generate button
+                                        if st.button(f"📥 Download {output_format}", key=f"download_btn_{result['name']}_{output_format}", type="primary"):
+                                            try:
+                                                base_name = result['name'].split('.')[0]
+                                                structure = result['structure']
+
+                                                if output_format == "POSCAR":
+                                                    from pymatgen.io.ase import AseAtomsAdaptor
+                                                    from ase.io import write
+                                                    from ase.constraints import FixAtoms
+                                                    from io import StringIO
+
+                                                    # Convert to ASE
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        new_struct.append(
+                                                            species=site.species,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+
+                                                    ase_structure = AseAtomsAdaptor.get_atoms(
+                                                        new_struct)
+
+                                                    if use_selective:
+                                                        constraint = FixAtoms(
+                                                            indices=[])  # All atoms free
+                                                        ase_structure.set_constraint(constraint)
+
+                                                    out = StringIO()
+                                                    write(out, ase_structure, format="vasp",
+                                                        direct=use_fractional, sort=True)
+                                                    file_content = out.getvalue()
+                                                    file_extension = ".vasp"
+                                                    mime_type = "text/plain"
+
+                                                elif output_format == "CIF":
+                                                    from pymatgen.io.cif import CifWriter
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        species_dict = {}
+                                                        for element, occupancy in site.species.items():
+                                                            species_dict[element] = float(occupancy)
+                                                        new_struct.append(
+                                                            species=species_dict,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+                                                    file_content = CifWriter(
+                                                        new_struct, symprec=cif_symprec, write_site_properties=True).__str__()
+                                                    file_extension = ".cif"
+                                                    mime_type = "chemical/x-cif"
+
+                                                elif output_format == "LAMMPS":
+                                                    from pymatgen.io.ase import AseAtomsAdaptor
+                                                    from ase.io import write
+                                                    from io import StringIO
+
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        new_struct.append(
+                                                            species=site.species,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+
+                                                    ase_structure = AseAtomsAdaptor.get_atoms(
+                                                        new_struct)
+                                                    out = StringIO()
+                                                    write(
+                                                        out, ase_structure, format="lammps-data",
+                                                        atom_style=lmp_style, units=lmp_units,
+                                                        masses=lmp_masses, force_skew=lmp_skew
+                                                    )
+                                                    file_content = out.getvalue()
+                                                    file_extension = ".lmp"
+                                                    mime_type = "text/plain"
+
+                                                elif output_format == "XYZ":
+                                                    xyz_lines = []
+                                                    xyz_lines.append(str(len(structure)))
+                                                    
+                                                    lattice_matrix = structure.lattice.matrix
+                                                    lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
+                                                    
+                                                    comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
+                                                    xyz_lines.append(comment_line)
+                                                    
+                                                    for site in structure:
+                                                        if site.is_ordered:
+                                                            element = site.specie.symbol
+                                                        else:
+                                                            element = max(site.species.items(), key=lambda x: x[1])[0].symbol
+                                                        
+                                                        cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
+                                                        xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+                                                    
+                                                    file_content = "\n".join(xyz_lines)
+                                                    file_extension = ".xyz"
+                                                    mime_type = "chemical/x-xyz"
+                                                filename = f"optimized_{base_name}{file_extension}"
+                                                st.download_button(
+                                                    label=f"📥 Download {output_format} File",
+                                                    data=file_content,
+                                                    file_name=filename,
+                                                    mime=mime_type,
+                                                    key=f"final_download_{result['name']}_{output_format}",
+                                                    type="secondary"
+                                                )
+
+                                            except Exception as e:
+                                                st.error(f"Error generating {output_format}: {str(e)}")
 
                     with col_download2:
                         if len(geometry_results) > 1:
-                            st.write("**Bulk Download:**")
-
-                            zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                                for result in geometry_results:
-                                    if 'structure' in result and result['structure']:
-                                        poscar_content = create_wrapped_poscar_content(result['structure'])
-                                        filename = f"optimized_{result['name']}"
-                                        zip_file.writestr(filename, poscar_content)
-
-                            st.download_button(
-                                label="📦 Download All (ZIP)",
-                                data=zip_buffer.getvalue(),
-                                file_name="optimized_structures.zip",
-                                mime="application/zip", type='primary'
+                            st.write("**Bulk Download Options:**")
+                        
+                            # Format selection
+                            bulk_formats = st.multiselect(
+                                "Select formats:",
+                                ["POSCAR", "CIF", "LAMMPS", "XYZ"],
+                                default=["POSCAR"],
+                                key="bulk_format_selector"
                             )
+                            
+                            if "POSCAR" in bulk_formats:
+                                st.write("**VASP POSCAR Options:**")
+                                bulk_vasp_fractional = st.checkbox("Fractional coordinates", value=True, key="bulk_vasp_frac")
+                                bulk_vasp_selective = st.checkbox("Selective dynamics (all free)", value=False, key="bulk_vasp_sel")
+                            
+                            if "LAMMPS" in bulk_formats:
+                                st.write("**LAMMPS Options:**")
+                                bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0, key="bulk_lmp_style")
+                                bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0, key="bulk_lmp_units")
+                                bulk_lmp_masses = st.checkbox("Include masses", value=True, key="bulk_lmp_masses")
+                                bulk_lmp_skew = st.checkbox("Force triclinic", value=False, key="bulk_lmp_skew")
+
+                            if bulk_formats and st.button("📦 Generate ZIP", type="primary", key="generate_bulk_zip"):
+                                try:
+                                    zip_buffer = io.BytesIO()
+                                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                                        for result in geometry_results:
+                                            if 'structure' in result and result['structure']:
+                                                base_name = result['name'].split('.')[0]
+                                                structure = result['structure']
+                                                
+                                                for fmt in bulk_formats:
+                                                    try:
+                                                        if fmt == "POSCAR":
+                                                            from pymatgen.io.ase import AseAtomsAdaptor
+                                                            from ase.io import write
+                                                            from ase.constraints import FixAtoms
+                                                            from io import StringIO
+                                                            
+                                                            # Convert to ASE
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                new_struct.append(
+                                                                    species=site.species,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            
+                                                            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+                                                            
+                                                            if bulk_vasp_selective:
+                                                                constraint = FixAtoms(indices=[])  # All atoms free
+                                                                ase_structure.set_constraint(constraint)
+                                                            
+                                                            out = StringIO()
+                                                            write(out, ase_structure, format="vasp", direct=bulk_vasp_fractional, sort=True)
+                                                            file_content = out.getvalue()
+                                                            filename = f"POSCAR/{base_name}_POSCAR.vasp"
+                                                            
+                                                        elif fmt == "CIF":
+                                                            from pymatgen.io.cif import CifWriter
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                species_dict = {}
+                                                                for element, occupancy in site.species.items():
+                                                                    species_dict[element] = float(occupancy)
+                                                                new_struct.append(
+                                                                    species=species_dict,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            file_content = CifWriter(new_struct, symprec=0.1, write_site_properties=True).__str__()
+                                                            filename = f"CIF/{base_name}.cif"
+                                                            
+                                                        elif fmt == "LAMMPS":
+                                                            from pymatgen.io.ase import AseAtomsAdaptor
+                                                            from ase.io import write
+                                                            from io import StringIO
+                                                            
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                new_struct.append(
+                                                                    species=site.species,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            
+                                                            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+                                                            out = StringIO()
+                                                            write(
+                                                                out, ase_structure, format="lammps-data",
+                                                                atom_style=bulk_lmp_style, units=bulk_lmp_units,
+                                                                masses=bulk_lmp_masses, force_skew=bulk_lmp_skew
+                                                            )
+                                                            file_content = out.getvalue()
+                                                            filename = f"LAMMPS/{base_name}.lmp"
+                                                    
+                                                        elif fmt == "XYZ":
+                                                            xyz_lines = []
+                                                            xyz_lines.append(str(len(structure)))
+                                                            
+                                                            lattice_matrix = structure.lattice.matrix
+                                                            lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
+                                                            
+                                                            comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
+                                                            xyz_lines.append(comment_line)
+                                                            
+                                                            for site in structure:
+                                                                if site.is_ordered:
+                                                                    element = site.specie.symbol
+                                                                else:
+                                                                    element = max(site.species.items(), key=lambda x: x[1])[0].symbol
+                                                                
+                                                                cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
+                                                                xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+                                                            
+                                                            file_content = "\n".join(xyz_lines)
+                                                            filename = f"XYZ/{base_name}.xyz"
+
+                                                        zip_file.writestr(filename, file_content)
+                                                        
+                                                    except Exception as e:
+                                                        st.warning(f"Failed to convert {base_name} to {fmt}: {str(e)}")
+                                                        continue
+                                        
+                                        # Add README
+                                        readme_content = f"""Optimized Structures Package
+                    =============================
+
+                    This package contains {len(geometry_results)} optimized structures in the following formats:
+                    {', '.join(bulk_formats)}
+
+                    Structure Information:
+                    """
+                                        for result in geometry_results:
+                                            readme_content += f"- {result['name']}: {result.get('convergence_status', 'Unknown status')}\n"
+                                        
+                                        readme_content += f"""
+                    Generation Settings:
+                    - VASP POSCAR: {'Fractional' if bulk_vasp_fractional else 'Cartesian'} coordinates"""
+                                        if "POSCAR" in bulk_formats and bulk_vasp_selective:
+                                            readme_content += ", Selective dynamics (all free)"
+                                        if "LAMMPS" in bulk_formats:
+                                            readme_content += f"""
+                    - LAMMPS: {bulk_lmp_style} style, {bulk_lmp_units} units"""
+                                            if bulk_lmp_masses:
+                                                readme_content += ", with masses"
+                                            if bulk_lmp_skew:
+                                                readme_content += ", triclinic forced"
+                                        
+                                        readme_content += f"""
+
+                    Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """
+                                        
+                                        zip_file.writestr("README.txt", readme_content)
+
+                                    st.download_button(
+                                        label=f"📦 Download All ({', '.join(bulk_formats)})",
+                                        data=zip_buffer.getvalue(),
+                                        file_name="optimized_structures.zip",
+                                        mime="application/zip",
+                                        type='primary',
+                                        key="download_bulk_zip_final"
+                                    )
+                                    
+                                    st.success(f"✅ ZIP package created with {len(bulk_formats)} format(s)")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error creating ZIP package: {str(e)}")
+
+
 
                     st.subheader("📈 Optimization Summary")
 
