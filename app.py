@@ -2850,7 +2850,8 @@ with tab_st:
     if st.session_state.structures_locked:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
-        st.info(f"💾 **Auto-backup**: Results (energies & lattice parameters) will be automatically saved to: `{backup_folder}`")
+        st.info(f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`")
+        st.warning(f"The generated Python code is still being tested, but it should work for energies, geometry optimization, and elastic properties.")
         col1, col2 = st.columns(2) 
 
         st.markdown("""
