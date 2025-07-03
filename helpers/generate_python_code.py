@@ -951,6 +951,22 @@ class OptimizationLogger:
             forces = atoms.get_forces()
             max_force = np.max(np.linalg.norm(forces, axis=1))
             energy = atoms.get_potential_energy()
+
+            # Calculate energy per atom
+            energy_per_atom = energy / len(atoms)
+            
+            # Calculate energy change
+            if hasattr(self, 'previous_energy') and self.previous_energy is not None:
+                energy_change = abs(energy - self.previous_energy)
+            else:
+                energy_change = float('inf')
+            self.previous_energy = energy
+            
+            try:
+                stress = atoms.get_stress(voigt=True)
+                max_stress = np.max(np.abs(stress))
+            except:
+                max_stress = 0.0
             
             lattice = get_lattice_parameters(atoms)
             
@@ -980,10 +996,14 @@ class OptimizationLogger:
                 else:
                     remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
                 
-                print(f"    Step {self.step_count}: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å | "
-                      f"Avg: {avg_time_str}/step, Est. remaining: {remaining_time_str} ({remaining_steps} steps)")
+                print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                    f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                    f"ΔE={energy_change:.2e} eV | "
+                    f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
             else:
-                print(f"    Step {self.step_count}: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å")
+                print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                    f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                    f"ΔE={energy_change:.2e} eV")
 '''
 
 def _generate_optimization_code(optimization_params, calc_formation_energy):
