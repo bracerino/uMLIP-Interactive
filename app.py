@@ -2840,30 +2840,14 @@ with tab_st:
     
             if f"copied_{script_key}" not in st.session_state:
                 st.session_state[f"copied_{script_key}"] = False
-            if st.button("📋 Copy All Code", key=f"copy_btn_{script_key}", type="secondary"):
-                # Store the script content in session state
-                st.session_state[f"script_content_{script_key}"] = script_content
-                st.session_state[f"copied_{script_key}"] = True
-                
-                # Create a JavaScript snippet to copy to clipboard
-                copy_js = f"""
-                <script>
-                navigator.clipboard.writeText(`{script_content.replace('`', '\\`').replace('$', '\\$')}`);
-                </script>
-                """
-                st.components.v1.html(copy_js, height=0)
-                st.success("✅ Code copied to clipboard!")
-                
-                # Reset the copied state after a delay
-                time.sleep(1)
-                st.session_state[f"copied_{script_key}"] = False
+            
 
             st.download_button(
                     label="💾 Download Script",
                     data=script_content,
                     file_name="mace_calculation_script.py",
                     mime="text/x-python",
-                    help="Download the Python script file"
+                    help="Download the Python script file", type = 'primary'
                 )
 
             with st.expander("📋 Generated Python Script", expanded=True):
