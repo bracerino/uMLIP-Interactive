@@ -8,13 +8,14 @@ from datetime import datetime
 
 
 def generate_python_script(structures, calc_type, model_size, device, optimization_params,
-                           phonon_params, elastic_params, calc_formation_energy):
+                           phonon_params, elastic_params, calc_formation_energy, selected_model_key=None):
     """
     Generate a complete Python script for MACE calculations with all parameters properly configured.
     """
 
     structure_creation_code = _generate_structure_creation_code(structures)
-    calculator_setup_code = _generate_calculator_setup_code(model_size, device)
+    calculator_setup_code = _generate_calculator_setup_code(
+        model_size, device, selected_model_key)
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -167,12 +168,13 @@ def _generate_structure_creation_code(structures):
     return "\n".join(code_lines)
 
 
-def _generate_calculator_setup_code(model_size, device):
+def _generate_calculator_setup_code(model_size, device, selected_model_key=None):
     """Generate calculator setup code."""
-    is_mace_off = "OFF" in model_size
+    # Check if this is a MACE-OFF model by looking at the selected model key
+    is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
 
     if is_mace_off:
-        calc_code = f"""    device = "{device}"
+        calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
         calculator = mace_off(
@@ -190,9 +192,9 @@ def _generate_calculator_setup_code(model_size, device):
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
                 raise cpu_error
         else:
-            raise e"""
+            raise e'''
     else:
-        calc_code = f"""    device = "{device}"
+        calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
     try:
         calculator = mace_mp(
@@ -210,7 +212,7 @@ def _generate_calculator_setup_code(model_size, device):
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
                 raise cpu_error
         else:
-            raise e"""
+            raise e'''
 
     return calc_code
 
@@ -614,7 +616,6 @@ def _generate_utility_functions():
     return '''
 
 def wrap_positions_in_cell(atoms):
-    """Wrap atomic positions within the unit cell."""
     wrapped_atoms = atoms.copy()
     fractional_coords = wrapped_atoms.get_scaled_positions()
     wrapped_fractional = fractional_coords % 1.0
@@ -622,8 +623,271 @@ def wrap_positions_in_cell(atoms):
     return wrapped_atoms
 
 
+def get_lattice_parameters(atoms):
+    cell = atoms.get_cell()
+    a, b, c = np.linalg.norm(cell, axis=1)
+    
+    def angle_between_vectors(v1, v2):
+        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        return np.degrees(np.arccos(cos_angle))
+    
+    alpha = angle_between_vectors(cell[1], cell[2])
+    beta = angle_between_vectors(cell[0], cell[2])
+    gamma = angle_between_vectors(cell[0], cell[1])
+    
+    volume = np.abs(np.linalg.det(cell))
+    
+    return {
+        'a': a, 'b': b, 'c': c,
+        'alpha': alpha, 'beta': beta, 'gamma': gamma,
+        'volume': volume
+    }
+
+
+def get_atomic_composition(atoms):
+    symbols = atoms.get_chemical_symbols()
+    total_atoms = len(symbols)
+    
+    composition = {}
+    for symbol in symbols:
+        composition[symbol] = composition.get(symbol, 0) + 1
+    
+    concentrations = {}
+    for element, count in composition.items():
+        concentrations[element] = (count / total_atoms) * 100
+    
+    return composition, concentrations
+
+def append_optimization_summary(filename, structure_name, initial_atoms, final_atoms, 
+                               initial_energy, final_energy, convergence_status, steps, selective_dynamics=None):
+    
+    initial_lattice = get_lattice_parameters(initial_atoms)
+    final_lattice = get_lattice_parameters(final_atoms)
+    composition, concentrations = get_atomic_composition(final_atoms)
+    
+    energy_change = final_energy - initial_energy
+    volume_change = ((final_lattice['volume'] - initial_lattice['volume']) / initial_lattice['volume']) * 100
+    
+    a_change = ((final_lattice['a'] - initial_lattice['a']) / initial_lattice['a']) * 100
+    b_change = ((final_lattice['b'] - initial_lattice['b']) / initial_lattice['b']) * 100
+    c_change = ((final_lattice['c'] - initial_lattice['c']) / initial_lattice['c']) * 100
+    
+    alpha_change = final_lattice['alpha'] - initial_lattice['alpha']
+    beta_change = final_lattice['beta'] - initial_lattice['beta']
+    gamma_change = final_lattice['gamma'] - initial_lattice['gamma']
+    
+    comp_formula = "".join([f"{element}{composition[element]}" for element in sorted(composition.keys())])
+    
+    elements = sorted(composition.keys())
+    conc_values = [concentrations[element] for element in elements]
+    conc_string = " ".join([f"{element}:{conc:.1f}" for element, conc in zip(elements, conc_values)])
+    
+    constraint_info = "None"
+    if selective_dynamics is not None:
+        total_atoms = len(selective_dynamics)
+        completely_fixed = sum(1 for flags in selective_dynamics if not any(flags))
+        partially_fixed = sum(1 for flags in selective_dynamics if not all(flags) and any(flags))
+        free_atoms = sum(1 for flags in selective_dynamics if all(flags))
+        
+        constraint_parts = []
+        if completely_fixed > 0:
+            constraint_parts.append(f"{completely_fixed}complete")
+        if partially_fixed > 0:
+            constraint_parts.append(f"{partially_fixed}partial")
+        if free_atoms > 0:
+            constraint_parts.append(f"{free_atoms}free")
+        
+        constraint_info = ",".join(constraint_parts)
+    
+    file_exists = os.path.exists(filename)
+    
+    with open(filename, 'a') as f:
+        if not file_exists:
+            header = "Structure,Formula,Atoms,Composition,Steps,Convergence,E_initial_eV,E_final_eV,E_change_eV,E_per_atom_eV,a_init_A,b_init_A,c_init_A,alpha_init_deg,beta_init_deg,gamma_init_deg,V_init_A3,a_final_A,b_final_A,c_final_A,alpha_final_deg,beta_final_deg,gamma_final_deg,V_final_A3,a_change_percent,b_change_percent,c_change_percent,alpha_change_deg,beta_change_deg,gamma_change_deg,V_change_percent"
+            f.write(header + "\\n")
+        
+        line = f"{structure_name},{comp_formula},{len(final_atoms)},{conc_string},{steps},{convergence_status},{initial_energy:.6f},{final_energy:.6f},{energy_change:.6f},{final_energy/len(final_atoms):.6f},{initial_lattice['a']:.6f},{initial_lattice['b']:.6f},{initial_lattice['c']:.6f},{initial_lattice['alpha']:.3f},{initial_lattice['beta']:.3f},{initial_lattice['gamma']:.3f},{initial_lattice['volume']:.6f},{final_lattice['a']:.6f},{final_lattice['b']:.6f},{final_lattice['c']:.6f},{final_lattice['alpha']:.3f},{final_lattice['beta']:.3f},{final_lattice['gamma']:.3f},{final_lattice['volume']:.6f},{a_change:.3f},{b_change:.3f},{c_change:.3f},{alpha_change:.3f},{beta_change:.3f},{gamma_change:.3f},{volume_change:.3f}"
+        f.write(line + "\\n")
+
+
+def read_poscar_with_selective_dynamics(filename):
+    atoms = read(filename)
+    
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    
+    selective_dynamics = None
+    if len(lines) > 7:
+        line_7 = lines[7].strip().upper()
+        if line_7.startswith('S'):
+            selective_dynamics = []
+            coord_start = 9
+            
+            for i in range(coord_start, len(lines)):
+                line = lines[i].strip()
+                if not line or line.startswith('#'):
+                    continue
+                    
+                parts = line.split()
+                if len(parts) >= 6:
+                    try:
+                        flags = [parts[j].upper() == 'T' for j in [3, 4, 5]]
+                        selective_dynamics.append(flags)
+                    except (IndexError, ValueError):
+                        break
+                elif len(parts) == 3:
+                    break
+    
+    return atoms, selective_dynamics
+
+
+def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=None, comment="Optimized structure"):
+    if selective_dynamics is not None and len(selective_dynamics) == len(atoms):
+        with open(filename, 'w') as f:
+            f.write(f"{comment}\\n")
+            f.write("1.0\\n")
+            
+            cell = atoms.get_cell()
+            for i in range(3):
+                f.write(f"  {cell[i][0]:16.12f}  {cell[i][1]:16.12f}  {cell[i][2]:16.12f}\\n")
+            
+            symbols = atoms.get_chemical_symbols()
+            unique_symbols = []
+            symbol_counts = []
+            for symbol in symbols:
+                if symbol not in unique_symbols:
+                    unique_symbols.append(symbol)
+                    symbol_counts.append(symbols.count(symbol))
+            
+            f.write("  " + "  ".join(unique_symbols) + "\\n")
+            f.write("  " + "  ".join(map(str, symbol_counts)) + "\\n")
+            
+            f.write("Selective dynamics\\n")
+            f.write("Direct\\n")
+            
+            scaled_positions = atoms.get_scaled_positions()
+            for symbol in unique_symbols:
+                for i, atom_symbol in enumerate(symbols):
+                    if atom_symbol == symbol:
+                        pos = scaled_positions[i]
+                        flags = selective_dynamics[i]
+                        flag_str = "  ".join(["T" if flag else "F" for flag in flags])
+                        f.write(f"  {pos[0]:16.12f}  {pos[1]:16.12f}  {pos[2]:16.12f}   {flag_str}\\n")
+    else:
+        write(filename, atoms, format='vasp', direct=True, sort=True)
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+        with open(filename, 'w') as f:
+            f.write(f"{comment}\\n")
+            for line in lines[1:]:
+                f.write(line)
+
+                
+def apply_selective_dynamics_constraints(atoms, selective_dynamics):
+    """Apply selective dynamics as ASE constraints with support for partial fixing."""
+    if selective_dynamics is None or len(selective_dynamics) != len(atoms):
+        return atoms
+    
+    # Check if we have any constraints to apply
+    has_constraints = False
+    for flags in selective_dynamics:
+        if not all(flags):  # If any direction is False (fixed)
+            has_constraints = True
+            break
+    
+    if not has_constraints:
+        print(f"  🔄 Selective dynamics found but all atoms are completely free")
+        return atoms
+    
+    # Apply constraints
+    try:
+        from ase.constraints import FixCartesian, FixAtoms
+        
+        constraints = []
+        constraint_summary = []
+        
+        # Group atoms by constraint type
+        completely_fixed_indices = []
+        partial_constraints = []
+        
+        for i, flags in enumerate(selective_dynamics):
+            if not any(flags):  # All directions fixed (F F F)
+                completely_fixed_indices.append(i)
+            elif not all(flags):  # Some directions fixed (partial)
+                # ASE FixCartesian uses True for FIXED directions (opposite of VASP)
+                # VASP: T=free, F=fixed
+                # ASE:  T=fixed, F=free
+                mask = [not flag for flag in flags]  # Invert the flags
+                partial_constraints.append((i, mask))
+        
+        # Apply complete fixing
+        if completely_fixed_indices:
+            constraints.append(FixAtoms(indices=completely_fixed_indices))
+            constraint_summary.append(f"{len(completely_fixed_indices)} atoms completely fixed")
+        
+        # Apply partial constraints - create individual FixCartesian for each atom
+        if partial_constraints:
+            partial_groups = {}
+            for atom_idx, mask in partial_constraints:
+                mask_key = tuple(mask)
+                if mask_key not in partial_groups:
+                    partial_groups[mask_key] = []
+                partial_groups[mask_key].append(atom_idx)
+            
+            for mask, atom_indices in partial_groups.items():
+                # Create individual FixCartesian constraints for each atom
+                for atom_idx in atom_indices:
+                    constraints.append(FixCartesian(atom_idx, mask))
+                
+                fixed_dirs = [dir_name for dir_name, is_fixed in zip(['x', 'y', 'z'], mask) if is_fixed]
+                constraint_summary.append(f"{len(atom_indices)} atoms fixed in {','.join(fixed_dirs)} directions")
+        
+        # Apply all constraints
+        if constraints:
+            atoms.set_constraint(constraints)
+            
+            total_constrained = len(completely_fixed_indices) + len(partial_constraints)
+            print(f"  📌 Applied selective dynamics to {total_constrained}/{len(atoms)} atoms:")
+            for summary in constraint_summary:
+                print(f"    - {summary}")
+        
+    except ImportError:
+        # Fallback: only handle completely fixed atoms
+        print(f"  ⚠️ FixCartesian not available, only applying complete atom fixing")
+        fixed_indices = []
+        for i, flags in enumerate(selective_dynamics):
+            if not any(flags):  # All directions False (completely fixed)
+                fixed_indices.append(i)
+        
+        if fixed_indices:
+            from ase.constraints import FixAtoms
+            constraint = FixAtoms(indices=fixed_indices)
+            atoms.set_constraint(constraint)
+            print(f"  📌 Applied complete fixing to {len(fixed_indices)}/{len(atoms)} atoms")
+        else:
+            print(f"  ⚠️ No completely fixed atoms found, partial constraints not supported")
+    
+    except Exception as e:
+        # If FixCartesian fails for any reason, fall back to complete fixing only
+        print(f"  ⚠️ FixCartesian failed ({str(e)}), falling back to complete atom fixing only")
+        fixed_indices = []
+        for i, flags in enumerate(selective_dynamics):
+            if not any(flags):  # All directions False (completely fixed)
+                fixed_indices.append(i)
+        
+        if fixed_indices:
+            from ase.constraints import FixAtoms
+            constraint = FixAtoms(indices=fixed_indices)
+            atoms.set_constraint(constraint)
+            print(f"  📌 Applied complete fixing to {len(fixed_indices)}/{len(atoms)} atoms (fallback)")
+        else:
+            print(f"  ⚠️ No completely fixed atoms found")
+    
+    return atoms
+
+
 def calculate_formation_energy(structure_energy, atoms, reference_energies):
-    """Calculate formation energy per atom."""
     if structure_energy is None:
         return None
 
@@ -643,7 +907,6 @@ def calculate_formation_energy(structure_energy, atoms, reference_energies):
 
 
 def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain):
-    """Create appropriate cell filter for optimization."""
     pressure_eV_A3 = pressure * 0.00624150913
 
     if cell_constraint == "Full cell (lattice + angles)":
@@ -660,17 +923,19 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
 
 
 class OptimizationLogger:
-    def __init__(self, filename, max_steps):
+    def __init__(self, filename, max_steps, output_dir="optimized_structures"):
         self.filename = filename
         self.step_count = 0
         self.max_steps = max_steps
         self.step_times = []
         self.step_start_time = time.time()
+        self.output_dir = output_dir
+        self.trajectory = []
         
     def __call__(self, optimizer=None):
         current_time = time.time()
         
-        if self.step_count > 0:  # Skip timing for first step
+        if self.step_count > 0:
             step_time = current_time - self.step_start_time
             self.step_times.append(step_time)
         
@@ -678,18 +943,31 @@ class OptimizationLogger:
         self.step_start_time = current_time
         
         if optimizer is not None and hasattr(optimizer, 'atoms'):
-            atoms = optimizer.atoms
+            if hasattr(optimizer.atoms, 'atoms'):
+                atoms = optimizer.atoms.atoms
+            else:
+                atoms = optimizer.atoms
+                
             forces = atoms.get_forces()
             max_force = np.max(np.linalg.norm(forces, axis=1))
             energy = atoms.get_potential_energy()
             
-            # Calculate timing statistics
+            lattice = get_lattice_parameters(atoms)
+            
+            self.trajectory.append({
+                'step': self.step_count,
+                'energy': energy,
+                'max_force': max_force,
+                'positions': atoms.positions.copy(),
+                'cell': atoms.cell.array.copy(),
+                'lattice': lattice.copy()
+            })
+            
             if len(self.step_times) > 0:
                 avg_time = np.mean(self.step_times)
                 remaining_steps = max(0, self.max_steps - self.step_count)
                 estimated_remaining_time = avg_time * remaining_steps
                 
-                # Format time display
                 if avg_time < 60:
                     avg_time_str = f"{avg_time:.1f}s"
                 else:
@@ -708,9 +986,8 @@ class OptimizationLogger:
                 print(f"    Step {self.step_count}: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å")
 '''
 
-
 def _generate_optimization_code(optimization_params, calc_formation_energy):
-    """Generate code for geometry optimization."""
+    """Generate code for geometry optimization with selective dynamics support."""
     optimizer = optimization_params.get('optimizer', 'BFGS')
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
@@ -751,7 +1028,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     print("🔬 Calculating atomic reference energies...")
     all_elements = set()
     for filename in structure_files:
-        atoms = read(filename)
+        atoms, _ = read_poscar_with_selective_dynamics(filename)
         for symbol in atoms.get_chemical_symbols():
             all_elements.add(symbol)
 
@@ -770,13 +1047,16 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
         try:
-            atoms = read(filename)
+            # Read structure with selective dynamics information
+            atoms, selective_dynamics = read_poscar_with_selective_dynamics(filename)
             atoms.calc = calculator
             print(f"  📊 Structure has {len(atoms)} atoms")
-
-            has_constraints = hasattr(atoms, 'constraints') and atoms.constraints
-            if has_constraints:
-                print(f"  📌 Selective dynamics detected")
+            initial_atoms_copy = atoms.copy()
+            # Apply selective dynamics constraints if present
+            if selective_dynamics is not None:
+                atoms = apply_selective_dynamics_constraints(atoms, selective_dynamics)
+            else:
+                print(f"  🔄 No selective dynamics found - all atoms free to move")
 
             initial_energy = atoms.get_potential_energy()
             initial_forces = atoms.get_forces()
@@ -789,7 +1069,10 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 opt_mode = "atoms_only"
                 print(f"  🔒 Optimizing atoms only (fixed cell)")
             elif optimization_type == "Cell only (fixed atoms)":
-                atoms.set_constraint(FixAtoms(mask=[True] * len(atoms)))
+                # Add constraint to fix all atoms for cell-only optimization
+                existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
+                all_fixed_constraint = FixAtoms(mask=[True] * len(atoms))
+                atoms.set_constraint([all_fixed_constraint] + existing_constraints)
                 optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
                 opt_mode = "cell_only"
                 print(f"  🔒 Optimizing cell only (fixed atoms)")
@@ -798,7 +1081,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 opt_mode = "both"
                 print(f"  🔄 Optimizing both atoms and cell")
 
-            logger = OptimizationLogger(filename, max_steps)
+            logger = OptimizationLogger(filename, max_steps, "optimized_structures")
             
             if optimizer_type == "LBFGS":
                 optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
@@ -842,8 +1125,61 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             else:
                 convergence_status = "CONVERGED" if (force_converged and stress_converged) else "MAX_STEPS_REACHED"
 
-            output_filename = f"optimized_structures/optimized_{filename}"
-            write(output_filename, final_atoms)
+            # Save optimized structure with selective dynamics preserved
+            base_name = filename.replace('.vasp', '').replace('POSCAR', '')
+            
+            output_filename = f"optimized_structures/optimized_{base_name}.vasp"
+            
+            print(f"  💾 Saving optimized structure to {output_filename}")
+            write_poscar_with_selective_dynamics(
+                final_atoms, 
+                output_filename, 
+                selective_dynamics, 
+                f"Optimized - {convergence_status}"
+            )
+            
+            detailed_summary_file = "results/optimization_detailed_summary.csv"
+            print(f"  📊 Appending detailed summary to {detailed_summary_file}")
+            append_optimization_summary(
+                detailed_summary_file, 
+                filename, 
+                initial_atoms_copy, 
+                final_atoms,      
+                initial_energy, 
+                final_energy, 
+                convergence_status, 
+                optimizer.nsteps,
+                selective_dynamics
+            )
+            
+            trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
+            print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
+            
+            with open(trajectory_filename, 'w') as traj_file:
+                symbols = final_atoms.get_chemical_symbols()
+                for step_data in logger.trajectory:
+                    num_atoms = len(step_data['positions'])
+                    energy = step_data['energy']
+                    max_force = step_data['max_force']
+                    lattice = step_data['lattice']
+                    step = step_data['step']
+                    cell_matrix = step_data['cell']
+                    
+                    lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
+                    
+                    traj_file.write(f"{num_atoms}\\n")
+                    
+                    comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                              f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
+                              f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
+                              f'Volume={lattice["volume"]:.6f} '
+                              f'Lattice="{lattice_string}" '
+                              f'Properties=species:S:1:pos:R:3')
+                    traj_file.write(f"{comment}\\n")
+                    
+                    for j, pos in enumerate(step_data['positions']):
+                        symbol = symbols[j] if j < len(symbols) else 'X'
+                        traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}\\n")
 
             result = {
                 "structure": filename,
@@ -865,7 +1201,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 "cell_constraint": cell_constraint,
                 "pressure": pressure,
                 "hydrostatic_strain": hydrostatic_strain,
-                # Convert dict to string for CSV compatibility
+                "has_selective_dynamics": selective_dynamics is not None,
+                "num_fixed_atoms": len([flags for flags in (selective_dynamics or []) if not any(flags)]),
+                "output_structure": output_filename,
+                "trajectory_file": trajectory_filename,
+                # Convert dict to individual fields for CSV compatibility
                 "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_c": optimize_lattice.get('c', True) if isinstance(optimize_lattice, dict) else True
@@ -886,7 +1226,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             if opt_mode in ["cell_only", "both"]:
                 print(f"  ✅ Final max stress: {max_final_stress:.4f} GPa")
             print(f"  ✅ Steps: {optimizer.nsteps}")
-            print(f"  ⏱️ Structure time: {structure_time:.1f}s")'''
+            print(f"  ⏱️ Structure time: {structure_time:.1f}s")
+            print(f"  💾 Saved to: {output_filename}")'''
 
     if calc_formation_energy:
         code += '''
@@ -896,12 +1237,15 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     code += '''
             results.append(result)
             
+            # Save results after each structure
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/optimization_results.csv", index=False)
             print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
 
         except Exception as e:
             print(f"  ❌ Optimization failed: {e}")
+            import traceback
+            traceback.print_exc()
             results.append({"structure": filename, "error": str(e)})
             
             df_results = pd.DataFrame(results)
@@ -912,6 +1256,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     df_results = pd.DataFrame(results)
     df_results.to_csv("results/optimization_results.csv", index=False)
 
+    print(f"\\n💾 Saved all results to results/optimization_results.csv")
+    print(f"📁 Optimized structures saved in optimized_structures/ directory")
 
     with open("results/optimization_summary.txt", "w") as f:
         f.write("MACE Geometry Optimization Results\\n")
@@ -926,7 +1272,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 f.write(f"Max Stress: {result['max_stress_GPa']:.4f} GPa\\n")
                 f.write(f"Convergence: {result['convergence_status']}\\n")
                 f.write(f"Steps: {result['optimization_steps']}\\n")
-                f.write(f"Atoms: {result['num_atoms']}\\n")'''
+                f.write(f"Atoms: {result['num_atoms']}\\n")
+                f.write(f"Selective Dynamics: {result['has_selective_dynamics']}\\n")
+                if result['has_selective_dynamics']:
+                    f.write(f"Fixed Atoms: {result['num_fixed_atoms']}/{result['num_atoms']}\\n")
+                f.write(f"Output File: {result['output_structure']}\\n")'''
 
     if calc_formation_energy:
         code += '''
