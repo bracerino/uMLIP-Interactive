@@ -1,3 +1,4 @@
+from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
@@ -31,6 +32,7 @@ from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
 from helpers.mace_cards import *
+from helpers.generate_python_code import *
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -192,25 +194,69 @@ def load_structure(file):
 
         filename = file.name.lower()
 
-        if filename.endswith(".cif"):
-            mg_structure = Structure.from_file(file.name)
-        elif filename.endswith(".data"):
-            lmp_filename = file.name.replace(".data", ".lmp")
-            os.rename(file.name, lmp_filename)
-            lammps_data = LammpsData.from_file(lmp_filename, atom_style="atomic")
-            mg_structure = lammps_data.structure
-        elif filename.endswith(".lmp"):
-            lammps_data = LammpsData.from_file(file.name, atom_style="atomic")
-            mg_structure = lammps_data.structure
+        if filename.endswith(".vasp") or filename.endswith("poscar") or filename.endswith("contcar"):
+            atoms = read(file.name, format='vasp')
+
+            selective_dynamics = None
+            constraints = []
+
+            with open(file.name, 'r') as f:
+                lines = f.readlines()
+
+            selective_line_idx = None
+            for i, line in enumerate(lines):
+                if line.strip().lower().startswith('selective'):
+                    selective_line_idx = i
+                    break
+
+            if selective_line_idx is not None:
+                coord_start = selective_line_idx + 2
+
+                fixed_indices = []
+                cartesian_constraints = []
+
+                for i, line in enumerate(lines[coord_start:]):
+                    if line.strip() == '' or line.startswith('#'):
+                        break
+
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        fx, fy, fz = parts[3:6]
+
+                        fix_x = fx.upper() == 'F'
+                        fix_y = fy.upper() == 'F'
+                        fix_z = fz.upper() == 'F'
+
+                        if fix_x and fix_y and fix_z:
+                            fixed_indices.append(i)
+                        elif fix_x or fix_y or fix_z:
+                            mask = [fix_x, fix_y, fix_z]
+                            cartesian_constraints.append((i, mask))
+
+                if fixed_indices:
+                    constraints.append(FixAtoms(indices=fixed_indices))
+
+                for atom_idx, mask in cartesian_constraints:
+                    constraints.append(FixCartesian(atom_idx, mask))
+
+                if constraints:
+                    atoms.set_constraint(constraints)
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            mg_structure = AseAtomsAdaptor.get_structure(atoms)
+
+            if constraints:
+                mg_structure.constraints_info = constraints
+
         else:
             atoms = read(file.name)
-            
+
             constraints_info = None
             if hasattr(atoms, 'constraints') and atoms.constraints:
                 constraints_info = atoms.constraints
-            
+
+            from pymatgen.io.ase import AseAtomsAdaptor
             mg_structure = AseAtomsAdaptor.get_structure(atoms)
-            
 
             if constraints_info:
                 mg_structure.constraints_info = constraints_info
@@ -222,9 +268,6 @@ def load_structure(file):
 
     except Exception as e:
         st.error(f"Failed to parse {file.name}: {e}")
-        st.error(
-            f"Failed to load structure file. Supported formats: CIF, POSCAR, LMP, XSF, PW, CFG, and other ASE-compatible formats. "
-            f"Please check your file format and try again. 😊")
         if os.path.exists(file.name):
             os.remove(file.name)
         raise e
@@ -677,7 +720,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put(f"  Generating displacements (distance={displacement_distance} Å)...")
         phonon.generate_displacements(distance=displacement_distance)
 
-        supercells = phonon.get_supercells_with_displacements()
+        supercells = phonon.supercells_with_displacements
         log_queue.put(f"  Generated {len(supercells)} displaced supercells")
 
         log_queue.put("  Calculating forces for displaced supercells...")
@@ -1346,12 +1389,15 @@ def pymatgen_to_ase(structure):
         cell=structure.lattice.matrix,
         pbc=True
     )
-    
+
     wrapped_atoms = wrap_positions_in_cell(atoms)
-    
+
     if hasattr(structure, 'constraints_info') and structure.constraints_info:
-        wrapped_atoms.set_constraint(structure.constraints_info)
-    
+        if isinstance(structure.constraints_info, list):
+            wrapped_atoms.set_constraint(structure.constraints_info)
+        else:
+            wrapped_atoms.set_constraint([structure.constraints_info])
+
     return wrapped_atoms
 
 
@@ -1444,22 +1490,40 @@ def create_cell_filter(atoms, optimization_params):
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+
 def check_selective_dynamics(atoms):
-    """Check if atoms have selective dynamics constraints"""
-    if hasattr(atoms, 'constraints') and atoms.constraints:
-        for constraint in atoms.constraints:
+    if not hasattr(atoms, 'constraints') or not atoms.constraints:
+        return False, 0, len(atoms)
+
+    total_atoms = len(atoms)
+    constrained_atoms = set()
+
+    for constraint in atoms.constraints:
+        try:
             if isinstance(constraint, FixAtoms):
                 fixed_indices = constraint.get_indices()
-                total_atoms = len(atoms)
-                fixed_atoms = len(fixed_indices)
-                return True, fixed_atoms, total_atoms
-    return False, 0, len(atoms)
+                constrained_atoms.update(fixed_indices)
+            else:
+                constrained_atoms.add(0)
+        except Exception:
+            continue
+
+    has_constraints = len(constrained_atoms) > 0
+    total_constrained = len(constrained_atoms)
+
+    # Return empty dict as 4th value to match expected unpacking
+    return has_constraints, total_constrained, total_atoms
 
 
 def setup_optimization_constraints(atoms, optimization_params):
-    opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
-    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
-    
+    opt_type = optimization_params.get(
+        'optimization_type', 'Both atoms and cell')
+
+    has_constraints, total_constrained, total_atoms = check_selective_dynamics(
+        atoms)
+
+    existing_constraints = atoms.constraints if hasattr(
+        atoms, 'constraints') and atoms.constraints else []
 
     if opt_type == "Atoms only (fixed cell)":
         return atoms, None
@@ -1636,8 +1700,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         calculator = None
 
-        is_mace_off = any("OFF" in key for key,
-                          value in MACE_MODELS.items() if value == model_size)
+        is_mace_off = "OFF" in selected_model
 
         if is_mace_off and not MACE_OFF_AVAILABLE:
             log_queue.put(
@@ -1818,19 +1881,24 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(f"Starting geometry optimization for {name}")
 
                     opt_type = optimization_params['optimization_type']
-
                     log_queue.put(f"Optimization type: {opt_type}")
 
                     atoms = pymatgen_to_ase(structure)
                     atoms.calc = calculator
-                    
-                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
-                    
+
+                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(
+                        atoms)
+
+                    print("HER?")
                     if has_constraints:
-                        log_queue.put(f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are fixed")
-                        log_queue.put(f"  Fixed atoms will remain at their original positions during optimization")
+                        log_queue.put(
+                            f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
+                        log_queue.put(
+                            f"  Constrained atoms will respect their original selective dynamics during optimization")
                     else:
-                        log_queue.put(f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+                        log_queue.put(
+                            f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+
                     if optimization_params.get('cell_constraint'):
                         log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
 
@@ -1840,6 +1908,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if optimization_params.get('hydrostatic_strain'):
                         log_queue.put("Using hydrostatic strain constraint")
 
+
+                    print("NOTH ERE?")
                     log_queue.put({
                         'type': 'opt_start',
                         'structure': name,
@@ -2762,18 +2832,27 @@ with tab_st:
                 optimization_params=optimization_params,
                 phonon_params=phonon_params,
                 elastic_params=elastic_params,
-                calc_formation_energy=calculate_formation_energy_flag
+                calc_formation_energy=calculate_formation_energy_flag,
+                selected_model_key=selected_model
             )
 
-            with st.expander("📋 Generated Python Script", expanded=True):
-                st.code(script_content, language='python')
-                st.download_button(
+            script_key = f"script_{hash(script_content) % 10000}"
+    
+            if f"copied_{script_key}" not in st.session_state:
+                st.session_state[f"copied_{script_key}"] = False
+            
+
+            st.download_button(
                     label="💾 Download Script",
                     data=script_content,
                     file_name="mace_calculation_script.py",
                     mime="text/x-python",
-                    help="Download the Python script file"
+                    help="Download the Python script file", type = 'primary'
                 )
+
+            with st.expander("📋 Generated Python Script", expanded=True):
+                st.code(script_content, language='python')
+                
 
                 st.info("""
                         **Usage Instructions:**
@@ -2822,8 +2901,6 @@ with st.sidebar:
 
     if MACE_IMPORT_METHOD == "mace_mp":
         st.info("Using mace_mp - models downloaded automatically")
-    else:
-        st.warning("Using MACECalculator - may require local model files")
 with tab2:
     st.header("Calculation Console")
 
@@ -2935,7 +3012,7 @@ with tab2:
         if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get('is_optimizing'):
             opt_info = st.session_state.current_optimization_info
 
-            opt_progress = opt_info.get('current_step', 0) / opt_info['max_steps'] if opt_info['max_steps'] > 0 else 0
+            opt_progress = min(1.0, opt_info.get('current_step', 0) / opt_info['max_steps']) if opt_info['max_steps'] > 0 else 0
             opt_text = f"Optimizing {opt_info['structure']}: Step {opt_info.get('current_step', 0)}/{opt_info['max_steps']}"
 
             if 'current_energy' in opt_info:
@@ -3291,53 +3368,7 @@ with tab3:
                         - Type: {slowest['Calculation Type']}
                         """)
 
-                st.subheader("📥 Export Timing Data")
-
-                col_export1, col_export2 = st.columns(2)
-
-                with col_export1:
-                    timing_csv = df_timing.to_csv(index=False)
-                    st.download_button(
-                        label="📊 Download Timing Data (CSV)",
-                        data=timing_csv,
-                        file_name="computation_times.csv",
-                        mime="text/csv",
-                        help="Download detailed timing information as CSV"
-                    )
-
-                with col_export2:
-                    timing_report = {
-                        'summary': {
-                            'total_structures': len(st.session_state.computation_times),
-                            'successful_structures': successful_count,
-                            'total_time_seconds': total_successful_time + total_failed_time,
-                            'total_time_formatted': format_duration(total_successful_time + total_failed_time),
-                            'average_time_per_structure': format_duration(
-                                (total_successful_time + total_failed_time) / len(
-                                    st.session_state.computation_times)) if len(
-                                st.session_state.computation_times) > 0 else "0s"
-                        },
-                        'detailed_times': {
-                            name: {
-                                'duration_seconds': info['duration'],
-                                'duration_formatted': info['human_duration'],
-                                'calculation_type': info['calc_type'],
-                                'status': 'failed' if info.get('failed', False) else 'success',
-                                'start_timestamp': info['start_time'],
-                                'end_timestamp': info['end_time']
-                            }
-                            for name, info in st.session_state.computation_times.items()
-                        }
-                    }
-
-                    timing_json = json.dumps(timing_report, indent=2)
-                    st.download_button(
-                        label="📋 Download Timing Report (JSON)",
-                        data=timing_json,
-                        file_name="timing_report.json",
-                        mime="application/json",
-                        help="Download comprehensive timing report as JSON"
-                    )
+                
 
             else:
                 st.info("⏱️ Computation timing data will appear here after calculations complete.")
@@ -5237,46 +5268,365 @@ with tab3:
                         st.write("Download individual optimized POSCAR files:")
 
                         for result in geometry_results:
-                            col_struct, col_btn = st.columns([3, 1])
-
-                            with col_struct:
+                            with st.expander(f"📁 {result['name']} - {result.get('convergence_status', 'Unknown')}", expanded=False):
                                 convergence_status = result.get('convergence_status', '')
                                 convergence_icon = "✅" if convergence_status and "CONVERGED" in convergence_status else "⚠️"
-                                st.write(
-                                    f"{convergence_icon} **{result['name']}** - {result.get('convergence_status', 'Unknown')}")
 
-                            with col_btn:
-                                if 'structure' in result and result['structure']:
-                                    poscar_content = create_wrapped_poscar_content(result['structure'])
-                                    filename = f"optimized_{result['name']}"
+                                col_info, col_options = st.columns([1, 2])
 
-                                    st.download_button(
-                                        label="📥 POSCAR",
-                                        data=poscar_content,
-                                        file_name=filename,
-                                        mime="text/plain",
-                                        key=f"poscar_{result['name']}",
-                                        type='primary'
-                                    )
+                                with col_info:
+                                    st.write(
+                                        f"{convergence_icon} **Status:** {result.get('convergence_status', 'Unknown')}")
+                                    if 'structure' in result and result['structure']:
+                                        st.write(
+                                            f"**Formula:** {result['structure'].composition.reduced_formula}")
+                                        st.write(f"**Atoms:** {len(result['structure'])}")
+
+                                with col_options:
+                                    if 'structure' in result and result['structure']:
+                                        # Format selector
+                                        output_format = st.selectbox(
+                                            "Output format:",
+                                            ["POSCAR", "CIF", "LAMMPS", "XYZ"],
+                                            key=f"format_{result['name']}",
+                                            index=0
+                                        )
+
+                                        # Show format-specific options
+                                        if output_format == "POSCAR":
+                                            use_fractional = st.checkbox(
+                                                "Fractional coordinates",
+                                                value=True,
+                                                key=f"poscar_frac_{result['name']}"
+                                            )
+                                            use_selective = st.checkbox(
+                                                "Selective dynamics (all free)",
+                                                value=False,
+                                                key=f"poscar_sel_{result['name']}"
+                                            )
+
+                                        elif output_format == "LAMMPS":
+                                            lmp_style = st.selectbox(
+                                                "Atom style:",
+                                                ["atomic", "charge", "full"],
+                                                index=0,
+                                                key=f"lmp_style_{result['name']}"
+                                            )
+                                            lmp_units = st.selectbox(
+                                                "Units:",
+                                                ["metal", "real", "si"],
+                                                index=0,
+                                                key=f"lmp_units_{result['name']}"
+                                            )
+                                            lmp_masses = st.checkbox(
+                                                "Include masses",
+                                                value=True,
+                                                key=f"lmp_masses_{result['name']}"
+                                            )
+                                            lmp_skew = st.checkbox(
+                                                "Force triclinic",
+                                                value=False,
+                                                key=f"lmp_skew_{result['name']}"
+                                            )
+
+                                        elif output_format == "CIF":
+                                            cif_symprec = st.number_input(
+                                                "Symmetry precision:",
+                                                value=0.1,
+                                                min_value=0.001,
+                                                max_value=1.0,
+                                                step=0.001,
+                                                format="%.3f",
+                                                key=f"cif_symprec_{result['name']}"
+                                            )
+
+                                        # Generate button
+                                        if st.button(f"📥 Download {output_format}", key=f"download_btn_{result['name']}_{output_format}", type="primary"):
+                                            try:
+                                                base_name = result['name'].split('.')[0]
+                                                structure = result['structure']
+
+                                                if output_format == "POSCAR":
+                                                    from pymatgen.io.ase import AseAtomsAdaptor
+                                                    from ase.io import write
+                                                    from ase.constraints import FixAtoms
+                                                    from io import StringIO
+
+                                                    # Convert to ASE
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        new_struct.append(
+                                                            species=site.species,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+
+                                                    ase_structure = AseAtomsAdaptor.get_atoms(
+                                                        new_struct)
+
+                                                    if use_selective:
+                                                        constraint = FixAtoms(
+                                                            indices=[])  # All atoms free
+                                                        ase_structure.set_constraint(constraint)
+
+                                                    out = StringIO()
+                                                    write(out, ase_structure, format="vasp",
+                                                        direct=use_fractional, sort=True)
+                                                    file_content = out.getvalue()
+                                                    file_extension = ".vasp"
+                                                    mime_type = "text/plain"
+
+                                                elif output_format == "CIF":
+                                                    from pymatgen.io.cif import CifWriter
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        species_dict = {}
+                                                        for element, occupancy in site.species.items():
+                                                            species_dict[element] = float(occupancy)
+                                                        new_struct.append(
+                                                            species=species_dict,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+                                                    file_content = CifWriter(
+                                                        new_struct, symprec=cif_symprec, write_site_properties=True).__str__()
+                                                    file_extension = ".cif"
+                                                    mime_type = "chemical/x-cif"
+
+                                                elif output_format == "LAMMPS":
+                                                    from pymatgen.io.ase import AseAtomsAdaptor
+                                                    from ase.io import write
+                                                    from io import StringIO
+
+                                                    new_struct = Structure(structure.lattice, [], [])
+                                                    for site in structure:
+                                                        new_struct.append(
+                                                            species=site.species,
+                                                            coords=site.frac_coords,
+                                                            coords_are_cartesian=False,
+                                                        )
+
+                                                    ase_structure = AseAtomsAdaptor.get_atoms(
+                                                        new_struct)
+                                                    out = StringIO()
+                                                    write(
+                                                        out, ase_structure, format="lammps-data",
+                                                        atom_style=lmp_style, units=lmp_units,
+                                                        masses=lmp_masses, force_skew=lmp_skew
+                                                    )
+                                                    file_content = out.getvalue()
+                                                    file_extension = ".lmp"
+                                                    mime_type = "text/plain"
+
+                                                elif output_format == "XYZ":
+                                                    xyz_lines = []
+                                                    xyz_lines.append(str(len(structure)))
+                                                    
+                                                    lattice_matrix = structure.lattice.matrix
+                                                    lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
+                                                    
+                                                    comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
+                                                    xyz_lines.append(comment_line)
+                                                    
+                                                    for site in structure:
+                                                        if site.is_ordered:
+                                                            element = site.specie.symbol
+                                                        else:
+                                                            element = max(site.species.items(), key=lambda x: x[1])[0].symbol
+                                                        
+                                                        cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
+                                                        xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+                                                    
+                                                    file_content = "\n".join(xyz_lines)
+                                                    file_extension = ".xyz"
+                                                    mime_type = "chemical/x-xyz"
+                                                filename = f"optimized_{base_name}{file_extension}"
+                                                st.download_button(
+                                                    label=f"📥 Download {output_format} File",
+                                                    data=file_content,
+                                                    file_name=filename,
+                                                    mime=mime_type,
+                                                    key=f"final_download_{result['name']}_{output_format}",
+                                                    type="secondary"
+                                                )
+
+                                            except Exception as e:
+                                                st.error(f"Error generating {output_format}: {str(e)}")
 
                     with col_download2:
                         if len(geometry_results) > 1:
-                            st.write("**Bulk Download:**")
-
-                            zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                                for result in geometry_results:
-                                    if 'structure' in result and result['structure']:
-                                        poscar_content = create_wrapped_poscar_content(result['structure'])
-                                        filename = f"optimized_{result['name']}"
-                                        zip_file.writestr(filename, poscar_content)
-
-                            st.download_button(
-                                label="📦 Download All (ZIP)",
-                                data=zip_buffer.getvalue(),
-                                file_name="optimized_structures.zip",
-                                mime="application/zip", type='primary'
+                            st.write("**Bulk Download Options:**")
+                        
+                            # Format selection
+                            bulk_formats = st.multiselect(
+                                "Select formats:",
+                                ["POSCAR", "CIF", "LAMMPS", "XYZ"],
+                                default=["POSCAR"],
+                                key="bulk_format_selector"
                             )
+                            
+                            if "POSCAR" in bulk_formats:
+                                st.write("**VASP POSCAR Options:**")
+                                bulk_vasp_fractional = st.checkbox("Fractional coordinates", value=True, key="bulk_vasp_frac")
+                                bulk_vasp_selective = st.checkbox("Selective dynamics (all free)", value=False, key="bulk_vasp_sel")
+                            
+                            if "LAMMPS" in bulk_formats:
+                                st.write("**LAMMPS Options:**")
+                                bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0, key="bulk_lmp_style")
+                                bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0, key="bulk_lmp_units")
+                                bulk_lmp_masses = st.checkbox("Include masses", value=True, key="bulk_lmp_masses")
+                                bulk_lmp_skew = st.checkbox("Force triclinic", value=False, key="bulk_lmp_skew")
+
+                            if bulk_formats and st.button("📦 Generate ZIP", type="primary", key="generate_bulk_zip"):
+                                try:
+                                    zip_buffer = io.BytesIO()
+                                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                                        for result in geometry_results:
+                                            if 'structure' in result and result['structure']:
+                                                base_name = result['name'].split('.')[0]
+                                                structure = result['structure']
+                                                
+                                                for fmt in bulk_formats:
+                                                    try:
+                                                        if fmt == "POSCAR":
+                                                            from pymatgen.io.ase import AseAtomsAdaptor
+                                                            from ase.io import write
+                                                            from ase.constraints import FixAtoms
+                                                            from io import StringIO
+                                                            
+                                                            # Convert to ASE
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                new_struct.append(
+                                                                    species=site.species,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            
+                                                            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+                                                            
+                                                            if bulk_vasp_selective:
+                                                                constraint = FixAtoms(indices=[])  # All atoms free
+                                                                ase_structure.set_constraint(constraint)
+                                                            
+                                                            out = StringIO()
+                                                            write(out, ase_structure, format="vasp", direct=bulk_vasp_fractional, sort=True)
+                                                            file_content = out.getvalue()
+                                                            filename = f"POSCAR/{base_name}_POSCAR.vasp"
+                                                            
+                                                        elif fmt == "CIF":
+                                                            from pymatgen.io.cif import CifWriter
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                species_dict = {}
+                                                                for element, occupancy in site.species.items():
+                                                                    species_dict[element] = float(occupancy)
+                                                                new_struct.append(
+                                                                    species=species_dict,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            file_content = CifWriter(new_struct, symprec=0.1, write_site_properties=True).__str__()
+                                                            filename = f"CIF/{base_name}.cif"
+                                                            
+                                                        elif fmt == "LAMMPS":
+                                                            from pymatgen.io.ase import AseAtomsAdaptor
+                                                            from ase.io import write
+                                                            from io import StringIO
+                                                            
+                                                            new_struct = Structure(structure.lattice, [], [])
+                                                            for site in structure:
+                                                                new_struct.append(
+                                                                    species=site.species,
+                                                                    coords=site.frac_coords,
+                                                                    coords_are_cartesian=False,
+                                                                )
+                                                            
+                                                            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+                                                            out = StringIO()
+                                                            write(
+                                                                out, ase_structure, format="lammps-data",
+                                                                atom_style=bulk_lmp_style, units=bulk_lmp_units,
+                                                                masses=bulk_lmp_masses, force_skew=bulk_lmp_skew
+                                                            )
+                                                            file_content = out.getvalue()
+                                                            filename = f"LAMMPS/{base_name}.lmp"
+                                                    
+                                                        elif fmt == "XYZ":
+                                                            xyz_lines = []
+                                                            xyz_lines.append(str(len(structure)))
+                                                            
+                                                            lattice_matrix = structure.lattice.matrix
+                                                            lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
+                                                            
+                                                            comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
+                                                            xyz_lines.append(comment_line)
+                                                            
+                                                            for site in structure:
+                                                                if site.is_ordered:
+                                                                    element = site.specie.symbol
+                                                                else:
+                                                                    element = max(site.species.items(), key=lambda x: x[1])[0].symbol
+                                                                
+                                                                cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
+                                                                xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+                                                            
+                                                            file_content = "\n".join(xyz_lines)
+                                                            filename = f"XYZ/{base_name}.xyz"
+
+                                                        zip_file.writestr(filename, file_content)
+                                                        
+                                                    except Exception as e:
+                                                        st.warning(f"Failed to convert {base_name} to {fmt}: {str(e)}")
+                                                        continue
+                                        
+                                        # Add README
+                                        readme_content = f"""Optimized Structures Package
+                    =============================
+
+                    This package contains {len(geometry_results)} optimized structures in the following formats:
+                    {', '.join(bulk_formats)}
+
+                    Structure Information:
+                    """
+                                        for result in geometry_results:
+                                            readme_content += f"- {result['name']}: {result.get('convergence_status', 'Unknown status')}\n"
+                                        
+                                        readme_content += f"""
+                    Generation Settings:
+                    - VASP POSCAR: {'Fractional' if bulk_vasp_fractional else 'Cartesian'} coordinates"""
+                                        if "POSCAR" in bulk_formats and bulk_vasp_selective:
+                                            readme_content += ", Selective dynamics (all free)"
+                                        if "LAMMPS" in bulk_formats:
+                                            readme_content += f"""
+                    - LAMMPS: {bulk_lmp_style} style, {bulk_lmp_units} units"""
+                                            if bulk_lmp_masses:
+                                                readme_content += ", with masses"
+                                            if bulk_lmp_skew:
+                                                readme_content += ", triclinic forced"
+                                        
+                                        readme_content += f"""
+
+                    Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """
+                                        
+                                        zip_file.writestr("README.txt", readme_content)
+
+                                    st.download_button(
+                                        label=f"📦 Download All ({', '.join(bulk_formats)})",
+                                        data=zip_buffer.getvalue(),
+                                        file_name="optimized_structures.zip",
+                                        mime="application/zip",
+                                        type='primary',
+                                        key="download_bulk_zip_final"
+                                    )
+                                    
+                                    st.success(f"✅ ZIP package created with {len(bulk_formats)} format(s)")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error creating ZIP package: {str(e)}")
+
+
 
                     st.subheader("📈 Optimization Summary")
 
