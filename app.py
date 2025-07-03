@@ -490,6 +490,85 @@ def append_to_backup_file(result, backup_file_path):
             
     except Exception as e:
         pass
+
+
+
+def save_optimized_structure_backup(result, backup_dir):
+    """Save optimized structure as POSCAR in backup directory"""
+    try:
+        # Only save if this is a geometry optimization with a structure
+        if (result.get('calc_type') == 'Geometry Optimization' and 
+            'structure' in result and result['structure'] and 
+            result.get('energy') is not None):
+            
+            structure = result['structure']
+            name = result['name']
+            
+            # Create structures subdirectory
+            structures_dir = os.path.join(backup_dir, "optimized_structures")
+            os.makedirs(structures_dir, exist_ok=True)
+            
+            # Generate filename (remove extension and add _optimized)
+            base_name = os.path.splitext(name)[0]
+            poscar_filename = f"{base_name}_optimized_POSCAR.vasp"
+            poscar_path = os.path.join(structures_dir, poscar_filename)
+            
+            # Convert to ASE atoms and save as POSCAR
+            from pymatgen.io.ase import AseAtomsAdaptor
+            from ase.io import write
+            
+            # Create clean structure copy
+            new_struct = Structure(structure.lattice, [], [])
+            for site in structure:
+                new_struct.append(
+                    species=site.species,
+                    coords=site.frac_coords,
+                    coords_are_cartesian=False,
+                )
+            
+            # Convert to ASE
+            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+            
+            # Write POSCAR with fractional coordinates
+            write(poscar_path, ase_structure, format="vasp", direct=True, sort=True)
+            
+            # Also create a summary file with optimization info
+            summary_path = os.path.join(structures_dir, f"{base_name}_optimization_summary.txt")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(f"Optimization Summary for {name}\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Final Energy: {result['energy']:.6f} eV\n")
+                if result.get('formation_energy'):
+                    f.write(f"Formation Energy: {result['formation_energy']:.6f} eV/atom\n")
+                f.write(f"Convergence Status: {result.get('convergence_status', 'Unknown')}\n")
+                f.write(f"Calculation Type: {result['calc_type']}\n")
+                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                
+                # Lattice information
+                lattice = structure.lattice
+                f.write("Final Lattice Parameters:\n")
+                f.write(f"  a = {lattice.a:.6f} Å\n")
+                f.write(f"  b = {lattice.b:.6f} Å\n")
+                f.write(f"  c = {lattice.c:.6f} Å\n")
+                f.write(f"  α = {lattice.alpha:.3f}°\n")
+                f.write(f"  β = {lattice.beta:.3f}°\n")
+                f.write(f"  γ = {lattice.gamma:.3f}°\n")
+                f.write(f"  Volume = {lattice.volume:.6f} Å³\n\n")
+                
+                # Composition
+                f.write(f"Composition: {structure.composition.reduced_formula}\n")
+                f.write(f"Number of atoms: {len(structure)}\n\n")
+                
+                f.write(f"Optimized POSCAR saved as: {poscar_filename}\n")
+                
+            return poscar_path
+            
+    except Exception as e:
+        pass
+    
+    return None
+
+
 def check_mechanical_stability(C, log_queue):
     try:
         criteria = {}
@@ -2994,6 +3073,8 @@ with tab2:
                 st.session_state.results.append(message)
                 if st.session_state.results_backup_file:
                     append_to_backup_file(message, st.session_state.results_backup_file)
+                    backup_dir = os.path.dirname(st.session_state.results_backup_file)
+                    save_optimized_structure_backup(message, backup_dir)
         elif message == "CALCULATION_FINISHED":
             st.session_state.calculation_running = False
             st.session_state.current_structure_progress = {}
