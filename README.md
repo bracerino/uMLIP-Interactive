@@ -1,7 +1,7 @@
 # mace-md-gui
 
-Run basic molecular dynamics/static simulations (single-point energy, geometry optimization, elastic properties, phonons) in an interactive interface for multiple input structure files (POSCAR, CIF, LMP, XYZ with lattice) with a machine learning MACE MP interatomic potential. It is also possible to generate Python code with the set settings and run the simulations directly in the console (this option currently works for energies, geometry optimization, and elastic properties).
-The application also supports selective dynamics in POSCAR files, preserving the set constraints for specific atoms.
+Run basic molecular dynamics/static simulations (**single-point energy, geometry optimization, elastic properties, phonons**) in an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE MP** interatomic potential. It is also possible to generate Python code with the set settings and run the simulations directly in the console (this option currently works for energies, geometry optimization, and elastic properties). With the generated Python code, simple put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
+The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 **Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.  
 If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
