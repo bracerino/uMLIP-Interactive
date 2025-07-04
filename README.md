@@ -5,7 +5,8 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 
 **Video tutorial at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.  
 If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
-If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**
+If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
+
 Supported MACE MLIPs:  
 **Anorganic**:  
 - MP-0, MP-0b3, MPA, OMAT,  
