@@ -2133,7 +2133,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         try:
                             temp_optimizer = LBFGS(temp_atoms, logfile=None)
                             temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
-                            temp_optimizer.run(fmax=0.015, steps=100)
+                            temp_optimizer.run(fmax=0.01, steps=400)
                             atoms = temp_atoms
                             energy = atoms.get_potential_energy()
                             log_queue.put(
@@ -2833,7 +2833,7 @@ with tab1:
                 st.stop()
             st.subheader("Elastic Properties Parameters")
             st.info(
-                "A brief pre-optimization (fmax=0.015 eV/Å, max 100 steps) will be performed for stability before elastic calculations.")
+                "A brief pre-optimization (fmax=0.01 eV/Å, max 400 steps) will be performed for stability before elastic calculations.")
 
             elastic_params['strain_magnitude'] = st.number_input("Strain Magnitude (e.g., 0.01 for 1%)",
                                                                  min_value=0.001, max_value=0.1, value=0.01, step=0.001,
@@ -2850,8 +2850,9 @@ with tab_st:
     if st.session_state.structures_locked:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
-        st.info(f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`")
-        st.warning(f"The generated Python code is still being tested, but it should work for energies, geometry optimization, and elastic properties.")
+        st.info(
+            f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`.\n"
+            "The generated Python code is still being tested, but it should work for energies, geometry optimization, and elastic properties.")
         col1, col2 = st.columns(2) 
 
         st.markdown("""
