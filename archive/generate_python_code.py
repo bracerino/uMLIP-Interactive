@@ -287,7 +287,7 @@ def _generate_energy_only_code(calc_formation_energy):
             # Save results after each structure completes
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/energy_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+            print(f"  💾 Results updated and saved")
 
         except Exception as e:
             print(f"  ❌ Failed: {e}")
@@ -296,7 +296,7 @@ def _generate_energy_only_code(calc_formation_energy):
             # Save results even for failed structures
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/energy_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+            print(f"  💾 Results updated and saved (with error)")
 
     # Final summary save
     df_results = pd.DataFrame(results)
@@ -370,13 +370,54 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             atoms.calc = calculator
             print(f"  📊 Structure has {len(atoms)} atoms")
 
+
+
             print("  🔧 Running pre-optimization for stability...")
             temp_atoms = atoms.copy()
             temp_atoms.calc = calculator
+
+            # Create a simple logger for pre-optimization
+            class PreOptLogger:
+                def __init__(self, max_steps=50):
+                    self.step_count = 0
+                    self.max_steps = max_steps
+                    self.previous_energy = None
+                    
+                def __call__(self, optimizer=None):
+                    if optimizer is not None and hasattr(optimizer, 'atoms'):
+                        atoms_obj = optimizer.atoms
+                        forces = atoms_obj.get_forces()
+                        max_force = np.max(np.linalg.norm(forces, axis=1))
+                        energy = atoms_obj.get_potential_energy()
+                        energy_per_atom = energy / len(atoms_obj)
+                        
+                        if self.previous_energy is not None:
+                            energy_change = abs(energy - self.previous_energy)
+                            energy_change_per_atom = energy_change / len(atoms_obj)
+                        else:
+                            energy_change = float('inf')
+                            energy_change_per_atom = float('inf')
+                        self.previous_energy = energy
+                        
+                        try:
+                            stress = atoms_obj.get_stress(voigt=True)
+                            max_stress = np.max(np.abs(stress))
+                        except:
+                            max_stress = 0.0
+                        
+                        self.step_count += 1
+                        print(f"    Pre-opt step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                              f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                              f"ΔE={energy_change_per_atom:.2e} eV/atom")
+
+            pre_opt_logger = PreOptLogger(pre_opt_steps)
             temp_optimizer = LBFGS(temp_atoms, logfile=None)
+            temp_optimizer.attach(lambda: pre_opt_logger(temp_optimizer), interval=1)
             temp_optimizer.run(fmax=0.015, steps=pre_opt_steps)
             atoms = temp_atoms
             print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
+
+
 
             print("  ⚖️ Calculating equilibrium energy and stress...")
             E0 = atoms.get_potential_energy()
@@ -467,8 +508,8 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             eigenvals = np.linalg.eigvals(C_GPa)
             mechanically_stable = bool(np.all(eigenvals > 0) and np.linalg.det(C_GPa) > 0)
 
-            # Create result dictionary with flat structure to avoid unhashable type error
-            result = {{
+
+            result = {
                 "structure": filename,
                 "energy_eV": float(E0),
                 "calculation_type": "elastic_properties",
@@ -489,7 +530,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 "mechanically_stable": bool(mechanically_stable),
                 "strain_magnitude": float(strain_magnitude),
                 "num_atoms": int(len(atoms))
-            }}'''
+            }'''
 
     if calc_formation_energy:
         code += '''
@@ -499,8 +540,8 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     code += '''
 
-            # Create separate CSV data for detailed output
-            elastic_data_dict = {{
+            save_elastic_constants_to_csv(filename, C_GPa)
+            elastic_data_dict = {
                 "structure_name": [filename],
                 "energy_eV": [float(E0)],
                 "C11_GPa": [float(C_GPa[0, 0])],
@@ -528,7 +569,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 "mechanically_stable": [bool(mechanically_stable)],
                 "strain_magnitude": [float(strain_magnitude)],
                 "num_atoms": [int(len(atoms))]
-            }}'''
+            }'''
 
     if calc_formation_energy:
         code += '''
@@ -566,7 +607,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             # Save results after each structure completes
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/elastic_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+            print(f"  💾 Results updated and saved")
 
         except Exception as e:
             print(f"  ❌ Elastic calculation failed: {e}")
@@ -575,7 +616,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             # Save results even for failed structures
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/elastic_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+            print(f"  💾 Results updated and saved(with error)")
 
     # Final summary save
     df_results = pd.DataFrame(results)
@@ -658,6 +699,69 @@ def get_atomic_composition(atoms):
         concentrations[element] = (count / total_atoms) * 100
     
     return composition, concentrations
+
+
+
+def save_elastic_constants_to_csv(structure_name, elastic_tensor, csv_filename="results/elastic_constants_cij.csv"):
+    import pandas as pd
+    import os
+    
+    elastic_data = {
+        'structure_name': structure_name,
+        'C11_GPa': float(elastic_tensor[0, 0]),
+        'C12_GPa': float(elastic_tensor[0, 1]),
+        'C13_GPa': float(elastic_tensor[0, 2]),
+        'C14_GPa': float(elastic_tensor[0, 3]),
+        'C15_GPa': float(elastic_tensor[0, 4]),
+        'C16_GPa': float(elastic_tensor[0, 5]),
+        'C21_GPa': float(elastic_tensor[1, 0]),
+        'C22_GPa': float(elastic_tensor[1, 1]),
+        'C23_GPa': float(elastic_tensor[1, 2]),
+        'C24_GPa': float(elastic_tensor[1, 3]),
+        'C25_GPa': float(elastic_tensor[1, 4]),
+        'C26_GPa': float(elastic_tensor[1, 5]),
+        'C31_GPa': float(elastic_tensor[2, 0]),
+        'C32_GPa': float(elastic_tensor[2, 1]),
+        'C33_GPa': float(elastic_tensor[2, 2]),
+        'C34_GPa': float(elastic_tensor[2, 3]),
+        'C35_GPa': float(elastic_tensor[2, 4]),
+        'C36_GPa': float(elastic_tensor[2, 5]),
+        'C41_GPa': float(elastic_tensor[3, 0]),
+        'C42_GPa': float(elastic_tensor[3, 1]),
+        'C43_GPa': float(elastic_tensor[3, 2]),
+        'C44_GPa': float(elastic_tensor[3, 3]),
+        'C45_GPa': float(elastic_tensor[3, 4]),
+        'C46_GPa': float(elastic_tensor[3, 5]),
+        'C51_GPa': float(elastic_tensor[4, 0]),
+        'C52_GPa': float(elastic_tensor[4, 1]),
+        'C53_GPa': float(elastic_tensor[4, 2]),
+        'C54_GPa': float(elastic_tensor[4, 3]),
+        'C55_GPa': float(elastic_tensor[4, 4]),
+        'C56_GPa': float(elastic_tensor[4, 5]),
+        'C61_GPa': float(elastic_tensor[5, 0]),
+        'C62_GPa': float(elastic_tensor[5, 1]),
+        'C63_GPa': float(elastic_tensor[5, 2]),
+        'C64_GPa': float(elastic_tensor[5, 3]),
+        'C65_GPa': float(elastic_tensor[5, 4]),
+        'C66_GPa': float(elastic_tensor[5, 5])
+    }
+
+    if os.path.exists(csv_filename):
+        df_existing = pd.read_csv(csv_filename)
+        
+        if structure_name in df_existing['structure_name'].values:
+            df_existing.loc[df_existing['structure_name'] == structure_name, list(elastic_data.keys())] = list(elastic_data.values())
+        else:
+            df_new_row = pd.DataFrame([elastic_data])
+            df_existing = pd.concat([df_existing, df_new_row], ignore_index=True)
+        
+        df_existing.to_csv(csv_filename, index=False)
+    else:
+        df_new = pd.DataFrame([elastic_data])
+        df_new.to_csv(csv_filename, index=False)
+    
+    print(f"  💾 Elastic constants saved to {csv_filename}")
+
 
 def append_optimization_summary(filename, structure_name, initial_atoms, final_atoms, 
                                initial_energy, final_energy, convergence_status, steps, selective_dynamics=None):
@@ -1260,7 +1364,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             # Save results after each structure
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/optimization_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+            print(f"  💾 Results updated and saved")
 
         except Exception as e:
             print(f"  ❌ Optimization failed: {e}")
@@ -1270,7 +1374,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/optimization_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+            print(f"  💾 Results updated and saved (with error)")
 
     # Final summary save
     df_results = pd.DataFrame(results)
@@ -1598,7 +1702,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/phonon_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)}")
+            print(f"  💾 Results updated and saved")
             
         except Exception as e:
             print(f"  ❌ Phonon calculation failed: {e}")
@@ -1606,7 +1710,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/phonon_results.csv", index=False)
-            print(f"  💾 Results updated and saved after structure {i+1}/{len(structure_files)} (with error)")
+            print(f"  💾 Results updated and saved")
     
     df_results = pd.DataFrame(results)
     df_results.to_csv("results/phonon_results.csv", index=False)
