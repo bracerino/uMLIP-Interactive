@@ -325,6 +325,160 @@ def _generate_energy_only_code(calc_formation_energy):
     
     print(f"💾 Saved summary to results/energy_summary.txt")
 '''
+
+    # Add plotting functionality
+    code += '''
+    # Generate energy plots
+    print("\\n📊 Generating energy plots...")
+    successful_results = [r for r in results if "error" not in r]
+    
+    if len(successful_results) > 0:
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Set global font sizes
+            plt.rcParams.update({
+                'font.size': 18,
+                'axes.titlesize': 24,
+                'axes.labelsize': 20,
+                'xtick.labelsize': 18,
+                'ytick.labelsize': 18,
+                'legend.fontsize': 18,
+                'figure.titlesize': 26
+            })
+            
+            # Prepare data
+            structure_names = [r["structure"] for r in successful_results]
+            energies = [r["energy_eV"] for r in successful_results]
+            
+            # 1. Total Energy Plot
+            plt.figure(figsize=(16, 12))
+            bars = plt.bar(range(len(structure_names)), energies, color='steelblue', alpha=0.7)
+            plt.xlabel('Structure', fontsize=22, fontweight='bold')
+            plt.ylabel('Total Energy (eV)', fontsize=22, fontweight='bold')
+            plt.title('Total Energy Comparison', fontsize=26, fontweight='bold', pad=20)
+            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.yticks(fontsize=18, fontweight='bold')
+            
+            # Extend y-axis to accommodate labels above bars
+            y_min, y_max = plt.ylim()
+            y_range = y_max - y_min
+            plt.ylim(y_min, y_max + y_range * 0.15)
+            
+            # Add vertical value labels above bars
+            for i, (bar, energy) in enumerate(zip(bars, energies)):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + y_range * 0.02, 
+                        f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold', 
+                        rotation=90, color='black')
+            
+            plt.tight_layout()
+            plt.savefig('results/total_energy_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            print("  ✅ Saved total energy plot: results/total_energy_comparison.png")'''
+
+    if calc_formation_energy:
+        code += '''
+            
+            # 2. Formation Energy Plot
+            formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
+            valid_formation = [(name, fe) for name, fe in zip(structure_names, formation_energies) if fe is not None]
+            
+            if valid_formation:
+                valid_names, valid_fe = zip(*valid_formation)
+                
+                plt.figure(figsize=(16, 12))
+                colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
+                bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Formation Energy (eV/atom)', fontsize=22, fontweight='bold')
+                plt.title('Formation Energy per Atom Comparison', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Extend y-axis to accommodate labels (handle positive and negative values)
+                y_min, y_max = plt.ylim()
+                y_range = y_max - y_min
+                
+                # Check if we have negative values
+                has_negative = any(fe < 0 for fe in valid_fe)
+                has_positive = any(fe > 0 for fe in valid_fe)
+                
+                if has_negative and has_positive:
+                    plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.15)
+                elif has_negative and not has_positive:
+                    plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.05)
+                else:
+                    plt.ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
+                
+                # Add vertical value labels outside bars
+                for i, (bar, fe) in enumerate(zip(bars, valid_fe)):
+                    if fe >= 0:
+                        y_pos = bar.get_height() + y_range * 0.02
+                        va_align = 'bottom'
+                    else:
+                        y_pos = bar.get_height() - y_range * 0.02
+                        va_align = 'top'
+                    plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
+                            f'{fe:.4f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
+                            rotation=90, color='black')
+                
+                plt.tight_layout()
+                plt.savefig('results/formation_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved formation energy plot: results/formation_energy_comparison.png")'''
+
+    code += '''
+            
+            # 3. Relative Energy Plot
+            if len(energies) > 1:
+                min_energy = min(energies)
+                relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
+                
+                plt.figure(figsize=(16, 12))
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
+                plt.title('Relative Energy Comparison (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Extend y-axis to accommodate labels above bars
+                y_min, y_max = plt.ylim()
+                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
+                
+                # Add vertical value labels above bars
+                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
+                    if re > 0:
+                        y_pos = bar.get_height() + y_range * 0.02
+                        va_align = 'bottom'
+                    else:
+                        y_pos = y_range * 0.05  # Position above zero line for zero values
+                        va_align = 'bottom'
+                    plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
+                            f'{re:.1f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
+                            rotation=90, color='black')
+                
+                plt.tight_layout()
+                plt.savefig('results/relative_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved relative energy plot: results/relative_energy_comparison.png")
+            
+            # Reset matplotlib settings
+            plt.rcParams.update(plt.rcParamsDefault)
+            
+        except ImportError:
+            print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
+        except Exception as e:
+            print(f"  ⚠️ Error generating plots: {e}")
+    
+    else:
+        print("  ℹ️ No successful calculations to plot")
+'''
     return code
 
 
@@ -337,7 +491,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
     strain_magnitude = {strain_magnitude}
-    pre_opt_steps = {optimization_params.get('max_steps', 100)}
+    pre_opt_steps = {optimization_params.get('max_steps', 400)}
     print(f"⚙️ Using strain magnitude: {{strain_magnitude*100:.1f}}%")
 
     reference_energies = {{}}'''
@@ -413,7 +567,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             pre_opt_logger = PreOptLogger(pre_opt_steps)
             temp_optimizer = LBFGS(temp_atoms, logfile=None)
             temp_optimizer.attach(lambda: pre_opt_logger(temp_optimizer), interval=1)
-            temp_optimizer.run(fmax=0.015, steps=pre_opt_steps)
+            temp_optimizer.run(fmax=0.01, steps=pre_opt_steps)
             atoms = temp_atoms
             print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
 
@@ -649,6 +803,186 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     
     print(f"💾 Saved summary to results/elastic_summary.txt")'''
 
+    
+    # Add plotting functionality for elastic properties
+    code += '''
+    # Generate elastic properties plots
+    print("\\n📊 Generating elastic properties plots...")
+    successful_results = [r for r in results if "error" not in r]
+    
+    if len(successful_results) > 0:
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Set global font sizes
+            plt.rcParams.update({
+                'font.size': 18,
+                'axes.titlesize': 24,
+                'axes.labelsize': 20,
+                'xtick.labelsize': 18,
+                'ytick.labelsize': 18,
+                'legend.fontsize': 18,
+                'figure.titlesize': 26
+            })
+            
+            # Prepare data
+            structure_names = [r["structure"] for r in successful_results]
+            energies = [r["energy_eV"] for r in successful_results]
+            
+            # 1. Total Energy Plot
+            plt.figure(figsize=(16, 10))
+            bars = plt.bar(range(len(structure_names)), energies, color='steelblue', alpha=0.7)
+            plt.xlabel('Structure', fontsize=22, fontweight='bold')
+            plt.ylabel('Total Energy (eV)', fontsize=22, fontweight='bold')
+            plt.title('Total Energy (Elastic Properties Calculation)', fontsize=26, fontweight='bold', pad=20)
+            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.yticks(fontsize=18, fontweight='bold')
+            
+            # Add value labels and stability indicators
+            for i, (bar, energy, result) in enumerate(zip(bars, energies, successful_results)):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(energies)*0.01, 
+                        f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+                # Add mechanical stability indicator
+                stable = result.get("mechanically_stable", False)
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(energies)-min(energies))*0.05, 
+                        '✓' if stable else '✗', ha='center', va='center', 
+                        fontsize=20, color='green' if stable else 'red', fontweight='bold')
+            
+            plt.tight_layout()
+            plt.savefig('results/elastic_total_energy_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            print("  ✅ Saved total energy plot: results/elastic_total_energy_comparison.png")'''
+
+    if calc_formation_energy:
+        code += '''
+            
+            # 2. Formation Energy Plot
+            formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
+            valid_formation = [(name, fe, result) for name, fe, result in zip(structure_names, formation_energies, successful_results) if fe is not None]
+            
+            if valid_formation:
+                valid_names, valid_fe, valid_results = zip(*valid_formation)
+                
+                plt.figure(figsize=(16, 10))
+                colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
+                bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Formation Energy (eV/atom)', fontsize=22, fontweight='bold')
+                plt.title('Formation Energy per Atom (Elastic Properties)', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Add value labels on bars
+                for i, (bar, fe, result) in enumerate(zip(bars, valid_fe, valid_results)):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(valid_fe)-min(valid_fe))*0.02, 
+                            f'{fe:.4f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+                    # Add mechanical stability indicator
+                    stable = result.get("mechanically_stable", False)
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(valid_fe)-min(valid_fe))*0.08, 
+                            '✓' if stable else '✗', ha='center', va='center', 
+                            fontsize=20, color='green' if stable else 'red', fontweight='bold')
+                
+                plt.axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2)
+                plt.legend(['Stability line'], fontsize=18)
+                plt.tight_layout()
+                plt.savefig('results/elastic_formation_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved formation energy plot: results/elastic_formation_energy_comparison.png")'''
+
+    code += '''
+            
+            # 3. Relative Energy Plot
+            if len(energies) > 1:
+                min_energy = min(energies)
+                relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
+                
+                plt.figure(figsize=(16, 10))
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
+                plt.title('Relative Energy Comparison (Elastic Properties, vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Add value labels on bars
+                for i, (bar, re, result) in enumerate(zip(bars, relative_energies, successful_results)):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(relative_energies)*0.02, 
+                            f'{re:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+                    # Add mechanical stability indicator
+                    stable = result.get("mechanically_stable", False)
+                    plt.text(bar.get_x() + bar.get_width()/2, max(relative_energies)*0.1, 
+                            '✓' if stable else '✗', ha='center', va='center', 
+                            fontsize=20, color='green' if stable else 'red', fontweight='bold')
+                
+                plt.tight_layout()
+                plt.savefig('results/elastic_relative_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved relative energy plot: results/elastic_relative_energy_comparison.png")
+            
+            # 4. Bulk Modulus Comparison Plot
+            bulk_moduli = []
+            for result in successful_results:
+                # Use Hill average if available, otherwise Voigt
+                bulk_hill = result.get("bulk_modulus_hill_GPa")
+                bulk_voigt = result.get("bulk_modulus_voigt_GPa")
+                bulk_value = bulk_hill if bulk_hill is not None else bulk_voigt
+                bulk_moduli.append(bulk_value)
+            
+            plt.figure(figsize=(16, 10))
+            # Color based on mechanical stability
+            colors = ['green' if result.get("mechanically_stable", False) else 'red' for result in successful_results]
+            bars = plt.bar(range(len(structure_names)), bulk_moduli, color=colors, alpha=0.7)
+            plt.xlabel('Structure', fontsize=22, fontweight='bold')
+            plt.ylabel('Bulk Modulus (GPa)', fontsize=22, fontweight='bold')
+            plt.title('Bulk Modulus Comparison', fontsize=26, fontweight='bold', pad=20)
+            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.yticks(fontsize=18, fontweight='bold')
+            
+            # Add value labels on bars
+            for i, (bar, bulk, result) in enumerate(zip(bars, bulk_moduli, successful_results)):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(bulk_moduli)*0.01, 
+                        f'{bulk:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+                
+                # Add shear and Young's modulus as smaller text
+                shear_hill = result.get("shear_modulus_hill_GPa")
+                shear_voigt = result.get("shear_modulus_voigt_GPa")
+                shear_value = shear_hill if shear_hill is not None else shear_voigt
+                youngs_value = result.get("youngs_modulus_GPa")
+                
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height()*0.5, 
+                        f'G: {shear_value:.0f}\\nE: {youngs_value:.0f}', 
+                        ha='center', va='center', fontsize=14, fontweight='bold',
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+            
+            # Add legend for colors
+            import matplotlib.patches as mpatches
+            stable_patch = mpatches.Patch(color='green', alpha=0.7, label='Mechanically Stable')
+            unstable_patch = mpatches.Patch(color='red', alpha=0.7, label='Mechanically Unstable')
+            plt.legend(handles=[stable_patch, unstable_patch], loc='upper right', fontsize=18)
+            
+            plt.grid(True, alpha=0.3, axis='y')
+            plt.tight_layout()
+            plt.savefig('results/bulk_modulus_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            print("  ✅ Saved bulk modulus plot: results/bulk_modulus_comparison.png")
+            
+            # Reset matplotlib settings
+            plt.rcParams.update(plt.rcParamsDefault)
+            
+        except ImportError:
+            print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
+        except Exception as e:
+            print(f"  ⚠️ Error generating plots: {e}")
+    
+    else:
+        print("  ℹ️ No successful calculations to plot")
+'''
+
     return code
 
 
@@ -703,8 +1037,7 @@ def get_atomic_composition(atoms):
 
 
 def save_elastic_constants_to_csv(structure_name, elastic_tensor, csv_filename="results/elastic_constants_cij.csv"):
-    import pandas as pd
-    import os
+
     
     elastic_data = {
         'structure_name': structure_name,
@@ -1062,8 +1395,10 @@ class OptimizationLogger:
             # Calculate energy change
             if hasattr(self, 'previous_energy') and self.previous_energy is not None:
                 energy_change = abs(energy - self.previous_energy)
+                energy_change_per_atom = energy_change / len(atoms)
             else:
                 energy_change = float('inf')
+                energy_change_per_atom = float('inf')
             self.previous_energy = energy
             
             try:
@@ -1101,13 +1436,13 @@ class OptimizationLogger:
                     remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
                 
                 print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
-                    f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
-                    f"ΔE={energy_change:.2e} eV | "
-                    f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
+                      f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                      f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom) | "
+                      f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
             else:
                 print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
-                    f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
-                    f"ΔE={energy_change:.2e} eV")
+                      f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                      f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
 '''
 
 def _generate_optimization_code(optimization_params, calc_formation_energy):
@@ -1413,6 +1748,215 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
     
     print(f"💾 Saved summary to results/optimization_summary.txt")'''
+
+
+    code += '''
+    # Generate optimization plots
+    print("\\n📊 Generating optimization plots...")
+    successful_results = [r for r in results if "error" not in r]
+    
+    if len(successful_results) > 0:
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Set global font sizes
+            plt.rcParams.update({
+                'font.size': 18,
+                'axes.titlesize': 24,
+                'axes.labelsize': 20,
+                'xtick.labelsize': 18,
+                'ytick.labelsize': 18,
+                'legend.fontsize': 18,
+                'figure.titlesize': 26
+            })
+            
+            # Prepare data
+            structure_names = [r["structure"] for r in successful_results]
+            final_energies = [r["final_energy_eV"] for r in successful_results]
+            
+            # 1. Total Energy Plot
+            plt.figure(figsize=(16, 12))
+            bars = plt.bar(range(len(structure_names)), final_energies, color='steelblue', alpha=0.7)
+            plt.xlabel('Structure', fontsize=22, fontweight='bold')
+            plt.ylabel('Final Energy (eV)', fontsize=22, fontweight='bold')
+            plt.title('Final Energy After Optimization', fontsize=26, fontweight='bold', pad=20)
+            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.yticks(fontsize=18, fontweight='bold')
+            
+            # Extend y-axis to accommodate labels above bars
+            y_min, y_max = plt.ylim()
+            y_range = y_max - y_min
+            plt.ylim(y_min, y_max + y_range * 0.15)
+            
+            # Add vertical value labels above bars
+            for i, (bar, energy) in enumerate(zip(bars, final_energies)):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + y_range * 0.02, 
+                        f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold', 
+                        rotation=90, color='black')
+            
+            plt.tight_layout()
+            plt.savefig('results/optimization_final_energy_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            print("  ✅ Saved final energy plot: results/optimization_final_energy_comparison.png")'''
+
+    if calc_formation_energy:
+        code += '''
+            
+            # 2. Formation Energy Plot
+            formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
+            valid_formation = [(name, fe, result) for name, fe, result in zip(structure_names, formation_energies, successful_results) if fe is not None]
+            
+            if valid_formation:
+                valid_names, valid_fe, valid_results = zip(*valid_formation)
+                
+                plt.figure(figsize=(16, 12))
+                colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
+                bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Formation Energy (eV/atom)', fontsize=22, fontweight='bold')
+                plt.title('Formation Energy per Atom After Optimization', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Extend y-axis to accommodate labels (handle positive and negative values)
+                y_min, y_max = plt.ylim()
+                y_range = y_max - y_min
+                
+                # Check if we have negative values
+                has_negative = any(fe < 0 for fe in valid_fe)
+                has_positive = any(fe > 0 for fe in valid_fe)
+                
+                if has_negative and has_positive:
+                    plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.15)
+                elif has_negative and not has_positive:
+                    plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.05)
+                else:
+                    plt.ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
+                
+                # Add vertical value labels outside bars
+                for i, (bar, fe) in enumerate(zip(bars, valid_fe)):
+                    if fe >= 0:
+                        y_pos = bar.get_height() + y_range * 0.02
+                        va_align = 'bottom'
+                    else:
+                        y_pos = bar.get_height() - y_range * 0.02
+                        va_align = 'top'
+                    plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
+                            f'{fe:.4f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
+                            rotation=90, color='black')
+                
+                plt.tight_layout()
+                plt.savefig('results/optimization_formation_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved formation energy plot: results/optimization_formation_energy_comparison.png")'''
+
+    code += '''
+            
+            # 3. Relative Energy Plot
+            if len(final_energies) > 1:
+                min_energy = min(final_energies)
+                relative_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
+                
+                plt.figure(figsize=(16, 12))
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
+                plt.title('Relative Energy Comparison After Optimization (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
+                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+                
+                # Extend y-axis to accommodate labels above bars
+                y_min, y_max = plt.ylim()
+                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
+                
+                # Add vertical value labels above bars
+                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
+                    if re > 0:
+                        y_pos = bar.get_height() + y_range * 0.02
+                        va_align = 'bottom'
+                    else:
+                        y_pos = y_range * 0.05  # Position above zero line for zero values
+                        va_align = 'bottom'
+                    plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
+                            f'{re:.1f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
+                            rotation=90, color='black')
+                
+                plt.tight_layout()
+                plt.savefig('results/optimization_relative_energy_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved relative energy plot: results/optimization_relative_energy_comparison.png")
+            
+            # 4. Lattice Parameter Changes Plot
+            print("  📏 Reading detailed optimization summary for lattice changes...")
+            try:
+                # Read the detailed summary file that contains lattice information
+                detailed_summary_file = "results/optimization_detailed_summary.csv"
+                if os.path.exists(detailed_summary_file):
+                    df_lattice = pd.read_csv(detailed_summary_file)
+                    
+                    if len(df_lattice) > 0:
+                        plt.figure(figsize=(18, 10))
+                        
+                        # Extract lattice changes
+                        structures = df_lattice['Structure'].tolist()
+                        a_changes = df_lattice['a_change_percent'].tolist()
+                        b_changes = df_lattice['b_change_percent'].tolist()
+                        c_changes = df_lattice['c_change_percent'].tolist()
+                        
+                        # Create grouped bar chart
+                        x = np.arange(len(structures))
+                        width = 0.25
+                        
+                        bars1 = plt.bar(x - width, a_changes, width, label='a parameter', color='red', alpha=0.7)
+                        bars2 = plt.bar(x, b_changes, width, label='b parameter', color='green', alpha=0.7)
+                        bars3 = plt.bar(x + width, c_changes, width, label='c parameter', color='blue', alpha=0.7)
+                        
+                        plt.xlabel('Structure', fontsize=22, fontweight='bold')
+                        plt.ylabel('Lattice Parameter Change (%)', fontsize=22, fontweight='bold')
+                        plt.title('Lattice Parameter Changes After Optimization', fontsize=26, fontweight='bold', pad=20)
+                        plt.xticks(x, [name.replace('.vasp', '').replace('POSCAR_', '') for name in structures], 
+                                  rotation=45, ha='right', fontsize=18, fontweight='bold')
+                        plt.yticks(fontsize=18, fontweight='bold')
+                        
+                        # Add horizontal line at zero
+                        plt.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=2)
+                        plt.grid(True, alpha=0.3, axis='y')
+                        
+                        # Add legend below x-axis
+                        plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), 
+                                  ncol=3, fontsize=18, frameon=False)
+                        
+                        # Adjust layout to accommodate legend
+                        plt.subplots_adjust(bottom=0.2)
+                        plt.tight_layout()
+                        plt.savefig('results/lattice_parameter_changes.png', dpi=300, bbox_inches='tight')
+                        plt.close()
+                        print("  ✅ Saved lattice changes plot: results/lattice_parameter_changes.png")
+                    else:
+                        print("  ⚠️ No lattice data found in detailed summary")
+                else:
+                    print("  ⚠️ Detailed optimization summary file not found")
+                    
+            except Exception as lattice_error:
+                print(f"  ⚠️ Error creating lattice changes plot: {lattice_error}")
+            
+            # Reset matplotlib settings
+            plt.rcParams.update(plt.rcParamsDefault)
+            
+        except ImportError:
+            print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
+        except Exception as e:
+            print(f"  ⚠️ Error generating plots: {e}")
+    
+    else:
+        print("  ℹ️ No successful calculations to plot")
+'''
+
 
     return code
 
