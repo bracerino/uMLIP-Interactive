@@ -91,7 +91,7 @@ Open your terminal console and write the following commands (the bold text):
 
 ---
 
-![MACE GUI Phonons](images/Mace-7.png)
+![MACE GUI Phonons](images/app-4.png)
 
 ---
 
