@@ -8,6 +8,7 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 
 If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
+Personal recommendation for the maximum number of atoms in a structure file: below 10 000. 
 
 Supported MACE MLIPs:  
 **Anorganic**:  
