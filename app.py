@@ -2457,10 +2457,10 @@ with tab1:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
     st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
-        "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. 📺 **[Quick tutorial here](https://youtu.be/GGo_9T5wqus?si=xJItv-j0shr8hte_)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
+        "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. 📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
     )
 
-    st.sidebar.link_button("GitHub page", "https://github.com/bracerino/atat-sqs-gui.git",
+    st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
                            type="primary")
     if st.session_state.structures:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
