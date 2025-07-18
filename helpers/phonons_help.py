@@ -602,7 +602,56 @@ def create_calculation_type_image(calc_type):
             <text x="200" y="250" text-anchor="middle" fill="white" font-size="20">Mechanical Properties</text>
         </svg>
         """
-    
+
+    elif calc_type == "GA Structure Optimization":
+        svg_content = """
+        <svg width="400" height="280" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="gaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+                </linearGradient>
+            </defs>
+
+            <!-- Background -->
+            <rect width="400" height="280" fill="url(#gaGrad)" rx="15"/>
+
+            <!-- DNA double helix structure -->
+            <path d="M80 100 Q120 80 160 100 T240 100 T320 100" stroke="white" stroke-width="6" fill="none"/>
+            <path d="M80 180 Q120 200 160 180 T240 180 T320 180" stroke="white" stroke-width="6" fill="none"/>
+
+            <!-- Cross-links between helixes -->
+            <line x1="100" y1="95" x2="100" y2="185" stroke="white" stroke-width="4"/>
+            <line x1="140" y1="105" x2="140" y2="175" stroke="white" stroke-width="4"/>
+            <line x1="180" y1="95" x2="180" y2="185" stroke="white" stroke-width="4"/>
+            <line x1="220" y1="105" x2="220" y2="175" stroke="white" stroke-width="4"/>
+            <line x1="260" y1="95" x2="260" y2="185" stroke="white" stroke-width="4"/>
+            <line x1="300" y1="105" x2="300" y2="175" stroke="white" stroke-width="4"/>
+
+            <!-- Evolution arrows -->
+            <path d="M330 120 L370 120 M355 105 L370 120 L355 135" stroke="#fbbf24" stroke-width="5" fill="none"/>
+            <path d="M330 160 L370 160 M355 145 L370 160 L355 175" stroke="#fbbf24" stroke-width="5" fill="none"/>
+
+            <!-- Fitness symbols -->
+            <circle cx="50" cy="140" r="12" fill="#10b981"/>
+            <text x="50" y="147" text-anchor="middle" fill="white" font-size="14" font-weight="bold">F</text>
+
+            <!-- Population indicators -->
+            <circle cx="25" cy="110" r="8" fill="white" opacity="0.8"/>
+            <circle cx="25" cy="130" r="8" fill="white" opacity="0.6"/>
+            <circle cx="25" cy="150" r="8" fill="white" opacity="0.4"/>
+            <circle cx="25" cy="170" r="8" fill="white" opacity="0.2"/>
+
+            <!-- Generation counter -->
+            <text x="375" y="50" text-anchor="middle" fill="white" font-size="18" font-weight="bold">Gen</text>
+            <text x="375" y="70" text-anchor="middle" fill="white" font-size="24" font-weight="bold">N</text>
+
+            <!-- Title -->
+            <text x="200" y="40" text-anchor="middle" fill="white" font-size="26" font-weight="bold">GA Structure Optimization</text>
+            <text x="200" y="250" text-anchor="middle" fill="white" font-size="20">Evolutionary Optimization</text>
+        </svg>
+        """
+        
     else:
         # Default image
         svg_content = """
