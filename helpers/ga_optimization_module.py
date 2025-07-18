@@ -9,9 +9,6 @@ import time
 
 class GeneticAlgorithmOptimizer:
     def __init__(self, base_structure, calculator, substitutions, ga_params, log_queue, stop_event, run_id=0):
-        """
-        GA optimizer for atomic substitution pattern optimization with fixed concentrations and vacancy support
-        """
         self.base_structure = base_structure
         self.calculator = calculator
         self.substitutions = substitutions
@@ -296,6 +293,7 @@ class GeneticAlgorithmOptimizer:
     def mutate(self, structure):
         pattern = self.get_substitution_pattern(structure)
         mutation_rate = self.ga_params.get('mutation_rate', 0.1)
+
         for original_element in self.substitutions:
             if (original_element not in pattern or
                     original_element not in self.substitutable_sites):
@@ -304,19 +302,21 @@ class GeneticAlgorithmOptimizer:
             sites = self.substitutable_sites[original_element]
             substituted_sites = set(pattern[original_element]['substituted_sites'])
             non_substituted_sites = set(sites) - substituted_sites
-            n_mutations = max(1, int(len(sites) * mutation_rate))
 
-            for _ in range(n_mutations):
-                if (random.random() < 0.5 and
-                        len(substituted_sites) > 0 and
-                        len(non_substituted_sites) > 0):
-                    old_site = random.choice(list(substituted_sites))
+            sites_to_mutate = []
+            for substituted_site in substituted_sites:
+                if random.random() < mutation_rate:
+                    sites_to_mutate.append(substituted_site)
+
+            for site_to_swap in sites_to_mutate:
+                if non_substituted_sites:
                     new_site = random.choice(list(non_substituted_sites))
 
-                    substituted_sites.remove(old_site)
+                    # Perform the swap
+                    substituted_sites.remove(site_to_swap)
                     substituted_sites.add(new_site)
                     non_substituted_sites.remove(new_site)
-                    non_substituted_sites.add(old_site)
+                    non_substituted_sites.add(site_to_swap)
 
             pattern[original_element]['substituted_sites'] = list(substituted_sites)
 
@@ -369,7 +369,6 @@ class GeneticAlgorithmOptimizer:
 
     def calculate_fitness(self, structure):
         try:
-            # Validate structure first
             if not self.validate_individual(structure):
                 return float('inf')
 
@@ -378,6 +377,21 @@ class GeneticAlgorithmOptimizer:
             adaptor = AseAtomsAdaptor()
             atoms = adaptor.get_atoms(structure)
             atoms.calc = self.calculator
+
+            if self.ga_params.get('perturb_positions', True):
+                from ase.optimize import BFGS, LBFGS
+
+                optimizer_name = self.ga_params.get('optimizer', 'BFGS')
+                fmax = self.ga_params.get('fmax', 0.05)
+                max_steps = self.ga_params.get('max_steps', 100)
+                maxstep = self.ga_params.get('maxstep', 0.2)
+
+                if optimizer_name == 'LBFGS':
+                    optimizer = LBFGS(atoms, maxstep=maxstep)
+                else:  # Default to BFGS
+                    optimizer = BFGS(atoms, maxstep=maxstep)
+
+                optimizer.run(fmax=fmax, steps=max_steps)
 
             energy = atoms.get_potential_energy()
 
@@ -664,17 +678,17 @@ def setup_ga_parameters_ui():
 
     with col_ga1:
         population_size = st.number_input("Population Size", min_value=3, max_value=1000, value=50, step=10)
-        max_generations = st.number_input("Max Generations", min_value=1, max_value=100, value=20, step=10)
-        num_runs = st.number_input("Number of GA Runs", min_value=1, max_value=10, value=3, step=1,
+        max_generations = st.number_input("Max Generations", min_value=1, max_value=1000, value=20, step=10)
+        num_runs = st.number_input("Number of GA Runs", min_value=1, max_value=1000, value=3, step=1,
                                   help="Run GA multiple times with different random seeds")
 
     with col_ga2:
         crossover_rate = st.number_input("Crossover Rate", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-        mutation_rate = st.number_input("Mutation Rate", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
+        mutation_rate = st.number_input("Mutation Rate", min_value=0.00, max_value=0.5, value=0.1, step=0.01)
 
     with col_ga3:
         elitism_ratio = st.number_input("Elitism Ratio", min_value=0.0, max_value=0.5, value=0.1, step=0.05)
-        convergence_threshold = st.number_input("Convergence Threshold", min_value=1e-8, max_value=1e-3, value=1e-6,
+        convergence_threshold = st.number_input("Convergence Threshold", min_value=1e-12, max_value=1e-1, value=1e-6,
                                                 format="%.2e")
 
     st.subheader("Position Optimization")
@@ -685,10 +699,27 @@ def setup_ga_parameters_ui():
         perturb_positions = st.checkbox("Optimize Atomic Positions", value=False)
     if perturb_positions:
         with col_pos2:
-            max_displacement = st.number_input("Max Position Displacement (Å)", min_value=0.01, max_value=1.0, value=0.1,
+            max_displacement = st.number_input("Max Random Position Displacement When Creating Initial Generation  (Å)", min_value=0.01, max_value=1.0, value=0.1,
                                                step=0.01)
+
+        col_geom1, col_geom2= st.columns(2)
+
+        with col_geom1:
+            fmax = st.number_input("Force Convergence (eV/Å)", min_value=0.001, max_value=1.0, value=0.05, step=0.005,
+                                   format="%.3f")
+            max_steps = st.number_input("Max Optimization Steps", min_value=10, max_value=500, value=100, step=10)
+
+        with col_geom2:
+            optimizer = st.selectbox("Optimizer", ["BFGS", "LBFGS"], index=0)
+            maxstep = st.number_input("Max Step Size During Optimization (Å)", min_value=0.01, max_value=0.5, value=0.2, step=0.01,
+                                      format="%.2f")
+
     else:
         max_displacement = 0.1
+        fmax = 0.05
+        max_steps = 100
+        optimizer = "BFGS"
+        maxstep = 0.2
 
     return {
         'population_size': population_size,
@@ -699,7 +730,11 @@ def setup_ga_parameters_ui():
         'elitism_ratio': elitism_ratio,
         'convergence_threshold': convergence_threshold,
         'perturb_positions': perturb_positions,
-        'max_displacement': max_displacement
+        'max_displacement': max_displacement,
+        'fmax': fmax,
+        'max_steps': max_steps,
+        'optimizer': optimizer,
+        'maxstep': maxstep,
     }
 
 
@@ -1452,49 +1487,70 @@ def display_ga_overview():
     st.divider()
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("""
-    ### 🧬 How the Genetic Algorithm (GA) Works Here 
+    ## 🧬 How the Genetic Algorithm Works in This Code
 
-    The GA finds the **most energetically favorable arrangement** of substituted atoms while maintaining your specified concentrations.
+    ### **Core Concept:**
+    The GA tries to find the **optimal arrangement of substituted atoms** (e.g., where to place 20% Ag atoms in a Ti structure) that gives the **lowest energy**, while keeping the exact substitution concentration fixed.
 
-    ### 📋 The Process:
+    ### **Step-by-Step Process:**
 
-    1. **Initial Population**: Creates random arrangements of your substituted atoms (e.g., 50 different ways to place 20% Ag substitute atoms in Ti supercells)
-    2. **Energy Evaluation**: Calculates the energy of each arrangement using MACE
-    3. **Selection**: Chooses the best arrangements as "parents" for the next generation
-    4. **Crossover**: Combines substitution patterns from two parents to create "children"
-    5. **Mutation**: Randomly swaps some substituted atoms to new positions
-    6. **Evolution**: Repeats steps 2-5 until the best arrangement is found
+    #### **1. Initialization**
+    - Creates **random substitution patterns** (e.g., 50 different ways to place 10 Ag atoms in 50 Ti sites)
+    - Each "individual" = one specific arrangement of substituted atoms
+    - Optionally adds random position perturbations to atoms (Max Random Position Displacement parameter when Optimize Atomic Positions is checked)
+    
 
-    #### 🎯 Key Point:
-    **The concentration stays EXACTLY as you specify** (e.g., always 20% Ag). The GA only optimizes **WHERE** those atoms are placed for lowest energy.
+    #### **2. Fitness Evaluation** 
+    - Calculates **energy** of each arrangement using MACE calculator
+    - Lower energy = better fitness
+    - If position optimization enabled: performs geometry optimization before energy calculation
+    - **🎯 GUI Parameters**: 
+      - **Optimize Atomic Positions** = enables geometry optimization
+
+    #### **3. Selection (Tournament)**
+    - Picks **best parents** for breeding using tournament selection
+    - Randomly selects 3 individuals, chooses the one with lowest energy
+    - Repeats to get 2 parents
+
+    #### **4. Crossover (Breeding)**
+    - **Combines substitution patterns** from 2 parents **OR** directly copies one parent
+    - **🎯 GUI Parameter**: **Crossover Rate** controls this choice:
+      - **80% Crossover Rate** = 80% of children created by **mixing two parents**, 20% by **copying one parent**
+      - **When mixing**: Takes union of all substituted sites from both parents, then randomly selects exactly the required number to maintain concentration
+      - **When copying**: Child is exact clone of one randomly chosen parent
+    - **Example mixing**: Parent1 has Ag at sites [1,5,9], Parent2 has Ag at sites [3,5,7] → Child gets union [1,3,5,7,9], then randomly picks 3 of these 5 sites
+
+    #### **5. Mutation**
+    - **Each substituted atom individually** has a chance to be swapped to a different site (unlimited distance allowed)
+    - **🎯 GUI Parameter**: **Mutation Rate** = probability that **each individual substituted atom** gets moved to a new site
+    - **Example with Mutation Rate = 0.1 (10%)**:
+      - 10 Ag atoms in structure → each Ag has 10% chance of being moved
+      - **On average**: ~1 Ag atom will be swapped per mutation
+      - **Could be**: 0, 1, 2, 3+ swaps depending on random chance
+    - Maintains exact same concentration (always same number of substituted atoms)
+    - **🎯 GUI Parameter**: **Max Position Displacement** = maximum distance for small random coordinate adjustments (separate from substitution swapping)
+
+    #### **6. Evolution Loop**
+    - Repeats steps 2-5 for multiple generations
+    - **Elitism**: Always keeps best individuals from previous generation
+    - Stops when converged or max generations reached
+    - **🎯 GUI Parameters**:
+      - **Max Generations** = maximum number of evolution cycles
+      - **Elitism Ratio** = percentage of best arrangements automatically kept each generation (prevents losing good solutions)
+      - **Convergence Threshold** = stops early when energy improvements become smaller than this value (the convergence is considered only above 20 generations and when 10 generations fulfill this treshold)
+
+    #### **7. Multiple Independent Runs**
+    - Runs the entire GA process multiple times with different random starting points
+    - Reports the overall best result found across all runs
+    - **🎯 GUI Parameter**: **Number of GA Runs** = how many independent GA optimizations to perform
 
     ---
 
-    ### ⚙️ Parameter Guide:
-
-    #### 🔢 **Population Size** (Default: 50)
-    Number of different arrangements tested in each generation. Higher = more thorough but slower.
-
-    #### 📈 **Max Generations** (Default: 20)
-    Maximum number of evolution cycles. Higher = more time to find optimal arrangement.
-
-    #### 🔄 **Number of GA Runs** (Default: 3)
-    Runs the entire GA multiple times with different random starting points to more likely obtain global optimum.
-
-    #### 🧬 **Crossover Rate** (Default: 0.8)
-    Probability of combining two parent arrangements (80% chance).
-
-    #### 🎲 **Mutation Rate** (Default: 0.1)
-    Probability of randomly moving a substituted atom (10% chance).
-
-    #### 👑 **Elitism Ratio** (Default: 0.1)
-    Percentage of best arrangements automatically kept each generation (10%).
-
-    #### 🎯 **Convergence Threshold** (Default: 1e-6 eV)
-    Stops early when energy improvements become smaller than this value. Only works after 10 consecutive generations and starting only above the number of 20 generations.
-
-    #### 🏃 **Position Optimization** (Default: Enabled)
-    Also optimizes atomic positions, not just substitution patterns.
+    ### **Key Features:**
+    - **Fixed concentration**: Always maintains exact substitution percentages (e.g., always exactly 20% Ag)
+    - **Only optimizes arrangement**: Doesn't change which elements or how many, just WHERE they go
+    - **Energy-driven**: Evolves toward arrangements that minimize total system energy
+    - **Supports vacancies**: Can create holes in the structure by removing atoms
 
     """)
 
