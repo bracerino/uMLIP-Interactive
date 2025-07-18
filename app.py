@@ -484,29 +484,29 @@ def append_to_backup_file(result, backup_file_path):
     try:
         backup_dir = os.path.dirname(backup_file_path)
         os.makedirs(backup_dir, exist_ok=True)
-        
+
         name = result['name']
         energy = result.get('energy', 'N/A')
         formation_energy = result.get('formation_energy', 'N/A')
-        
+
         if 'structure' in result and result['structure']:
             structure = result['structure']
             lattice = structure.lattice
             lattice_info = f"a={lattice.a:.4f}, b={lattice.b:.4f}, c={lattice.c:.4f}, α={lattice.alpha:.2f}°, β={lattice.beta:.2f}°, γ={lattice.gamma:.2f}°"
         else:
             lattice_info = "N/A"
-        
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"{timestamp}\t{name}\t{energy}\t{formation_energy}\t{lattice_info}\n"
-        
+
         write_header = not os.path.exists(backup_file_path)
-        
+
         with open(backup_file_path, 'a', encoding='utf-8') as f:
             if write_header:
                 header = "Time\tStructure_Name\tTotal_Energy(eV)\tFormation_Energy(eV/atom)\tLattice_Parameters\n"
                 f.write(header)
             f.write(line)
-            
+
     except Exception as e:
         pass
 
@@ -522,11 +522,11 @@ def save_optimized_structure_backup(result, backup_dir):
             
             structure = result['structure']
             name = result['name']
-            
+
             # Create structures subdirectory
             structures_dir = os.path.join(backup_dir, "optimized_structures")
             os.makedirs(structures_dir, exist_ok=True)
-            
+
             # Generate filename (remove extension and add _optimized)
             base_name = os.path.splitext(name)[0]
             poscar_filename = f"{base_name}_optimized_POSCAR.vasp"
@@ -581,6 +581,81 @@ def save_optimized_structure_backup(result, backup_dir):
         pass
     
     return None
+
+
+def save_ga_best_structure_backup(ga_results, structure_name, backup_dir, run_id):
+    try:
+        if not ga_results or not ga_results.get('best_structure'):
+            return None
+
+        best_structure = ga_results['best_structure']
+        best_energy = ga_results['best_energy']
+
+
+        ga_structures_dir = os.path.join(backup_dir, "ga_optimized_structures")
+        os.makedirs(ga_structures_dir, exist_ok=True)
+
+        base_name = os.path.splitext(structure_name)[0]
+        poscar_filename = f"{base_name}_ga_run_{run_id + 1}_best_POSCAR.vasp"
+        poscar_path = os.path.join(ga_structures_dir, poscar_filename)
+
+
+        from pymatgen.io.ase import AseAtomsAdaptor
+        from ase.io import write
+
+        new_struct = Structure(best_structure.lattice, [], [])
+        for site in best_structure:
+            new_struct.append(
+                species=site.species,
+                coords=site.frac_coords,
+                coords_are_cartesian=False,
+            )
+
+        ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+        write(poscar_path, ase_structure, format="vasp", direct=True, sort=True)
+
+        summary_filename = f"{base_name}_ga_run_{run_id + 1}_summary.txt"
+        summary_path = os.path.join(ga_structures_dir, summary_filename)
+
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(f"GA Optimization Summary for {structure_name} - Run {run_id + 1}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Best Energy: {best_energy:.6f} eV\n")
+            f.write(f"Number of GA Runs: {ga_results.get('num_runs', 'N/A')}\n")
+            f.write(f"Population Size: {ga_results.get('ga_params', {}).get('population_size', 'N/A')}\n")
+            f.write(f"Max Generations: {ga_results.get('ga_params', {}).get('max_generations', 'N/A')}\n")
+            f.write(f"Final Generation: {len(ga_results.get('fitness_history', []))}\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            lattice = best_structure.lattice
+            f.write("Best Structure Lattice Parameters:\n")
+            f.write(f"  a = {lattice.a:.6f} Å\n")
+            f.write(f"  b = {lattice.b:.6f} Å\n")
+            f.write(f"  c = {lattice.c:.6f} Å\n")
+            f.write(f"  α = {lattice.alpha:.3f}°\n")
+            f.write(f"  β = {lattice.beta:.3f}°\n")
+            f.write(f"  γ = {lattice.gamma:.3f}°\n")
+            f.write(f"  Volume = {lattice.volume:.6f} Å³\n\n")
+
+            f.write(f"Composition: {best_structure.composition.reduced_formula}\n")
+            f.write(f"Number of atoms: {len(best_structure)}\n\n")
+
+            if 'substitutions' in ga_results:
+                f.write("Substitutions Applied:\n")
+                for orig_elem, sub_info in ga_results['substitutions'].items():
+                    if sub_info['new_element'] == 'VACANCY':
+                        f.write(f"  {orig_elem} → VACANCY: {sub_info['n_substitute']} sites\n")
+                    else:
+                        f.write(f"  {orig_elem} → {sub_info['new_element']}: {sub_info['n_substitute']} sites\n")
+                f.write("\n")
+
+            f.write(f"Optimized POSCAR saved as: {poscar_filename}\n")
+
+        return poscar_path
+
+    except Exception as e:
+        print(f"Error saving GA structure backup: {str(e)}")
+        return None
 
 
 def check_mechanical_stability(C, log_queue):
@@ -2429,7 +2504,7 @@ if st.session_state.calculation_running:
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             with st.spinner("Calculation in progress..."):
-                st.info("VASP calculations are running, please wait. 😊")
+                st.info("The calculations are running, please wait. 😊")
                 if st.session_state.get('progress_text', ''):
                     st.write(f"📈 {st.session_state.progress_text}")
                 st.write("👀 **Switch to 'Calculation Console' tab for detailed output**")
@@ -2748,6 +2823,8 @@ with tab1:
                             supercell_b = st.number_input("b-direction", min_value=1, max_value=10, value=2, step=1)
                         with col_super4:
                             supercell_c = st.number_input("c-direction", min_value=1, max_value=10, value=2, step=1)
+
+                        st.session_state.supercell_multipliers = [supercell_a, supercell_b, supercell_c]
 
                         # Generate supercell preview
                         supercell_structure = first_structure.copy()
@@ -3195,6 +3272,32 @@ with tab_st:
                 disabled=len(st.session_state.structures) == 0,
             )
         if but_script:
+            substitutions_for_script = None
+            ga_params_for_script = None
+
+            if calc_type == "GA Structure Optimization":
+                substitutions_for_script = st.session_state.get('substitutions', {})
+                ga_params_for_script = st.session_state.get('ga_params', {})
+
+
+                if not substitutions_for_script:
+                    st.error("❌ No substitutions configured for GA optimization. Please configure substitutions first.")
+                    st.stop()
+
+                if not ga_params_for_script:
+                    st.error("❌ No GA parameters configured. Please configure GA parameters first.")
+                    st.stop()
+
+            supercell_info = None
+            if (hasattr(st.session_state, 'confirmed_supercell_structure') and
+                    st.session_state.confirmed_supercell_structure and
+                    hasattr(st.session_state, 'supercell_multipliers')):
+                supercell_info = {
+                    'enabled': True,
+                    'multipliers': getattr(st.session_state, 'supercell_multipliers', [1, 1, 1])
+                }
+
+
             script_content = generate_python_script(
                 structures=st.session_state.structures,
                 calc_type=calc_type,
@@ -3204,7 +3307,10 @@ with tab_st:
                 phonon_params=phonon_params,
                 elastic_params=elastic_params,
                 calc_formation_energy=calculate_formation_energy_flag,
-                selected_model_key=selected_model
+                selected_model_key=selected_model,
+                substitutions=substitutions_for_script,
+                ga_params=ga_params_for_script,
+                supercell_info=supercell_info
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -3341,7 +3447,7 @@ with tab2:
 
             elif message.get('type') == 'ga_progress':
                 current_time = time.time()
-                if current_time - st.session_state.last_ga_progress_update > 0.5:
+                if current_time - st.session_state.last_ga_progress_update > 0.1:
                     st.session_state.ga_progress_info = {
                         'run_id': message['run_id'],
                         'generation': message['generation'],
@@ -3601,7 +3707,7 @@ with tab2:
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
 
     if has_new_messages and st.session_state.calculation_running:
-        time.sleep(1)
+        time.sleep(0.5)
         st.rerun()
 
 
@@ -3623,11 +3729,11 @@ def get_atomic_concentrations_from_structure(structure):
 with tab3:
     st.header("Results & Analysis")
     if st.session_state.results:
-        results_tab1, results_tab2, results_tab3, results_tab4, results_tab5, results_tab6= st.tabs(["📊 Energies",
+        results_tab1, results_tab2, results_tab3, results_tab4,results_tab6, results_tab5, = st.tabs(["📊 Energies",
                                                                                         "🔧 Geometry Optimization Details",
                                                                                         "Elastic properties", "Phonons",
-                                                                                        "⏱️ Computation times",
-                                                                                        "🧬 GA Optimization"])
+                                                                                        "🧬 GA Optimization",
+                                                                                        "⏱️ Computation times"])
     else:
         st.info("Please start some calculation first.")
 
