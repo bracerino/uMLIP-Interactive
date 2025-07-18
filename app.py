@@ -2886,7 +2886,7 @@ with tab1:
                             st.metric("Substitution %", f"{(total_substitutions / total_atoms) * 100:.1f}%")
                         with col_val4:
                             st.metric("GA Runs", ga_params.get('num_runs', 1))
-
+                    st.subheader("✅ Start the GA run by changing the Tab to 'Start Calculations' at the top of the site.")
                 else:
                     st.info("👆 Please confirm your structure configuration above before setting up substitutions")
             display_ga_overview()
