@@ -699,7 +699,7 @@ def setup_ga_parameters_ui():
         perturb_positions = st.checkbox("Optimize Atomic Positions", value=False)
     if perturb_positions:
         with col_pos2:
-            max_displacement = st.number_input("Max Random Position Displacement When Creating Initial Generation  (Å)", min_value=0.01, max_value=1.0, value=0.1,
+            max_displacement = st.number_input("Max Random Position Displacement When Creating Initial Generation  (Å)", min_value=0.00, max_value=1.0, value=0.1,
                                                step=0.01)
 
         col_geom1, col_geom2= st.columns(2)
