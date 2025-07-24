@@ -6,7 +6,7 @@ This module generates standalone Python scripts for MACE molecular dynamics calc
 import json
 from datetime import datetime
 
-def generate_python_script(structures, calc_type, model_size, device, optimization_params,
+def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None):
     """
@@ -16,7 +16,7 @@ def generate_python_script(structures, calc_type, model_size, device, optimizati
 
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
-        model_size, device, selected_model_key)
+        model_size, device, selected_model_key, dtype)
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -42,6 +42,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
 Model: {model_size}
 Device: {device}
+Precision: {dtype}
 \"\"\"
 
 import os
@@ -1359,7 +1360,7 @@ def _generate_structure_creation_code(structures):
     return "\n".join(code_lines)
 
 
-def _generate_calculator_setup_code(model_size, device, selected_model_key=None):
+def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
     """Generate calculator setup code."""
     # Check if this is a MACE-OFF model by looking at the selected model key
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
@@ -1369,7 +1370,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None)
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
         calculator = mace_off(
-            model="{model_size}", default_dtype="float64", device=device)
+            model="{model_size}", default_dtype="{dtype}", device=device)
         print(f"✅ MACE-OFF calculator initialized successfully on {{device}}")
     except Exception as e:
         print(f"❌ MACE-OFF initialization failed on {{device}}: {{e}}")
@@ -1377,7 +1378,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None)
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = mace_off(
-                    model="{model_size}", default_dtype="float64", device="cpu")
+                    model="{model_size}", default_dtype="{dtype}", device="cpu")
                 print("✅ MACE-OFF calculator initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
@@ -1389,7 +1390,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None)
     print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
     try:
         calculator = mace_mp(
-            model="{model_size}", dispersion=False, default_dtype="float64", device=device)
+            model="{model_size}", dispersion=False, default_dtype="{dtype}", device=device)
         print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
     except Exception as e:
         print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
@@ -1397,7 +1398,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None)
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = mace_mp(
-                    model="{model_size}", dispersion=False, default_dtype="float64", device="cpu")
+                    model="{model_size}", dispersion=False, default_dtype="{dtype}", device="cpu")
                 print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
