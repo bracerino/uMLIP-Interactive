@@ -2,7 +2,7 @@ from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
-st.set_page_config(page_title="MACE MLIP Batch Structure Calculator", layout="wide")
+st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
 
 
 import os
@@ -3314,6 +3314,7 @@ with tab_st:
                 calc_type=calc_type,
                 model_size=model_size,
                 device=device,
+                dtype=dtype,
                 optimization_params=optimization_params,
                 phonon_params=phonon_params,
                 elastic_params=elastic_params,
