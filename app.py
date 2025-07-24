@@ -2,7 +2,7 @@ from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+st.set_page_config(page_title="MACE MLIP Batch Structure Calculator", layout="wide")
 
 
 import os
@@ -1885,14 +1885,14 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(
                         f"Initializing MACE-OFF calculator on {device}...")
                     calculator = mace_off(
-                        model=model_size, default_dtype="float64", device=device)
+                        model=model_size, default_dtype=dtype, device=device)
                     log_queue.put(
                         f"✅ MACE-OFF calculator initialized successfully on {device}")
                 else:
                     log_queue.put(
                         f"Initializing MACE-MP calculator on {device}...")
                     calculator = mace_mp(
-                        model=model_size, dispersion=False, default_dtype="float64", device=device)
+                        model=model_size, dispersion=False, default_dtype=dtype, device=device)
                     log_queue.put(
                         f"✅ MACE-MP calculator initialized successfully on {device}")
             except Exception as e:
@@ -1904,10 +1904,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     try:
                         if is_mace_off:
                             calculator = mace_off(
-                                model=model_size, default_dtype="float64", device="cpu")
+                                model=model_size, default_dtype=dtype, device="cpu")
                         else:
                             calculator = mace_mp(
-                                model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                                model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
                         log_queue.put(
                             "✅ Calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
@@ -1926,7 +1926,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(
                     f"Initializing mace_mp calculator on {device}...")
                 calculator = mace_mp(
-                    model=model_size, dispersion=False, default_dtype="float64", device=device)
+                    model=model_size, dispersion=False, default_dtype=dtype, device=device)
                 log_queue.put(
                     f"✅ mace_mp calculator initialized successfully on {device}")
             except Exception as e:
@@ -1937,7 +1937,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
                         calculator = mace_mp(
-                            model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                            model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
                         log_queue.put(
                             "✅ mace_mp calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
@@ -2459,12 +2459,23 @@ with st.sidebar:
     else:
         st.info(f"🔬 **{model_type}**: {description}")
 
-    device_option = st.radio(
-        "Compute Device",
-        ["CPU", "GPU (CUDA)"],
-        help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
-    )
-    device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
+    cols1, cols2 = st.columns([1,1])
+    with cols1:
+        device_option = st.radio(
+            "Compute Device",
+            ["CPU", "GPU (CUDA)"],
+            help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
+        )
+        device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
+
+    with cols2:
+        precision_option = st.radio(
+            "Precision",
+            ["Float32", "Float64"],
+            index=1,
+            help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
+        )
+        dtype = "float32" if precision_option == "Float32" else "float64"
     col_c1, col_c2 = st.columns([1,1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -3219,7 +3230,7 @@ with tab_st:
         backup_folder = os.path.join(current_script_folder, "results_backup")
         st.info(
             f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`.\n"
-            "The generated Python code is still being tested, but it should work for energies, geometry optimization, and elastic properties.")
+            "The generated Python code is still being tested, but it should work for energies, geometry optimization, elastic properties, and genetic algorithm.")
         col1, col2 = st.columns(2) 
 
         st.markdown("""
