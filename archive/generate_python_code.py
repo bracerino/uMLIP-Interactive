@@ -6,11 +6,12 @@ This module generates standalone Python scripts for MACE molecular dynamics calc
 import json
 from datetime import datetime
 
-
 def generate_python_script(structures, calc_type, model_size, device, optimization_params,
-                           phonon_params, elastic_params, calc_formation_energy, selected_model_key=None):
+                           phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
+                           substitutions=None, ga_params=None, supercell_info=None):
     """
     Generate a complete Python script for MACE calculations with all parameters properly configured.
+    Now includes support for Genetic Algorithm optimization.
     """
 
     structure_creation_code = _generate_structure_creation_code(structures)
@@ -28,6 +29,9 @@ def generate_python_script(structures, calc_type, model_size, device, optimizati
     elif calc_type == "Elastic Properties":
         calculation_code = _generate_elastic_code(
             elastic_params, optimization_params, calc_formation_energy)
+    elif calc_type == "GA Structure Optimization":
+        calculation_code = _generate_ga_code(
+            substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
 
@@ -47,6 +51,12 @@ import json
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+import random
+from copy import deepcopy
+import threading
+import queue
+import zipfile
+import io
 
 # Set threading before other imports
 os.environ['OMP_NUM_THREADS'] = '4'
@@ -79,6 +89,8 @@ except ImportError:
 
 {_generate_utility_functions()}
 
+{_generate_ga_classes() if calc_type == "GA Structure Optimization" else ""}
+
 def main():
     start_time = time.time()
     print("🚀 Starting MACE calculation script...")
@@ -91,6 +103,7 @@ def main():
     # Create output directories
     Path("optimized_structures").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
+    {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
 
     # Create structure files
     print("\\n📁 Creating structure files...")
@@ -110,13 +123,1191 @@ def main():
     print(f"\\n✅ All calculations completed!")
     print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
     print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
-    print("📊 Check the results/ directory for output files")
+    #print("📊 Check the results/ directory for output files")
 
 if __name__ == "__main__":
     main()
 """
 
     return script
+
+
+def _generate_ga_classes():
+    return '''
+class GeneticAlgorithmOptimizer:
+    def __init__(self, base_structure, calculator, substitutions, ga_params, run_id=0):
+        self.base_structure = base_structure
+        self.calculator = calculator
+        self.substitutions = substitutions
+        self.ga_params = ga_params
+        self.run_id = run_id
+
+        self.population = []
+        self.fitness_history = []
+        self.detailed_history = []
+        self.best_individual = None
+        self.best_energy = float('inf')
+        self.final_population = []
+        self.final_fitness = []
+
+        # Set random seeds
+        random.seed(run_id * 12345)
+        np.random.seed(run_id * 12345)
+
+        self.create_site_id_mapping()
+        self.setup_substitution_sites()
+        self.setup_fixed_substitution_counts()
+
+    def create_site_id_mapping(self):
+        self.site_ids = {}
+        self.id_to_site = {}
+
+        for i, site in enumerate(self.base_structure):
+            site_id = f"{site.specie.symbol}_{i}"
+            self.site_ids[i] = site_id
+            self.id_to_site[site_id] = {
+                'original_index': i,
+                'element': site.specie.symbol,
+                'coords': site.coords.copy(),
+                'frac_coords': site.frac_coords.copy()
+            }
+
+        print(f"  🗺️ Created site ID mapping for {len(self.site_ids)} sites")
+
+    def setup_substitution_sites(self):
+        self.substitutable_sites = {}
+
+        for i, site in enumerate(self.base_structure):
+            element = site.specie.symbol
+            if element in self.substitutions:
+                if element not in self.substitutable_sites:
+                    self.substitutable_sites[element] = []
+                self.substitutable_sites[element].append(i)
+
+        print(f"  🎯 Found substitutable sites: {self.substitutable_sites}")
+
+    def setup_fixed_substitution_counts(self):
+        self.fixed_substitution_counts = {}
+
+        for original_element, sub_info in self.substitutions.items():
+            if original_element in self.substitutable_sites:
+                total_sites = len(self.substitutable_sites[original_element])
+                n_substitute = int(total_sites * sub_info['concentration'])
+
+                self.fixed_substitution_counts[original_element] = {
+                    'n_substitute': n_substitute,
+                    'new_element': sub_info['new_element'],
+                    'total_sites': total_sites
+                }
+
+                if sub_info['new_element'] == 'VACANCY':
+                    print(f"  🕳️ Fixed vacancy creation: {n_substitute}/{total_sites} {original_element} → VACANCY")
+                else:
+                    print(f"  🔄 Fixed substitution: {n_substitute}/{total_sites} {original_element} → {sub_info['new_element']}")
+
+    def create_individual_from_pattern(self, substitution_pattern):
+        structure = Structure(
+            lattice=self.base_structure.lattice,
+            species=[],
+            coords=[],
+            coords_are_cartesian=True
+        )
+
+        for original_idx in range(len(self.base_structure)):
+            site_id = self.site_ids[original_idx]
+            original_site_info = self.id_to_site[site_id]
+            original_element = original_site_info['element']
+
+            is_vacancy = False
+            new_element = original_element
+
+            for element, pattern_info in substitution_pattern.items():
+                if element == original_element and original_idx in pattern_info['substituted_sites']:
+                    if pattern_info['new_element'] == 'VACANCY':
+                        is_vacancy = True
+                        break
+                    else:
+                        new_element = pattern_info['new_element']
+                        break
+
+            if not is_vacancy:
+                structure.append(
+                    species=new_element,
+                    coords=original_site_info['coords'],
+                    coords_are_cartesian=True
+                )
+
+        return structure
+
+    def create_random_individual(self):
+        substitution_pattern = {}
+
+        for original_element, sub_info in self.fixed_substitution_counts.items():
+            sites = self.substitutable_sites[original_element]
+            n_substitute = sub_info['n_substitute']
+            new_element = sub_info['new_element']
+
+            substitute_indices = random.sample(sites, n_substitute)
+
+            substitution_pattern[original_element] = {
+                'substituted_sites': substitute_indices,
+                'new_element': new_element,
+                'n_substitute': n_substitute
+            }
+
+        structure = self.create_individual_from_pattern(substitution_pattern)
+
+        if self.ga_params.get('perturb_positions', True):
+            structure = self.apply_position_perturbations(structure)
+
+        return structure
+
+    def apply_position_perturbations(self, structure):
+        if not self.ga_params.get('perturb_positions', True):
+            return structure
+
+        max_displacement = self.ga_params.get('max_displacement', 0.1)
+        perturbed_structure = structure.copy()
+
+        for i in range(len(perturbed_structure)):
+            displacement = np.random.uniform(-max_displacement, max_displacement, 3)
+            cart_displacement = structure.lattice.get_cartesian_coords(
+                displacement / np.linalg.norm(structure.lattice.matrix, axis=1))
+
+            old_coords = perturbed_structure[i].coords
+            new_coords = old_coords + cart_displacement
+            perturbed_structure.replace(i, perturbed_structure[i].specie, new_coords, coords_are_cartesian=True)
+
+        return perturbed_structure
+
+    def get_substitution_pattern(self, structure):
+        pattern = {}
+        current_site_mapping = self.map_current_to_original_sites(structure)
+
+        for original_element in self.substitutions:
+            if original_element not in self.substitutable_sites:
+                continue
+
+            sites = self.substitutable_sites[original_element]
+            new_element = self.fixed_substitution_counts[original_element]['new_element']
+            substituted_sites = []
+
+            for original_site_idx in sites:
+                if original_site_idx in current_site_mapping:
+                    current_idx = current_site_mapping[original_site_idx]
+                    current_element = structure[current_idx].specie.symbol
+
+                    if current_element != original_element:
+                        substituted_sites.append(original_site_idx)
+                else:
+                    if new_element == 'VACANCY':
+                        substituted_sites.append(original_site_idx)
+
+            pattern[original_element] = {
+                'substituted_sites': substituted_sites,
+                'new_element': new_element,
+                'n_substitute': len(substituted_sites)
+            }
+
+        return pattern
+
+    def map_current_to_original_sites(self, structure):
+        mapping = {}
+        used_original_sites = set()
+
+        for current_idx, site in enumerate(structure):
+            min_distance = float('inf')
+            best_original_idx = None
+
+            for original_idx in range(len(self.base_structure)):
+                if original_idx in used_original_sites:
+                    continue
+
+                original_site_info = self.id_to_site[self.site_ids[original_idx]]
+
+                if site.specie.symbol != original_site_info['element']:
+                    original_element = original_site_info['element']
+                    if (original_element in self.substitutions and
+                            self.substitutions[original_element]['new_element'] == site.specie.symbol):
+                        pass
+                    else:
+                        continue
+
+                distance = np.linalg.norm(site.coords - original_site_info['coords'])
+
+                if distance < min_distance:
+                    min_distance = distance
+                    best_original_idx = original_idx
+
+            if best_original_idx is not None:
+                mapping[best_original_idx] = current_idx
+                used_original_sites.add(best_original_idx)
+
+        return mapping
+
+    def crossover(self, parent1, parent2):
+        pattern1 = self.get_substitution_pattern(parent1)
+        pattern2 = self.get_substitution_pattern(parent2)
+
+        child_pattern = {}
+
+        for original_element in self.substitutions:
+            if (original_element not in pattern1 or
+                    original_element not in pattern2 or
+                    original_element not in self.substitutable_sites):
+                continue
+
+            sites1 = set(pattern1[original_element]['substituted_sites'])
+            sites2 = set(pattern2[original_element]['substituted_sites'])
+            n_substitute = self.fixed_substitution_counts[original_element]['n_substitute']
+            new_element = self.fixed_substitution_counts[original_element]['new_element']
+            available_sites = self.substitutable_sites[original_element]
+
+            all_substituted_sites = sites1.union(sites2)
+
+            if len(all_substituted_sites) < n_substitute:
+                remaining_sites = set(available_sites) - all_substituted_sites
+                if remaining_sites:
+                    additional_needed = n_substitute - len(all_substituted_sites)
+                    additional_sites = random.sample(list(remaining_sites),
+                                                     min(additional_needed, len(remaining_sites)))
+                    all_substituted_sites.update(additional_sites)
+
+            if len(all_substituted_sites) >= n_substitute:
+                child_substituted_sites = random.sample(list(all_substituted_sites), n_substitute)
+            else:
+                child_substituted_sites = list(all_substituted_sites)
+
+            child_pattern[original_element] = {
+                'substituted_sites': child_substituted_sites,
+                'new_element': new_element,
+                'n_substitute': len(child_substituted_sites)
+            }
+
+        child = self.create_individual_from_pattern(child_pattern)
+
+        if self.ga_params.get('perturb_positions', True):
+            child = self.mix_positions_from_parents(child, parent1, parent2)
+
+        return child
+
+    def mix_positions_from_parents(self, child, parent1, parent2):
+        child_mapping = self.map_current_to_original_sites(child)
+        parent1_mapping = self.map_current_to_original_sites(parent1)
+        parent2_mapping = self.map_current_to_original_sites(parent2)
+
+        mixed_child = child.copy()
+
+        for original_idx, child_idx in child_mapping.items():
+            source_parent = parent2 if random.random() < 0.5 else parent1
+            source_mapping = parent2_mapping if source_parent == parent2 else parent1_mapping
+
+            if original_idx in source_mapping:
+                source_idx = source_mapping[original_idx]
+                source_coords = source_parent[source_idx].coords
+                mixed_child.replace(child_idx, mixed_child[child_idx].specie, source_coords, coords_are_cartesian=True)
+
+        return mixed_child
+
+    def mutate(self, structure):
+        pattern = self.get_substitution_pattern(structure)
+        mutation_rate = self.ga_params.get('mutation_rate', 0.1)
+
+        for original_element in self.substitutions:
+            if (original_element not in pattern or
+                    original_element not in self.substitutable_sites):
+                continue
+
+            sites = self.substitutable_sites[original_element]
+            substituted_sites = set(pattern[original_element]['substituted_sites'])
+            non_substituted_sites = set(sites) - substituted_sites
+
+            sites_to_mutate = []
+            for substituted_site in substituted_sites:
+                if random.random() < mutation_rate:
+                    sites_to_mutate.append(substituted_site)
+
+            for site_to_swap in sites_to_mutate:
+                if non_substituted_sites:
+                    new_site = random.choice(list(non_substituted_sites))
+
+                    substituted_sites.remove(site_to_swap)
+                    substituted_sites.add(new_site)
+                    non_substituted_sites.remove(new_site)
+                    non_substituted_sites.add(site_to_swap)
+
+            pattern[original_element]['substituted_sites'] = list(substituted_sites)
+
+        mutated = self.create_individual_from_pattern(pattern)
+
+        if self.ga_params.get('perturb_positions', True):
+            mutated = self.mutate_positions(mutated)
+
+        return mutated
+
+    def mutate_positions(self, structure):
+        mutation_rate = self.ga_params.get('mutation_rate', 0.1)
+        max_displacement = self.ga_params.get('max_displacement', 0.1)
+
+        mutated = structure.copy()
+
+        for i in range(len(mutated)):
+            if random.random() < mutation_rate:
+                displacement = np.random.uniform(-max_displacement / 2, max_displacement / 2, 3)
+                cart_displacement = structure.lattice.get_cartesian_coords(
+                    displacement / np.linalg.norm(structure.lattice.matrix, axis=1))
+
+                old_coords = mutated[i].coords
+                new_coords = old_coords + cart_displacement
+                mutated.replace(i, mutated[i].specie, new_coords, coords_are_cartesian=True)
+
+        return mutated
+
+    def validate_individual(self, structure):
+        pattern = self.get_substitution_pattern(structure)
+
+        for original_element, expected_info in self.fixed_substitution_counts.items():
+            expected_count = expected_info['n_substitute']
+
+            if original_element not in pattern:
+                if expected_count > 0:
+                    print(f"    ❌ Validation failed: Expected {expected_count} substitutions for {original_element}, got 0")
+                    return False
+                continue
+
+            actual_count = pattern[original_element]['n_substitute']
+
+            if actual_count != expected_count:
+                print(f"    ❌ Validation failed: Expected {expected_count} substitutions for {original_element}, got {actual_count}")
+                return False
+
+        return True
+
+    def calculate_fitness(self, structure):
+        try:
+            if not self.validate_individual(structure):
+                return float('inf')
+
+            adaptor = AseAtomsAdaptor()
+            atoms = adaptor.get_atoms(structure)
+            atoms.calc = self.calculator
+
+            if self.ga_params.get('perturb_positions', True):
+                optimizer_name = self.ga_params.get('optimizer', 'BFGS')
+                fmax = self.ga_params.get('fmax', 0.05)
+                max_steps = self.ga_params.get('max_steps', 100)
+                maxstep = self.ga_params.get('maxstep', 0.2)
+
+                if optimizer_name == 'LBFGS':
+                    optimizer = LBFGS(atoms, maxstep=maxstep, logfile=None)
+                else:
+                    optimizer = BFGS(atoms, maxstep=maxstep, logfile=None)
+
+                optimizer.run(fmax=fmax, steps=max_steps)
+
+            energy = atoms.get_potential_energy()
+            return energy
+        except Exception as e:
+            print(f"    ❌ Error calculating energy: {str(e)}")
+            return float('inf')
+
+    def tournament_selection(self, population, fitness_scores, tournament_size=3):
+        selected = []
+
+        for _ in range(2):
+            tournament_indices = random.sample(range(len(population)), min(tournament_size, len(population)))
+            tournament_fitness = [fitness_scores[i] for i in tournament_indices]
+            winner_idx = tournament_indices[np.argmin(tournament_fitness)]
+            selected.append(population[winner_idx])
+
+        return selected
+
+    def optimize(self):
+        import time
+
+        population_size = self.ga_params.get('population_size', 50)
+        max_generations = self.ga_params.get('max_generations', 100)
+        elitism_ratio = self.ga_params.get('elitism_ratio', 0.1)
+
+        print(f"  🧬 Starting GA run {self.run_id + 1}: {population_size} individuals, {max_generations} generations")
+
+        # Track timing for estimates
+        total_start_time = time.time()
+        generation_times = []
+
+        print(f"  🔄 Creating initial population...")
+        self.population = []
+        fitness_scores = []
+
+        # Time the initial population creation
+        init_start_time = time.time()
+
+        for i in range(population_size):
+            individual = self.create_random_individual()
+            fitness = self.calculate_fitness(individual)
+
+            self.population.append(individual)
+            fitness_scores.append(fitness)
+
+            if fitness < self.best_energy:
+                self.best_energy = fitness
+                self.best_individual = individual.copy()
+
+            if (i + 1) % 10 == 0:
+                print(f"    Generated {i + 1}/{population_size} individuals")
+
+        init_time = time.time() - init_start_time
+        print(f"  ✅ Initial population created in {init_time:.1f}s. Best energy: {self.best_energy:.6f} eV")
+
+        # Print header for generation table
+        print("")
+        print("=" * 120)
+        print(f"{'Gen':>4} | {'Best Energy (eV)':>15} | {'Avg Energy (eV)':>14} | {'Worst Energy (eV)':>15} | {'Range (meV)':>12} | {'Improvement (meV)':>12} | {'Est. Remaining':>15}")
+        print("=" * 120)
+
+        # Evolution loop
+        for generation in range(max_generations):
+            generation_start_time = time.time()
+
+            new_population = []
+            new_fitness = []
+
+            # Elitism: keep best individuals
+            n_elite = int(population_size * elitism_ratio)
+            if n_elite > 0:
+                elite_indices = np.argsort(fitness_scores)[:n_elite]
+                for idx in elite_indices:
+                    new_population.append(self.population[idx].copy())
+                    new_fitness.append(fitness_scores[idx])
+
+            # Generate offspring
+            while len(new_population) < population_size:
+                parents = self.tournament_selection(self.population, fitness_scores)
+
+                if random.random() < self.ga_params.get('crossover_rate', 0.8):
+                    child = self.crossover(parents[0], parents[1])
+                else:
+                    child = random.choice(parents).copy()
+
+                child = self.mutate(child)
+                child_fitness = self.calculate_fitness(child)
+
+                new_population.append(child)
+                new_fitness.append(child_fitness)
+
+                if child_fitness < self.best_energy:
+                    self.best_energy = child_fitness
+                    self.best_individual = child.copy()
+
+            self.population = new_population
+            fitness_scores = new_fitness
+
+            # Calculate generation statistics
+            best_fitness = np.min(fitness_scores)
+            avg_fitness = np.mean(fitness_scores)
+            worst_fitness = np.max(fitness_scores)
+            energy_range = (worst_fitness - best_fitness) * 1000  # Convert to meV
+
+            # Calculate improvement from first generation
+            if hasattr(self, 'first_generation_best'):
+                improvement = (self.first_generation_best - best_fitness) * 1000  # meV
+            else:
+                self.first_generation_best = best_fitness
+                improvement = 0.0
+
+            # Time tracking and estimation
+            generation_end_time = time.time()
+            generation_duration = generation_end_time - generation_start_time
+            generation_times.append(generation_duration)
+
+            # Keep only recent generation times for better estimation (last 10 generations)
+            if len(generation_times) > 10:
+                generation_times = generation_times[-10:]
+
+            # Calculate time estimates
+            if len(generation_times) >= 2:
+                avg_generation_time = np.mean(generation_times)
+                remaining_generations = max_generations - generation - 1
+                estimated_remaining_time = remaining_generations * avg_generation_time
+
+                # Format remaining time
+                if estimated_remaining_time < 60:
+                    time_str = f"{estimated_remaining_time:.0f}s"
+                elif estimated_remaining_time < 3600:
+                    time_str = f"{estimated_remaining_time/60:.1f}m"
+                else:
+                    time_str = f"{estimated_remaining_time/3600:.1f}h"
+            else:
+                time_str = "Calculating..."
+
+            # Store detailed history
+            self.detailed_history.append({
+                'generation': generation,
+                'best': best_fitness,
+                'average': avg_fitness,
+                'worst': worst_fitness,
+                'run_id': self.run_id,
+                'generation_time': generation_duration,
+                'improvement_meV': improvement
+            })
+
+            self.fitness_history.append({'generation': generation, 'best': best_fitness, 'average': avg_fitness})
+
+            # Print generation information in table format
+            print(f"{generation:>4} | {best_fitness:>15.6f} | {avg_fitness:>14.6f} | {worst_fitness:>15.6f} | {energy_range:>10.1f} | {improvement:>10.1f} | {time_str:>15}")
+
+            # Check for convergence
+            if generation > 20:
+                recent_best = [f['best'] for f in self.fitness_history[-10:]]
+                convergence_threshold = self.ga_params.get('convergence_threshold', 1e-6)
+                if max(recent_best) - min(recent_best) < convergence_threshold:
+                    print("=" * 120)
+                    print(f"  ✅ Converged at generation {generation}")
+                    break
+
+        self.final_population = self.population.copy()
+        self.final_fitness = fitness_scores.copy()
+
+        # Final summary
+        total_time = time.time() - total_start_time
+        print("=" * 120)
+        print(f"  ✅ GA run {self.run_id + 1} completed in {total_time:.1f}s")
+        print(f"  Final best energy: {self.best_energy:.6f} eV")
+
+        if hasattr(self, 'first_generation_best'):
+            total_improvement = (self.first_generation_best - self.best_energy) * 1000
+            print(f"  Total improvement: {total_improvement:.1f} meV")
+
+        if generation_times:
+            avg_gen_time = np.mean(generation_times)
+            print(f"  Average generation time: {avg_gen_time:.1f}s")
+
+        print("")
+
+        return {
+            'run_id': self.run_id,
+            'best_structure': self.best_individual,
+            'best_energy': self.best_energy,
+            'fitness_history': self.fitness_history,
+            'detailed_history': self.detailed_history,
+            'final_population': self.final_population,
+            'final_fitness': self.final_fitness,
+            'substitutions': self.substitutions,
+            'ga_params': self.ga_params,
+            'total_time': total_time,
+            'generation_times': generation_times
+        }
+'''
+
+
+def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell_info=None):
+    """Generate code for GA structure optimization with supercell support and final generation saving."""
+
+    # Convert parameters to proper Python format instead of JSON
+    def format_python_dict(d, indent=4):
+        """Convert dictionary to properly formatted Python code."""
+        if not isinstance(d, dict):
+            if isinstance(d, bool):
+                return str(d)  # Python True/False
+            elif isinstance(d, str):
+                return f'"{d}"'
+            elif isinstance(d, (int, float)):
+                return str(d)
+            elif isinstance(d, list):
+                items = [format_python_dict(item, 0) for item in d]
+                return f"[{', '.join(items)}]"
+            else:
+                return str(d)
+
+        lines = ["{"]
+        for key, value in d.items():
+            formatted_value = format_python_dict(value, 0)
+            lines.append(f"{'    ' * (indent // 4 + 1)}'{key}': {formatted_value},")
+        lines.append(f"{'    ' * (indent // 4)}}}")
+        return '\n'.join(lines)
+
+    substitutions_str = format_python_dict(substitutions, 8)
+    ga_params_str = format_python_dict(ga_params, 8)
+    calc_formation_energy_str = str(calc_formation_energy)
+
+    # Generate supercell creation code
+    supercell_code = ""
+    if supercell_info and supercell_info.get('enabled', False):
+        supercell_multipliers = supercell_info.get('multipliers', [1, 1, 1])
+        supercell_code = f'''
+    # Create supercell as specified
+    supercell_multipliers = {supercell_multipliers}
+    print(f"🔬 Creating supercell: {{supercell_multipliers[0]}}x{{supercell_multipliers[1]}}x{{supercell_multipliers[2]}}")
+    print(f"📊 Original structure: {{base_structure.composition.reduced_formula}} ({{len(base_structure)}} atoms)")
+
+    # Apply supercell transformation
+    base_structure.make_supercell(supercell_multipliers)
+    print(f"📊 Supercell structure: {{base_structure.composition.reduced_formula}} ({{len(base_structure)}} atoms)")
+
+    # Update lattice information
+    lattice = base_structure.lattice
+    print(f"📏 Supercell lattice: a={{lattice.a:.3f}} Å, b={{lattice.b:.3f}} Å, c={{lattice.c:.3f}} Å")
+    print(f"📦 Supercell volume: {{lattice.volume:.2f}} Å³")
+    print(f"📈 Volume ratio: {{lattice.volume / (lattice.volume / np.prod(supercell_multipliers)):.1f}}x")
+'''
+    else:
+        supercell_code = '''
+    # Using original structure (no supercell)
+    print(f"📊 Using original structure: {base_structure.composition.reduced_formula} ({len(base_structure)} atoms)")
+'''
+
+    # Main GA code
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+
+    if len(structure_files) == 0:
+        print("❌ No structure files found!")
+        return
+
+    # Use the first structure file as base structure
+    base_structure_file = structure_files[0]
+    print(f"🧬 Using base structure file: {{base_structure_file}}")
+
+    # Load base structure
+    base_atoms = read(base_structure_file)
+
+    # Convert to pymatgen structure
+    from pymatgen.io.ase import AseAtomsAdaptor
+    adaptor = AseAtomsAdaptor()
+    base_structure = adaptor.get_structure(base_atoms)
+
+    print(f"📊 Loaded original structure: {{base_structure.composition.reduced_formula}} ({{len(base_structure)}} atoms)")
+{supercell_code}
+    # GA configuration
+    substitutions = {substitutions_str}
+
+    ga_params = {ga_params_str}
+
+    # Formation energy calculation flag
+    calc_formation_energy = {calc_formation_energy_str}
+
+    print(f"🎯 Substitutions configured: {{len(substitutions)}} element types")
+    print(f"🧬 GA parameters: {{ga_params['population_size']}} individuals, {{ga_params['max_generations']}} generations, {{ga_params['num_runs']}} runs")
+
+    # Validate substitutions against the final structure (after supercell creation)
+    for element, sub_info in substitutions.items():
+        element_sites = [i for i, site in enumerate(base_structure) if site.specie.symbol == element]
+        if len(element_sites) == 0:
+            print(f"❌ Element {{element}} not found in structure!")
+            continue
+
+        expected_substitutions = int(len(element_sites) * sub_info['concentration'])
+        print(f"  🔄 {{element}}: {{len(element_sites)}} sites → {{sub_info['new_element']}} ({{sub_info['concentration']*100:.1f}}% = {{expected_substitutions}} atoms)")
+
+    # Calculate reference energies if needed
+    reference_energies = {{}}'''
+
+    if calc_formation_energy:
+        code += '''
+    print("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for site in base_structure:
+        all_elements.add(site.specie.symbol)
+
+    # Add substitution elements
+    for sub_info in substitutions.values():
+        if sub_info['new_element'] != 'VACANCY':
+            all_elements.add(sub_info['new_element'])
+
+    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
+
+    for i, element in enumerate(sorted(all_elements)):
+        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
+        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
+        atom.calc = calculator
+        reference_energies[element] = atom.get_potential_energy()
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
+
+    code += '''
+
+    # Run GA optimization
+    all_results = []
+    num_runs = ga_params.get('num_runs', 1)
+
+    print(f"\\n🧬 Starting {num_runs} GA runs...")
+
+    for run_id in range(num_runs):
+        print(f"\\n" + "="*80)
+        print(f"🔄 Starting GA run {run_id + 1}/{num_runs}")
+        print("="*80)
+
+        try:
+            optimizer = GeneticAlgorithmOptimizer(
+                base_structure, calculator, substitutions, ga_params, run_id
+            )
+
+            results = optimizer.optimize()
+
+            if results:
+                all_results.append(results)
+                print(f"\\n✅ GA run {run_id + 1} completed: Best energy = {results['best_energy']:.6f} eV")
+
+                # Save individual run results
+                run_result = {
+                    "run_id": run_id,
+                    "best_energy_eV": results['best_energy'],
+                    "final_generation": len(results['fitness_history']),
+                    "converged": len(results['fitness_history']) < ga_params['max_generations'],
+                    "final_population_size": len(results['final_population']),
+                    "total_time_seconds": results.get('total_time', 0),
+                    "calculation_type": "ga_structure_optimization"
+                }
+
+                # Save best structure for this run
+                best_structure = results['best_structure']
+                if best_structure:
+                    # Convert to ASE and save
+                    best_atoms = AseAtomsAdaptor().get_atoms(best_structure)
+
+                    # Save as POSCAR
+                    output_filename = f"ga_results/best_structure_run_{run_id + 1:02d}.vasp"
+                    write(output_filename, best_atoms, format='vasp', direct=True, sort=True)
+                    print(f"  💾 Saved best structure: {output_filename}")
+
+                    run_result["output_structure"] = output_filename
+                    run_result["best_formula"] = best_structure.composition.reduced_formula
+                    run_result["best_num_atoms"] = len(best_structure)
+
+                    # Calculate formation energy if needed
+                    if calc_formation_energy:
+                        formation_energy = calculate_formation_energy(
+                            results['best_energy'], best_atoms, reference_energies
+                        )
+                        if formation_energy is not None:
+                            run_result["formation_energy_eV_per_atom"] = formation_energy
+                            print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
+
+                # Save fitness history
+                fitness_df = pd.DataFrame(results['fitness_history'])
+                fitness_df.to_csv(f"ga_results/fitness_history_run_{run_id + 1:02d}.csv", index=False)
+
+                # Save detailed history if available
+                if 'detailed_history' in results:
+                    detailed_df = pd.DataFrame(results['detailed_history'])
+                    detailed_df.to_csv(f"ga_results/detailed_history_run_{run_id + 1:02d}.csv", index=False)
+
+
+                # Save top 20% of final generation structures
+                if results['final_population'] and results['final_fitness']:
+                    final_population = results['final_population']
+                    final_fitness = results['final_fitness']
+
+                    # Sort by fitness (energy) and get top 20%
+                    sorted_indices = np.argsort(final_fitness)
+                    top_20_percent = max(1, int(len(sorted_indices) * 0.2))
+                    best_indices = sorted_indices[:top_20_percent]
+
+                    print(f"  💾 Saving top {top_20_percent} structures ({len(best_indices)}) from final generation")
+
+                    # Create directory for this run's final generation
+                    final_gen_dir = f"ga_results/run_{run_id + 1:02d}_final_generation_top20"
+                    os.makedirs(final_gen_dir, exist_ok=True)
+
+                    for rank, idx in enumerate(best_indices):
+                        structure = final_population[idx]
+                        energy = final_fitness[idx]
+
+                        # Convert to ASE and save as POSCAR
+                        best_atoms = AseAtomsAdaptor().get_atoms(structure)
+
+                        # Generate filename with rank and energy
+                        poscar_filename = f"final_gen_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+                        poscar_path = os.path.join(final_gen_dir, poscar_filename)
+
+                        write(poscar_path, best_atoms, format='vasp', direct=True, sort=True)
+
+                    print(f"  ✅ Saved {len(best_indices)} final generation structures to {final_gen_dir}")
+
+            else:
+                print(f"❌ GA run {run_id + 1} failed")
+
+        except Exception as run_error:
+            print(f"❌ GA run {run_id + 1} failed with error: {str(run_error)}")
+            continue
+
+    # Process overall results
+    if all_results:
+        best_overall = min(all_results, key=lambda x: x['best_energy'])
+        print(f"\\n" + "="*80)
+        print(f"★ FINAL RESULTS - Best energy from {len(all_results)} runs: {best_overall['best_energy']:.6f} eV")
+        print("="*80)
+
+        # Save overall best structure
+        overall_best_structure = best_overall['best_structure']
+        if overall_best_structure:
+            best_atoms = AseAtomsAdaptor().get_atoms(overall_best_structure)
+
+            # Save as multiple formats
+            base_name = "overall_best_structure"
+
+            # POSCAR format
+            write(f"ga_results/{base_name}.vasp", best_atoms, format='vasp', direct=True, sort=True)
+            print(f"💾 Saved overall best structure: ga_results/{base_name}.vasp")
+
+            # CIF format
+            try:
+                from pymatgen.io.cif import CifWriter
+                cif_writer = CifWriter(overall_best_structure)
+                with open(f"ga_results/{base_name}.cif", 'w') as f:
+                    f.write(str(cif_writer))
+                print(f"💾 Saved overall best structure: ga_results/{base_name}.cif")
+            except Exception as cif_error:
+                print(f"⚠️ Could not save CIF: {cif_error}")
+
+        # Create comparison dataframe
+        comparison_data = []
+        for result in all_results:
+            row = {
+                'Run_ID': result['run_id'] + 1,
+                'Best_Energy_eV': result['best_energy'],
+                'Generations': len(result['fitness_history']),
+                'Converged': len(result['fitness_history']) < ga_params['max_generations'],
+                'Final_Population_Size': len(result['final_population']),
+                'Total_Time_s': result.get('total_time', 0)
+            }
+
+            if result['best_structure']:
+                row['Best_Formula'] = result['best_structure'].composition.reduced_formula
+                row['Best_Num_Atoms'] = len(result['best_structure'])
+
+                # Calculate formation energy if available
+                if calc_formation_energy and reference_energies:
+                    best_atoms = AseAtomsAdaptor().get_atoms(result['best_structure'])
+                    formation_energy = calculate_formation_energy(
+                        result['best_energy'], best_atoms, reference_energies
+                    )
+                    if formation_energy is not None:
+                        row['Formation_Energy_eV_per_atom'] = formation_energy
+
+            comparison_data.append(row)
+
+        # Save comparison results
+        df_comparison = pd.DataFrame(comparison_data)
+        df_comparison.to_csv("ga_results/ga_runs_comparison.csv", index=False)
+        print(f"💾 Saved comparison: ga_results/ga_runs_comparison.csv")
+
+        # Generate plots if matplotlib is available
+        try:
+            import matplotlib.pyplot as plt
+
+            # Set global font sizes
+            plt.rcParams.update({
+                'font.size': 18,
+                'axes.titlesize': 24,
+                'axes.labelsize': 20,
+                'xtick.labelsize': 18,
+                'ytick.labelsize': 18,
+                'legend.fontsize': 18,
+                'figure.titlesize': 26
+            })
+
+            # 1. Best energy comparison across runs
+            plt.figure(figsize=(16, 10))
+            run_ids = [r['run_id'] + 1 for r in all_results]
+            best_energies = [r['best_energy'] for r in all_results]
+
+            colors = ['green' if e == min(best_energies) else 'steelblue' for e in best_energies]
+            bars = plt.bar(run_ids, best_energies, color=colors, alpha=0.7)
+
+            plt.xlabel('GA Run', fontsize=22, fontweight='bold')
+            plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
+            plt.title('Best Energy Comparison Across GA Runs', fontsize=26, fontweight='bold', pad=20)
+            plt.xticks(run_ids, fontsize=18, fontweight='bold')
+            plt.yticks(fontsize=18, fontweight='bold')
+
+            # Add value labels
+            for bar, energy in zip(bars, best_energies):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(best_energies)-min(best_energies))*0.01,
+                        f'{energy:.4f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+
+            plt.grid(True, alpha=0.3, axis='y')
+            plt.tight_layout()
+            plt.savefig('ga_results/ga_best_energies_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            print("✅ Saved energy comparison plot: ga_results/ga_best_energies_comparison.png")
+
+            # 2. Convergence plot for best run
+            best_run = best_overall
+            if best_run['fitness_history']:
+                plt.figure(figsize=(16, 10))
+
+                generations = [h['generation'] for h in best_run['fitness_history']]
+                best_fitness = [h['best'] for h in best_run['fitness_history']]
+                avg_fitness = [h['average'] for h in best_run['fitness_history']]
+
+                plt.plot(generations, best_fitness, 'b-', linewidth=3, marker='o', markersize=6, label='Best Energy')
+                plt.plot(generations, avg_fitness, 'r--', linewidth=2, marker='s', markersize=4, label='Average Energy')
+
+                plt.xlabel('Generation', fontsize=22, fontweight='bold')
+                plt.ylabel('Energy (eV)', fontsize=22, fontweight='bold')
+                plt.title(f'GA Convergence - Best Run (Run {best_run["run_id"] + 1})', fontsize=26, fontweight='bold', pad=20)
+                plt.legend(fontsize=20)
+                plt.grid(True, alpha=0.3)
+                plt.xticks(fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+
+                plt.tight_layout()
+                plt.savefig('ga_results/ga_convergence_best_run.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("✅ Saved convergence plot: ga_results/ga_convergence_best_run.png")'''
+
+    if calc_formation_energy:
+        code += '''
+
+            # 3. Formation energy comparison if available
+            formation_energies = []
+            valid_runs = []
+            for i, result in enumerate(all_results):
+                if result['best_structure'] and reference_energies:
+                    best_atoms = AseAtomsAdaptor().get_atoms(result['best_structure'])
+                    formation_energy = calculate_formation_energy(
+                        result['best_energy'], best_atoms, reference_energies
+                    )
+                    if formation_energy is not None:
+                        formation_energies.append(formation_energy)
+                        valid_runs.append(i + 1)
+
+            if formation_energies:
+                plt.figure(figsize=(16, 10))
+                colors = ['green' if fe == min(formation_energies) else 'orange' for fe in formation_energies]
+                bars = plt.bar(valid_runs, formation_energies, color=colors, alpha=0.7)
+
+                plt.xlabel('GA Run', fontsize=22, fontweight='bold')
+                plt.ylabel('Formation Energy (eV/atom)', fontsize=22, fontweight='bold')
+                plt.title('Formation Energy Comparison Across GA Runs', fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(valid_runs, fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
+
+                # Add value labels
+                for bar, fe in zip(bars, formation_energies):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(formation_energies)-min(formation_energies))*0.02,
+                            f'{fe:.4f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+
+                plt.axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2, label='Stability Line')
+                plt.legend(fontsize=18)
+                plt.grid(True, alpha=0.3, axis='y')
+                plt.tight_layout()
+                plt.savefig('ga_results/ga_formation_energies_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("✅ Saved formation energy plot: ga_results/ga_formation_energies_comparison.png")'''
+
+    code += '''
+
+                # 4. Multi-Run Convergence Plot
+                if len(all_results) > 1:
+                    plt.figure(figsize=(16, 10))
+
+                    # Color palette for different runs
+                    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                             '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+                    for i, result in enumerate(all_results):
+                        if result['fitness_history']:
+                            generations = [f['generation'] for f in result['fitness_history']]
+                            best_energies = [f['best'] for f in result['fitness_history']]
+
+                            color = colors[i % len(colors)]
+
+                            plt.plot(generations, best_energies, 
+                                    marker='o', markersize=4, linewidth=2.5, 
+                                    color=color, alpha=0.8,
+                                    label=f'Run {result["run_id"] + 1} (Final: {result["best_energy"]:.6f} eV)')
+
+                    # Find and highlight the overall best
+                    best_run = min(all_results, key=lambda x: x['best_energy'])
+                    if best_run['fitness_history']:
+                        generations = [f['generation'] for f in best_run['fitness_history']]
+                        best_energies = [f['best'] for f in best_run['fitness_history']]
+
+                        plt.plot(generations, best_energies, 
+                                marker='s', markersize=6, linewidth=4, 
+                                color='red', alpha=0.9,
+                                label=f'★ BEST Run {best_run["run_id"] + 1}', zorder=10)
+
+                    plt.xlabel('Generation', fontsize=22, fontweight='bold')
+                    plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
+                    plt.title('GA Convergence Comparison - All Runs', fontsize=26, fontweight='bold', pad=20)
+                    plt.legend(fontsize=16, loc='upper right')
+                    plt.grid(True, alpha=0.3)
+                    plt.xticks(fontsize=18, fontweight='bold')
+                    plt.yticks(fontsize=18, fontweight='bold')
+
+                    # Add statistics box
+                    best_energy = min(r['best_energy'] for r in all_results)
+                    worst_energy = max(r['best_energy'] for r in all_results)
+                    energy_range = (worst_energy - best_energy) * 1000  # Convert to meV
+                    avg_generations = np.mean([len(r['fitness_history']) for r in all_results])
+
+                    stats_text = f'Runs: {len(all_results)}\\n'
+                    stats_text += f'Best: {best_energy:.6f} eV\\n'
+                    stats_text += f'Range: {energy_range:.1f} meV\\n'
+                    stats_text += f'Avg Gen: {avg_generations:.0f}'
+
+                    plt.text(0.02, 0.02, stats_text, transform=plt.gca().transAxes,
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                            fontsize=14, fontweight='bold', verticalalignment='bottom')
+
+                    plt.tight_layout()
+                    plt.savefig('ga_results/multi_run_convergence_comparison.png', dpi=300, bbox_inches='tight')
+                    plt.close()
+                    print("✅ Saved multi-run convergence plot: ga_results/multi_run_convergence_comparison.png")'''
+
+    code += '''
+
+                # Reset matplotlib settings
+                plt.rcParams.update(plt.rcParamsDefault)
+
+        except ImportError:
+            print("⚠️ Matplotlib not available. Install with: pip install matplotlib")
+        except Exception as plot_error:
+            print(f"⚠️ Error generating plots: {plot_error}")
+
+        # Create comprehensive summary
+        with open("ga_results/ga_optimization_summary.txt", "w") as f:
+            f.write("MACE Genetic Algorithm Optimization Results\\n")
+            f.write("=" * 50 + "\\n\\n")
+            f.write(f"Total GA runs: {len(all_results)}\\n")
+            f.write(f"Overall best energy: {best_overall['best_energy']:.6f} eV\\n")
+            f.write(f"Best run ID: {best_overall['run_id'] + 1}\\n")
+
+            if 'total_time' in best_overall:
+                f.write(f"Best run time: {best_overall['total_time']:.1f} seconds\\n")
+
+            total_time_all_runs = sum(r.get('total_time', 0) for r in all_results)
+            f.write(f"Total computation time: {total_time_all_runs:.1f} seconds ({total_time_all_runs/60:.1f} minutes)\\n\\n")
+
+            if best_overall['best_structure']:
+                f.write(f"Best structure formula: {best_overall['best_structure'].composition.reduced_formula}\\n")
+                f.write(f"Best structure atoms: {len(best_overall['best_structure'])}\\n\\n")
+
+            f.write("Substitution Configuration:\\n")
+            for element, sub_info in substitutions.items():
+                f.write(f"  {element} → {sub_info['new_element']} ({sub_info['concentration']*100:.1f}%)\\n")
+            f.write("\\n")
+
+            f.write("GA Parameters:\\n")
+            for param, value in ga_params.items():
+                f.write(f"  {param}: {value}\\n")
+            f.write("\\n")
+
+            f.write("Run-by-run Results:\\n")
+            for result in all_results:
+                runtime = result.get('total_time', 0)
+                f.write(f"Run {result['run_id'] + 1}: {result['best_energy']:.6f} eV ({len(result['fitness_history'])} generations, {runtime:.1f}s)\\n")
+
+                # Calculate formation energy if possible
+                if calc_formation_energy and result['best_structure'] and reference_energies:
+                    best_atoms = AseAtomsAdaptor().get_atoms(result['best_structure'])
+                    formation_energy = calculate_formation_energy(
+                        result['best_energy'], best_atoms, reference_energies
+                    )
+                    if formation_energy is not None:
+                        f.write(f"  Formation Energy: {formation_energy:.6f} eV/atom\\n")
+
+        print(f"💾 Saved comprehensive summary: ga_results/ga_optimization_summary.txt")
+
+        # Save best structures from all runs in a ZIP file if multiple runs
+        if len(all_results) > 1:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for i, result in enumerate(all_results):
+                    if result['best_structure']:
+                        best_atoms = AseAtomsAdaptor().get_atoms(result['best_structure'])
+
+                        # Save as POSCAR in memory
+                        from io import StringIO
+                        poscar_buffer = StringIO()
+                        write(poscar_buffer, best_atoms, format='vasp', direct=True, sort=True)
+                        poscar_content = poscar_buffer.getvalue()
+
+                        filename = f"best_structure_run_{i+1:02d}_energy_{result['best_energy']:.6f}eV.vasp"
+                        zip_file.writestr(filename, poscar_content)
+
+                # Add summary to ZIP
+                with open("ga_results/ga_optimization_summary.txt", 'r') as summary_file:
+                    zip_file.writestr("GA_OPTIMIZATION_SUMMARY.txt", summary_file.read())
+
+            # Save ZIP file
+            with open("ga_results/all_best_structures.zip", 'wb') as zip_out:
+                zip_out.write(zip_buffer.getvalue())
+
+            print(f"💾 Saved all best structures: ga_results/all_best_structures.zip")
+
+        # Save top 20% final generation structures from all runs in a separate ZIP file
+        final_gen_zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(final_gen_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            total_final_gen_structures = 0
+
+            for result in all_results:
+                run_id = result['run_id']
+
+                if result['final_population'] and result['final_fitness']:
+                    final_population = result['final_population']
+                    final_fitness = result['final_fitness']
+
+                    # Sort by fitness and get top 20%
+                    sorted_indices = np.argsort(final_fitness)
+                    top_20_percent = max(1, int(len(sorted_indices) * 0.2))
+                    best_indices = sorted_indices[:top_20_percent]
+                    total_final_gen_structures += len(best_indices)
+
+                    for rank, idx in enumerate(best_indices):
+                        structure = final_population[idx]
+                        energy = final_fitness[idx]
+
+                        # Convert to ASE and save as POSCAR in memory
+                        best_atoms = AseAtomsAdaptor().get_atoms(structure)
+
+                        from io import StringIO
+                        poscar_buffer = StringIO()
+                        write(poscar_buffer, best_atoms, format='vasp', direct=True, sort=True)
+                        poscar_content = poscar_buffer.getvalue()
+
+                        filename = f"run_{run_id+1:02d}/final_generation_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+                        zip_file.writestr(filename, poscar_content)
+
+            # Add summary for final generation structures
+            final_gen_summary = f"Top 20% Final Generation Structures from {len(all_results)} GA Runs\\n"
+            final_gen_summary += f"Total structures included: {total_final_gen_structures}\\n"
+            final_gen_summary += f"Selection criteria: Top 20% by energy from final generation\\n"
+            final_gen_summary += f"Format: VASP POSCAR files\\n\\n"
+
+
+            final_gen_summary += "Run-by-run breakdown:\\n"
+            for result in all_results:
+                if result['final_population'] and result['final_fitness']:
+                    final_population_size = len(result['final_population'])
+                    top_20_count = max(1, int(final_population_size * 0.2))
+                    final_gen_summary += f"Run {result['run_id'] + 1}: {top_20_count} structures from {final_population_size} final population\\n"
+
+            zip_file.writestr("FINAL_GENERATION_README.txt", final_gen_summary)
+
+        # Save final generation ZIP file
+        with open("ga_results/final_generation_top20_all_runs.zip", 'wb') as zip_out:
+            zip_out.write(final_gen_zip_buffer.getvalue())
+
+        print(f"💾 Saved final generation top 20% structures: ga_results/final_generation_top20_all_runs.zip")
+        print(f"📊 Total final generation structures saved: {total_final_gen_structures}")
+
+    else:
+        print("❌ No successful GA runs completed")
+
+    print(f"\\n🏁 GA optimization completed!")
+    print(f"📁 Results saved in ga_results/ directory")
+'''
+
+    return code
+
+
+
+
+
+
+
 
 
 def _generate_structure_creation_code(structures):
@@ -803,7 +1994,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     
     print(f"💾 Saved summary to results/elastic_summary.txt")'''
 
-    
+
     # Add plotting functionality for elastic properties
     code += '''
     # Generate elastic properties plots
