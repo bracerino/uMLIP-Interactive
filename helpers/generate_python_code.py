@@ -904,7 +904,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 '''
 
     # Main GA code
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
 
     if len(structure_files) == 0:
         print("❌ No structure files found!")
