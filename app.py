@@ -3231,7 +3231,7 @@ with tab_st:
         st.info(
             f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`.\n"
             "The generated Python code is still being tested, but it should work for energies, geometry optimization, elastic properties, and genetic algorithm.")
-        col1, col2 = st.columns(2) 
+        col1, col2, col3 = st.columns(3)
 
         st.markdown("""
             <style>
@@ -3278,10 +3278,99 @@ with tab_st:
 
         with col2:
             but_script = st.button(
-                "📝 Generate Python Script (⚠️ In Testing Mode!)",
+                "📝 Generate Python Script (Will automatically create structures from the uploaded ones)",
                 type="tertiary",
                 disabled=len(st.session_state.structures) == 0,
             )
+
+        with col3:
+            but_local_script = st.button(
+                "📂 Generate Python Script (Will use local POSCAR files in the same folder where the script will be placed)",
+                type="secondary",
+                disabled=False,
+            )
+
+        if but_local_script:
+            substitutions_for_script = None
+            ga_params_for_script = None
+
+            if calc_type == "GA Structure Optimization":
+                substitutions_for_script = st.session_state.get('substitutions', {})
+                ga_params_for_script = st.session_state.get('ga_params', {})
+
+                if not substitutions_for_script:
+                    st.error("❌ No substitutions configured for GA optimization. Please configure substitutions first.")
+                    st.stop()
+
+                if not ga_params_for_script:
+                    st.error("❌ No GA parameters configured. Please configure GA parameters first.")
+                    st.stop()
+
+            supercell_info = None
+            if (hasattr(st.session_state, 'confirmed_supercell_structure') and
+                    st.session_state.confirmed_supercell_structure and
+                    hasattr(st.session_state, 'supercell_multipliers')):
+                supercell_info = {
+                    'enabled': True,
+                    'multipliers': getattr(st.session_state, 'supercell_multipliers', [1, 1, 1])
+                }
+
+            thread_count = st.session_state.get('thread_count', 4)
+
+
+            local_script_content = generate_python_script_local_files(
+                calc_type=calc_type,
+                model_size=model_size,
+                device=device,
+                dtype=dtype,
+                optimization_params=optimization_params,
+                phonon_params=phonon_params,
+                elastic_params=elastic_params,
+                calc_formation_energy=calculate_formation_energy_flag,
+                selected_model_key=selected_model,
+                substitutions=substitutions_for_script,
+                ga_params=ga_params_for_script,
+                supercell_info=supercell_info,
+                thread_count=thread_count
+            )
+
+            local_script_key = f"local_script_{hash(local_script_content) % 10000}"
+
+            if f"copied_{local_script_key}" not in st.session_state:
+                st.session_state[f"copied_{local_script_key}"] = False
+
+            st.download_button(
+                label="💾 Download Local POSCAR Script",
+                data=local_script_content,
+                file_name="mace_local_calculation_script.py",
+                mime="text/x-python",
+                help="Download the Python script that reads local POSCAR files",
+                type='primary'
+            )
+
+            with st.expander("📋 Generated Local POSCAR Script", expanded=True):
+                st.code(local_script_content, language='python')
+
+                st.info("""
+                        **Usage Instructions:**
+                        1. Save the script as `mace_local_calculation_script.py`
+                        2. Place your POSCAR files in the same directory as the script
+                        3. Install required packages: `pip install mace-torch ase pymatgen numpy pandas matplotlib`
+                        4. Run: `python mace_local_calculation_script.py`
+
+                        **Supported File Names:**
+                        - Files starting with "POSCAR" or ending with ".vasp"
+                        - Examples: `POSCAR`, `POSCAR_1`, `structure.vasp`, etc.
+
+                        **Output Files:**
+                        - `results_summary.txt` - Main results and energies
+                        - `trajectory_*.xyz` - Optimization trajectories (if applicable)
+                        - `optimized_structures/` - Final optimized structures (if applicable)
+                        - `phonon_data_*.json` - Phonon results (if applicable)
+                        - `elastic_data_*.json` - Elastic properties (if applicable)
+                        - Various plots and visualizations
+                        """)
+
         if but_script:
             substitutions_for_script = None
             ga_params_for_script = None
@@ -3308,6 +3397,8 @@ with tab_st:
                     'multipliers': getattr(st.session_state, 'supercell_multipliers', [1, 1, 1])
                 }
 
+            thread_count = st.session_state.get('thread_count', 4)
+
 
             script_content = generate_python_script(
                 structures=st.session_state.structures,
@@ -3322,7 +3413,8 @@ with tab_st:
                 selected_model_key=selected_model,
                 substitutions=substitutions_for_script,
                 ga_params=ga_params_for_script,
-                supercell_info=supercell_info
+                supercell_info=supercell_info,
+                thread_count=thread_count
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
