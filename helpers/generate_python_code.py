@@ -8,10 +8,9 @@ from datetime import datetime
 
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
-                           substitutions=None, ga_params=None, supercell_info=None):
+                           substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
     """
     Generate a complete Python script for MACE calculations with all parameters properly configured.
-    Now includes support for Genetic Algorithm optimization.
     """
 
     structure_creation_code = _generate_structure_creation_code(structures)
@@ -60,10 +59,10 @@ import zipfile
 import io
 
 # Set threading before other imports
-os.environ['OMP_NUM_THREADS'] = '4'
+os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 
 import torch
-torch.set_num_threads(4)
+torch.set_num_threads({thread_count})
 
 # ASE imports
 from ase import Atoms
@@ -131,6 +130,153 @@ if __name__ == "__main__":
 """
 
     return script
+
+
+def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
+                                       phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
+                                       substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
+    """
+    Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
+    This is identical to generate_python_script() but replaces structure creation with local file reading.
+    """
+
+    calculator_setup_code = _generate_calculator_setup_code(
+        model_size, device, selected_model_key, dtype)
+
+    # Use the same calculation code as the original function
+    if calc_type == "Energy Only":
+        calculation_code = _generate_energy_only_code(calc_formation_energy)
+    elif calc_type == "Geometry Optimization":
+        calculation_code = _generate_optimization_code(
+            optimization_params, calc_formation_energy)
+    elif calc_type == "Phonon Calculation":
+        calculation_code = _generate_phonon_code(
+            phonon_params, optimization_params, calc_formation_energy)
+    elif calc_type == "Elastic Properties":
+        calculation_code = _generate_elastic_code(
+            elastic_params, optimization_params, calc_formation_energy)
+    elif calc_type == "GA Structure Optimization":
+        calculation_code = _generate_ga_code(
+            substitutions, ga_params, calc_formation_energy, supercell_info)
+    else:
+        calculation_code = _generate_energy_only_code(calc_formation_energy)
+
+    # The script template is identical to the original, just without structure creation
+    script = f"""#!/usr/bin/env python3
+\"\"\"
+MACE Calculation Script (Local POSCAR Files)
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Calculation Type: {calc_type}
+Model: {model_size}
+Device: {device}
+Precision: {dtype}
+
+This script reads POSCAR files from the current directory.
+Place your POSCAR files in the same directory as this script before running.
+\"\"\"
+
+import os
+import time
+import numpy as np
+import json
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+import random
+from copy import deepcopy
+import threading
+import queue
+import zipfile
+import io
+
+# Set threading before other imports
+os.environ['OMP_NUM_THREADS'] = '{thread_count}'
+
+import torch
+torch.set_num_threads({thread_count})
+
+# ASE imports
+from ase import Atoms
+from ase.io import read, write
+from ase.optimize import BFGS, LBFGS
+from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
+
+# PyMatGen imports
+from pymatgen.core import Structure
+from pymatgen.io.ase import AseAtomsAdaptor
+
+# MACE imports
+try:
+    from mace.calculators import mace_mp, mace_off
+    MACE_AVAILABLE = True
+except ImportError:
+    try:
+        from mace.calculators import MACECalculator
+        MACE_AVAILABLE = True
+    except ImportError:
+        MACE_AVAILABLE = False
+        print("❌ MACE not available. Please install with: pip install mace-torch")
+        exit(1)
+
+{_generate_utility_functions()}
+
+{_generate_ga_classes() if calc_type == "GA Structure Optimization" else ""}
+
+def main():
+    start_time = time.time()
+    print("🚀 Starting MACE calculation script...")
+    print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
+    print(f"🔬 Calculation type: {calc_type}")
+    print(f"🤖 Model: {model_size}")
+    print(f"💻 Device: {device}")
+    print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
+
+    # Create output directories
+    Path("optimized_structures").mkdir(exist_ok=True)
+    Path("results").mkdir(exist_ok=True)
+    {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
+
+    # Find and validate POSCAR files in current directory
+    print("\\n📁 Looking for POSCAR files in current directory...")
+    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+
+    if not structure_files:
+        print("❌ No POSCAR files found in current directory!")
+        print("Please place files starting with 'POSCAR' or ending with '.vasp' in the same directory as this script.")
+        return
+
+    print(f"✅ Found {{len(structure_files)}} structure files:")
+    for i, filename in enumerate(structure_files, 1):
+        try:
+            atoms = read(filename)
+            composition = "".join([f"{{symbol}}{{list(atoms.get_chemical_symbols()).count(symbol)}}" 
+                                 for symbol in sorted(set(atoms.get_chemical_symbols()))])
+            print(f"  {{i}}. {{filename}} - {{composition}} ({{len(atoms)}} atoms)")
+        except Exception as e:
+            print(f"  {{i}}. {{filename}} - ❌ Error: {{str(e)}}")
+
+    # Setup calculator
+    print("\\n🔧 Setting up MACE calculator...")
+{calculator_setup_code}
+
+    # Run calculations
+    print("\\n⚡ Starting calculations...")
+    calc_start_time = time.time()
+{calculation_code}
+
+    total_time = time.time() - start_time
+    calc_time = time.time() - calc_start_time
+    print(f"\\n✅ All calculations completed!")
+    print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
+    print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
+    print("📊 Check the results/ directory for output files")
+
+if __name__ == "__main__":
+    main()
+"""
+
+    return script
+
 
 
 def _generate_ga_classes():
