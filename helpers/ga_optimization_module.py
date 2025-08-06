@@ -7,6 +7,7 @@ import threading
 import time
 
 
+
 class GeneticAlgorithmOptimizer:
     def __init__(self, base_structure, calculator, substitutions, ga_params, log_queue, stop_event, run_id=0):
         self.base_structure = base_structure
@@ -25,15 +26,185 @@ class GeneticAlgorithmOptimizer:
         self.final_population = []
         self.final_fitness = []
 
+        # ADD THESE NEW LINES - Handle uploaded initial structures
+        self.use_uploaded_structures = ga_params.get('use_uploaded_structures', False)
+        self.uploaded_initial_structures = ga_params.get('uploaded_initial_structures', [])
+        self.uploaded_structure_names = ga_params.get('uploaded_structure_names', [])
 
         random.seed(run_id * 12345)
         np.random.seed(run_id * 12345)
 
-
         self.create_site_id_mapping()
-
         self.setup_substitution_sites()
         self.setup_fixed_substitution_counts()
+
+    def validate_uploaded_structure(self, structure):
+        """
+        Improved validation that focuses on composition rather than exact site mapping
+        """
+        try:
+            # Check basic structure properties
+            if len(structure) == 0:
+                return False, "Empty structure"
+
+            # Check if structure has reasonable size compared to base structure
+            size_difference = abs(len(structure) - len(self.base_structure))
+            max_allowed_difference = max(5, len(self.base_structure) * 0.4)  # Allow 40% difference
+
+            if size_difference > max_allowed_difference:
+                return False, f"Structure size mismatch: {len(structure)} vs expected ~{len(self.base_structure)} atoms (difference: {size_difference})"
+
+            # Get composition of uploaded structure
+            uploaded_composition = {}
+            for site in structure:
+                element = site.specie.symbol
+                uploaded_composition[element] = uploaded_composition.get(element, 0) + 1
+
+            # Calculate expected composition based on base structure and substitutions
+            expected_composition = {}
+            for site in self.base_structure:
+                element = site.specie.symbol
+                expected_composition[element] = expected_composition.get(element, 0) + 1
+
+            # Apply substitutions to get expected final composition
+            for original_element, sub_info in self.fixed_substitution_counts.items():
+                n_substitute = sub_info['n_substitute']
+                new_element = sub_info['new_element']
+
+                if original_element in expected_composition:
+                    # Remove substituted atoms
+                    expected_composition[original_element] -= n_substitute
+
+                    # Add new atoms (unless it's a vacancy)
+                    if new_element != 'VACANCY':
+                        expected_composition[new_element] = expected_composition.get(new_element, 0) + n_substitute
+
+                    # Remove element if count reaches zero
+                    if expected_composition[original_element] <= 0:
+                        del expected_composition[original_element]
+
+            # Compare compositions with reasonable tolerance
+            for element, expected_count in expected_composition.items():
+                uploaded_count = uploaded_composition.get(element, 0)
+                tolerance = max(2, int(expected_count * 0.15))  # 15% tolerance or at least ±2 atoms
+
+                if abs(uploaded_count - expected_count) > tolerance:
+                    return False, f"Element {element}: expected ~{expected_count} atoms (±{tolerance}), found {uploaded_count}"
+
+
+            unexpected_elements = set(uploaded_composition.keys()) - set(expected_composition.keys())
+            if unexpected_elements:
+                for element in unexpected_elements:
+                    count = uploaded_composition[element]
+                    max_allowed_unexpected = max(1, int(len(structure) * 0.05))
+                    if count > max_allowed_unexpected:
+                        return False, f"Unexpected element {element}: found {count} atoms, max allowed: {max_allowed_unexpected}"
+
+            return True, f"Structure validated successfully - composition matches expected pattern"
+
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
+
+    def process_uploaded_structure(self, structure):
+
+        try:
+            is_valid, message = self.validate_uploaded_structure(structure)
+            if not is_valid:
+                self.log_queue.put(f"Run {self.run_id + 1} - Uploaded structure validation failed: {message}")
+                return None
+
+            processed_structure = structure.copy()
+
+            if self.ga_params.get('perturb_positions', True):
+                processed_structure = self.apply_position_perturbations(processed_structure)
+
+            return processed_structure
+
+        except Exception as e:
+            self.log_queue.put(f"Run {self.run_id + 1} - Error processing uploaded structure: {str(e)}")
+            return None
+
+    def create_initial_population(self, population_size):
+        population = []
+        fitness_scores = []
+
+        if self.use_uploaded_structures and self.uploaded_initial_structures:
+            self.log_queue.put(
+                f"Run {self.run_id + 1} - Processing {len(self.uploaded_initial_structures)} uploaded structures...")
+
+            successful_uploads = 0
+            failed_uploads = 0
+
+            for i, structure in enumerate(self.uploaded_initial_structures):
+                if len(population) >= population_size:
+                    self.log_queue.put(
+                        f"Run {self.run_id + 1} - Population limit reached, skipping remaining uploaded structures")
+                    break
+
+                if self.stop_event.is_set():
+                    self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped during uploaded structure processing")
+                    return None, None
+
+                structure_name = self.uploaded_structure_names[i] if i < len(
+                    self.uploaded_structure_names) else f"Structure_{i + 1}"
+
+                processed_structure = self.process_uploaded_structure(structure)
+                if processed_structure is not None:
+                    population.append(processed_structure)
+
+                    fitness = self.calculate_fitness(processed_structure)
+                    fitness_scores.append(fitness)
+
+                    if fitness < self.best_energy:
+                        self.best_energy = fitness
+                        self.best_individual = processed_structure.copy()
+
+                    successful_uploads += 1
+                    self.log_queue.put(f"  ✅ Uploaded structure {i + 1} ({structure_name}): {fitness:.6f} eV")
+                else:
+                    failed_uploads += 1
+                    self.log_queue.put(f"  ❌ Failed to process uploaded structure {i + 1} ({structure_name})")
+
+            self.log_queue.put(
+                f"Run {self.run_id + 1} - Upload summary: {successful_uploads} successful, {failed_uploads} failed out of {len(self.uploaded_initial_structures)} total")
+
+        remaining_needed = population_size - len(population)
+        if remaining_needed > 0:
+            self.log_queue.put(
+                f"Run {self.run_id + 1} - Generating {remaining_needed} random structures to complete population...")
+
+            for i in range(remaining_needed):
+                if self.stop_event.is_set():
+                    self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped during random structure generation")
+                    return None, None
+
+                current_total = len(population) + 1
+                if current_total % max(1, population_size // 10) == 0 or i == 0 or current_total == population_size:
+                    self.log_queue.put({
+                        'type': 'ga_progress',
+                        'run_id': self.run_id,
+                        'generation': 0,
+                        'current_structure': current_total,
+                        'total_structures': population_size,
+                        'phase': 'initialization'
+                    })
+
+                individual = self.create_random_individual()
+                fitness = self.calculate_fitness(individual)
+
+                population.append(individual)
+                fitness_scores.append(fitness)
+
+                if fitness < self.best_energy:
+                    self.best_energy = fitness
+                    self.best_individual = individual.copy()
+
+                if (i + 1) % 10 == 0:
+                    self.log_queue.put(
+                        f"Run {self.run_id + 1} - Generated {len(population)}/{population_size} total individuals")
+
+        return population, fitness_scores
+
 
     def create_site_id_mapping(self):
         self.site_ids = {}
@@ -388,7 +559,7 @@ class GeneticAlgorithmOptimizer:
 
                 if optimizer_name == 'LBFGS':
                     optimizer = LBFGS(atoms, maxstep=maxstep)
-                else:  # Default to BFGS
+                else:
                     optimizer = BFGS(atoms, maxstep=maxstep)
 
                 optimizer.run(fmax=fmax, steps=max_steps)
@@ -435,14 +606,16 @@ class GeneticAlgorithmOptimizer:
         self.log_queue.put(
             f"Starting GA run {self.run_id + 1}: {population_size} individuals, {max_generations} generations")
 
-
         if self.stop_event.is_set():
             self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped before initialization")
             return None
 
-        self.log_queue.put(f"Run {self.run_id + 1} - Creating initial population...")
-        self.population = []
-        fitness_scores = []
+
+        if self.use_uploaded_structures and self.uploaded_initial_structures:
+            self.log_queue.put(
+                f"Run {self.run_id + 1} - Using {len(self.uploaded_initial_structures)} uploaded structures + random generation for initial population")
+        else:
+            self.log_queue.put(f"Run {self.run_id + 1} - Creating fully random initial population...")
 
         self.log_queue.put({
             'type': 'ga_progress',
@@ -453,41 +626,16 @@ class GeneticAlgorithmOptimizer:
             'phase': 'initialization'
         })
 
-        for i in range(population_size):
-            if self.stop_event.is_set():
-                self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped during initialization at individual {i + 1}")
-                return None
 
-            # Update progress (every 10 individuals or at certain milestones)
-            if (i + 1) % max(1, population_size // 10) == 0 or i == 0 or i == population_size - 1:
-                self.log_queue.put({
-                    'type': 'ga_progress',
-                    'run_id': self.run_id,
-                    'generation': 0,
-                    'current_structure': i + 1,
-                    'total_structures': population_size,
-                    'phase': 'initialization'
-                })
+        result = self.create_initial_population(population_size)
+        if result is None:
+            return None
 
-            individual = self.create_random_individual()
-            fitness = self.calculate_fitness(individual)
-
-            if (i + 1) % 5 == 0 and self.stop_event.is_set():
-                self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped during fitness calculation")
-                return None
-
-            self.population.append(individual)
-            fitness_scores.append(fitness)
-
-            if fitness < self.best_energy:
-                self.best_energy = fitness
-                self.best_individual = individual.copy()
-
-            if (i + 1) % 10 == 0:
-                self.log_queue.put(f"Run {self.run_id + 1} - Generated {i + 1}/{population_size} individuals")
+        self.population, fitness_scores = result
 
         self.log_queue.put(
             f"Run {self.run_id + 1} - Initial population created. Best energy: {self.best_energy:.6f} eV")
+
 
         for generation in range(max_generations):
             if self.stop_event.is_set():
@@ -516,10 +664,9 @@ class GeneticAlgorithmOptimizer:
 
             # Generate offspring
             structure_count = len(new_population)
-            update_frequency = max(1, population_size // 10)  # Update every 10% of population
+            update_frequency = max(1, population_size // 10)
 
             while len(new_population) < population_size:
-                # Check stop event less frequently (every 5 structures)
                 if structure_count % 5 == 0 and self.stop_event.is_set():
                     self.log_queue.put(f"🛑 GA run {self.run_id + 1} stopped during generation {generation}")
                     break
@@ -534,7 +681,6 @@ class GeneticAlgorithmOptimizer:
                         'phase': 'evolution'
                     })
 
-
                 parents = self.tournament_selection(self.population, fitness_scores)
 
                 if random.random() < self.ga_params.get('crossover_rate', 0.8):
@@ -543,7 +689,6 @@ class GeneticAlgorithmOptimizer:
                     child = random.choice(parents).copy()
 
                 child = self.mutate(child)
-
                 child_fitness = self.calculate_fitness(child)
 
                 new_population.append(child)
@@ -604,7 +749,9 @@ class GeneticAlgorithmOptimizer:
             'final_population': self.final_population,
             'final_fitness': self.final_fitness,
             'substitutions': self.substitutions,
-            'ga_params': self.ga_params
+            'ga_params': self.ga_params,
+            'used_uploaded_structures': self.use_uploaded_structures,
+            'num_uploaded_structures': len(self.uploaded_initial_structures) if self.uploaded_initial_structures else 0
         }
 
 
@@ -667,7 +814,93 @@ def run_ga_optimization(base_structure, calculator, substitutions, ga_params, lo
         log_queue.put(f"Traceback: {traceback.format_exc()}")
         log_queue.put("GA_OPTIMIZATION_FINISHED")
 
-def setup_ga_parameters_ui():
+
+def validate_structure_for_substitutions(structure, substitutions, base_structure):
+    try:
+        uploaded_composition = {}
+        for site in structure:
+            element = site.specie.symbol
+            uploaded_composition[element] = uploaded_composition.get(element, 0) + 1
+
+
+        expected_composition = {}
+        for site in base_structure:
+            element = site.specie.symbol
+            expected_composition[element] = expected_composition.get(element, 0) + 1
+
+        substitution_info = {}
+        for original_element, sub_info in substitutions.items():
+            if original_element in expected_composition:
+                total_sites = expected_composition[original_element]
+                n_substitute = int(total_sites * sub_info['concentration'])
+                new_element = sub_info['new_element']
+
+                substitution_info[original_element] = {
+                    'total_sites': total_sites,
+                    'n_substitute': n_substitute,
+                    'new_element': new_element,
+                    'concentration': sub_info['concentration']
+                }
+
+                expected_composition[original_element] -= n_substitute
+
+                if new_element != 'VACANCY':
+                    expected_composition[new_element] = expected_composition.get(new_element, 0) + n_substitute
+
+                if expected_composition[original_element] <= 0:
+                    del expected_composition[original_element]
+
+        size_difference = abs(len(structure) - len(base_structure))
+        max_allowed_difference = max(5, len(base_structure) * 0.4)
+
+        if size_difference > max_allowed_difference:
+            return False, f"Size mismatch: {len(structure)} vs expected ~{len(base_structure)} atoms", None
+
+        validation_details = []
+        composition_match = True
+
+        for element, expected_count in expected_composition.items():
+            uploaded_count = uploaded_composition.get(element, 0)
+            tolerance = max(2, int(expected_count * 0.15))  # 15% tolerance or at least ±2 atoms
+
+            if abs(uploaded_count - expected_count) <= tolerance:
+                validation_details.append(f"✅ {element}: {uploaded_count} atoms (expected ~{expected_count})")
+            else:
+                validation_details.append(
+                    f"❌ {element}: {uploaded_count} atoms (expected {expected_count} ± {tolerance})")
+                composition_match = False
+
+        unexpected_elements = set(uploaded_composition.keys()) - set(expected_composition.keys())
+        if unexpected_elements:
+            for element in unexpected_elements:
+                count = uploaded_composition[element]
+                max_allowed_unexpected = max(1, int(len(structure) * 0.05))
+                if count <= max_allowed_unexpected:
+                    validation_details.append(f"⚠️ {element}: {count} atoms (unexpected but allowed)")
+                else:
+                    validation_details.append(
+                        f"❌ {element}: {count} atoms (unexpected, max allowed: {max_allowed_unexpected})")
+                    composition_match = False
+
+        composition_info = {
+            'uploaded_composition': uploaded_composition,
+            'expected_composition': expected_composition,
+            'substitution_info': substitution_info,
+            'validation_details': validation_details,
+            'size_info': f"{len(structure)} atoms (base: {len(base_structure)})"
+        }
+
+        if composition_match:
+            return True, "Structure composition matches expected substitution pattern", composition_info
+        else:
+            return False, "Structure composition doesn't match expected pattern", composition_info
+
+    except Exception as e:
+        return False, f"Validation error: {str(e)}", None
+
+
+
+def setup_ga_parameters_ui(working_structure, substitutions, load_structure_func=None):
     import streamlit as st
     st.divider()
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -680,7 +913,7 @@ def setup_ga_parameters_ui():
         population_size = st.number_input("Population Size", min_value=3, max_value=1000, value=50, step=10)
         max_generations = st.number_input("Max Generations", min_value=1, max_value=1000, value=20, step=10)
         num_runs = st.number_input("Number of GA Runs", min_value=1, max_value=1000, value=3, step=1,
-                                  help="Run GA multiple times with different random seeds")
+                                   help="Run GA multiple times with different random seeds")
 
     with col_ga2:
         crossover_rate = st.number_input("Crossover Rate", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
@@ -691,18 +924,216 @@ def setup_ga_parameters_ui():
         convergence_threshold = st.number_input("Convergence Threshold", min_value=1e-12, max_value=1e-1, value=1e-6,
                                                 format="%.2e")
 
+    st.divider()
+    st.subheader("Initial Population Configuration")
+
+    use_uploaded_structures = st.checkbox(
+        "Use uploaded structures for initial generation",
+        value=False,
+        help="Upload your own structures to seed the initial population instead of using purely random generation"
+    )
+
+    uploaded_initial_structures = []
+    uploaded_structure_names = []
+    validated_structures = []
+
+    valid_count = 0
+    invalid_count = 0
+
+    if use_uploaded_structures:
+        if load_structure_func is None and 'load_structure_for_ga' not in globals():
+            st.error("❌ Structure loading function not available. Please contact the developer.")
+            return {}
+
+        st.info(
+            "📁 **Upload Structure Files**: These structures will be validated immediately against your substitution requirements.")
+
+        uploaded_files = st.file_uploader(
+            "Upload initial population structures (POSCAR, CIF, etc.)",
+            accept_multiple_files=True,
+            type=None,
+            help="Upload structure files that will be used as initial population. Validation happens immediately after upload.",
+            key="initial_population_uploader"
+        )
+
+        if uploaded_files:
+            st.write(f"📋 **Processing {len(uploaded_files)} uploaded files...**")
+
+            if 'ga_validation_cache' not in st.session_state:
+                st.session_state.ga_validation_cache = {}
+
+            valid_count = 0
+            invalid_count = 0
+
+
+            valid_results = []
+            invalid_results = []
+
+            for i, uploaded_file in enumerate(uploaded_files):
+                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+
+                if file_key not in st.session_state.ga_validation_cache:
+                    try:
+                        if load_structure_func:
+                            structure = load_structure_func(uploaded_file)
+                        else:
+                            structure = load_structure_for_ga(uploaded_file)
+
+                        is_valid, message, composition_info = validate_structure_for_substitutions(
+                            structure, substitutions, working_structure
+                        )
+
+
+                        st.session_state.ga_validation_cache[file_key] = {
+                            'structure': structure,
+                            'name': uploaded_file.name,
+                            'is_valid': is_valid,
+                            'message': message,
+                            'composition_info': composition_info
+                        }
+
+                    except Exception as e:
+                        st.session_state.ga_validation_cache[file_key] = {
+                            'structure': None,
+                            'name': uploaded_file.name,
+                            'is_valid': False,
+                            'message': f"Loading error: {str(e)}",
+                            'composition_info': None
+                        }
+
+                cached_result = st.session_state.ga_validation_cache[file_key]
+
+                if cached_result['is_valid'] and cached_result['structure']:
+                    valid_results.append(cached_result)
+                    uploaded_initial_structures.append(cached_result['structure'])
+                    uploaded_structure_names.append(cached_result['name'])
+                    validated_structures.append(cached_result['structure'])
+                    valid_count += 1
+                else:
+                    invalid_results.append(cached_result)
+                    invalid_count += 1
+
+            if valid_count > 0 or invalid_count > 0:
+                col_summary1, col_summary2, col_summary3 = st.columns(3)
+                with col_summary1:
+                    st.metric("✅ Valid Structures", valid_count)
+                with col_summary2:
+                    st.metric("❌ Invalid Structures", invalid_count)
+                with col_summary3:
+                    success_rate = (valid_count / (valid_count + invalid_count)) * 100 if (
+                                                                                                      valid_count + invalid_count) > 0 else 0
+                    st.metric("Success Rate", f"{success_rate:.0f}%")
+
+            if valid_results:
+                with st.expander(f"✅ Valid Structures ({len(valid_results)})", expanded=False):
+                    st.success("These structures passed validation and will be used in the GA:")
+
+                    for i, result in enumerate(valid_results):
+                        st.markdown(f"**{i + 1}. {result['name']}**")
+
+                        col_v1, col_v2, col_v3 = st.columns(3)
+                        with col_v1:
+                            if result['structure']:
+                                st.write(f"📋 Formula: `{result['structure'].composition.reduced_formula}`")
+                                st.write(f"🔢 Atoms: {len(result['structure'])}")
+
+                        with col_v2:
+                            if result['composition_info']:
+                                st.write(f"📏 {result['composition_info']['size_info']}")
+
+                        with col_v3:
+                            st.write(f"💚 {result['message']}")
+
+
+                        if result['composition_info'] and result['composition_info']['validation_details']:
+                            valid_details = [d for d in result['composition_info']['validation_details'] if
+                                             d.startswith('✅')]
+                            if valid_details:
+                                details_text = " | ".join([d.replace('✅ ', '') for d in valid_details])
+                                st.write(f"🧪 Composition: {details_text}")
+
+                        if i < len(valid_results) - 1:
+                            st.markdown("---")
+
+
+            if invalid_results:
+                with st.expander(f"❌ Invalid Structures ({len(invalid_results)})", expanded=False):
+                    st.error("These structures failed validation and need to be fixed:")
+
+                    for i, result in enumerate(invalid_results):
+                        st.markdown(f"**{i + 1}. {result['name']}**")
+
+                        col_i1, col_i2 = st.columns(2)
+                        with col_i1:
+                            if result['structure']:
+                                st.write(f"📋 Formula: `{result['structure'].composition.reduced_formula}`")
+                                st.write(f"🔢 Atoms: {len(result['structure'])}")
+                            else:
+                                st.write("❌ Failed to load structure")
+
+                        with col_i2:
+                            st.error(f"❌ {result['message']}")
+
+
+                        if result['composition_info'] and result['composition_info']['validation_details']:
+                            st.write("**Issues found:**")
+                            for detail in result['composition_info']['validation_details']:
+                                if detail.startswith('❌'):
+                                    st.write(f"  • {detail.replace('❌ ', '')}")
+                                elif detail.startswith('⚠️'):
+                                    st.write(f"  • {detail.replace('⚠️ ', '(Warning) ')}")
+
+                        if i < len(invalid_results) - 1:
+                            st.markdown("---")
+
+                    st.info("💡 **Tips to fix invalid structures:**\n"
+                            "- Check element composition matches your substitution settings\n"
+                            "- Verify structure has reasonable number of atoms\n"
+                            "- Ensure file format is supported (POSCAR, CIF, etc.)")
+
+
+            if len(validated_structures) > 0:
+                st.markdown("---")
+                col_pop1, col_pop2 = st.columns(2)
+                with col_pop1:
+                    st.metric("Valid Uploaded Structures", len(validated_structures))
+                with col_pop2:
+                    if len(validated_structures) > population_size:
+                        st.warning(
+                            f"⚠️ You have {len(validated_structures)} valid structures but population size is {population_size}. Only the first {population_size} will be used.")
+                    elif len(validated_structures) < population_size:
+                        remaining = population_size - len(validated_structures)
+                        st.info(
+                            f"📈 {remaining} additional random structures will be generated to reach population size of {population_size}")
+
+                if len(validated_structures) >= 2:
+                    adjust_population = st.checkbox(
+                        f"Adjust population size to match valid uploaded structures ({len(validated_structures)})",
+                        value=False,
+                        help="Use only the valid uploaded structures without generating additional random ones"
+                    )
+                    if adjust_population:
+                        population_size = len(validated_structures)
+                        st.success(f"✅ Population size adjusted to {population_size}")
+
+
+            elif invalid_count > 0:
+                st.error(
+                    f"❌ All {invalid_count} uploaded structures are invalid. Please fix the issues or upload different structures.")
+
     st.subheader("Position Optimization")
 
     col_pos1, col_pos2 = st.columns(2)
 
     with col_pos1:
         perturb_positions = st.checkbox("Optimize Atomic Positions", value=False)
+
     if perturb_positions:
         with col_pos2:
-            max_displacement = st.number_input("Max Random Position Displacement When Creating Initial Generation  (Å)", min_value=0.00, max_value=1.0, value=0.1,
-                                               step=0.01)
+            max_displacement = st.number_input("Max Random Position Displacement When Creating Initial Generation (Å)",
+                                               min_value=0.00, max_value=1.0, value=0.1, step=0.01)
 
-        col_geom1, col_geom2= st.columns(2)
+        col_geom1, col_geom2 = st.columns(2)
 
         with col_geom1:
             fmax = st.number_input("Force Convergence (eV/Å)", min_value=0.001, max_value=1.0, value=0.05, step=0.005,
@@ -711,9 +1142,9 @@ def setup_ga_parameters_ui():
 
         with col_geom2:
             optimizer = st.selectbox("Optimizer", ["BFGS", "LBFGS"], index=0)
-            maxstep = st.number_input("Max Step Size During Optimization (Å)", min_value=0.01, max_value=0.5, value=0.2, step=0.01,
+            maxstep = st.number_input("Max Step Size During Optimization (Å)", min_value=0.01, max_value=0.5, value=0.2,
+                                      step=0.01,
                                       format="%.2f")
-
     else:
         max_displacement = 0.1
         fmax = 0.05
@@ -735,8 +1166,12 @@ def setup_ga_parameters_ui():
         'max_steps': max_steps,
         'optimizer': optimizer,
         'maxstep': maxstep,
+        'use_uploaded_structures': use_uploaded_structures,
+        'uploaded_initial_structures': validated_structures,
+        'uploaded_structure_names': uploaded_structure_names,
+        'valid_upload_count': valid_count,
+        'invalid_upload_count': invalid_count,
     }
-
 
 def setup_substitution_ui(structure):
     import streamlit as st
