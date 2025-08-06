@@ -6,7 +6,73 @@ from pymatgen.io.ase import AseAtomsAdaptor
 import threading
 import time
 
+import math
 
+
+def calculate_combinations(n, k):
+    if k > n or k < 0:
+        return 0
+    if k == 0 or k == n:
+        return 1
+
+    k = min(k, n - k)
+
+    try:
+        if n <= 20:
+            return math.comb(n, k)
+
+        log_result = 0
+        for i in range(k):
+            log_result += math.log(n - i) - math.log(i + 1)
+
+        result = math.exp(log_result)
+
+        if math.isinf(result) or result > 1e15:
+            return "Very Large (>10^15)"
+
+        return int(round(result))
+
+    except (OverflowError, ValueError):
+        return "Very Large"
+
+
+def format_large_number(num):
+    if isinstance(num, str):
+        return num
+
+    if num < 1000:
+        return str(num)
+    elif num < 1_000_000:
+        return f"{num / 1000:.1f}K"
+    elif num < 1_000_000_000:
+        return f"{num / 1_000_000:.1f}M"
+    elif num < 1_000_000_000_000:
+        return f"{num / 1_000_000_000:.1f}B"
+    else:
+        return f"{num / 1_000_000_000_000:.1f}T"
+
+
+def calculate_total_combinations(substitutions_dict, structure):
+    total_combinations = 1
+    combination_details = []
+
+    for element, sub_info in substitutions_dict.items():
+        if sub_info['n_substitute'] > 0:
+            element_count = sum(1 for site in structure if site.specie.symbol == element)
+            n_substitute = sub_info['n_substitute']
+
+            element_combinations = calculate_combinations(element_count, n_substitute)
+            total_combinations *= element_combinations if isinstance(element_combinations, int) else 1e15
+
+            combination_details.append({
+                'element': element,
+                'total_sites': element_count,
+                'n_substitute': n_substitute,
+                'combinations': element_combinations,
+                'target': sub_info['new_element']
+            })
+
+    return total_combinations, combination_details
 
 class GeneticAlgorithmOptimizer:
     def __init__(self, base_structure, calculator, substitutions, ga_params, log_queue, stop_event, run_id=0):
@@ -39,34 +105,27 @@ class GeneticAlgorithmOptimizer:
         self.setup_fixed_substitution_counts()
 
     def validate_uploaded_structure(self, structure):
-        """
-        Improved validation that focuses on composition rather than exact site mapping
-        """
+
         try:
-            # Check basic structure properties
             if len(structure) == 0:
                 return False, "Empty structure"
 
-            # Check if structure has reasonable size compared to base structure
             size_difference = abs(len(structure) - len(self.base_structure))
-            max_allowed_difference = max(5, len(self.base_structure) * 0.4)  # Allow 40% difference
+            max_allowed_difference = max(5, len(self.base_structure) * 0.4)
 
             if size_difference > max_allowed_difference:
                 return False, f"Structure size mismatch: {len(structure)} vs expected ~{len(self.base_structure)} atoms (difference: {size_difference})"
 
-            # Get composition of uploaded structure
             uploaded_composition = {}
             for site in structure:
                 element = site.specie.symbol
                 uploaded_composition[element] = uploaded_composition.get(element, 0) + 1
 
-            # Calculate expected composition based on base structure and substitutions
             expected_composition = {}
             for site in self.base_structure:
                 element = site.specie.symbol
                 expected_composition[element] = expected_composition.get(element, 0) + 1
 
-            # Apply substitutions to get expected final composition
             for original_element, sub_info in self.fixed_substitution_counts.items():
                 n_substitute = sub_info['n_substitute']
                 new_element = sub_info['new_element']
@@ -1173,8 +1232,10 @@ def setup_ga_parameters_ui(working_structure, substitutions, load_structure_func
         'invalid_upload_count': invalid_count,
     }
 
+
 def setup_substitution_ui(structure):
     import streamlit as st
+    import pandas as pd
     st.divider()
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.subheader("Element Substitution Setup")
@@ -1256,6 +1317,56 @@ def setup_substitution_ui(structure):
                         st.metric("Will substitute", f"{n_substitute}")
                         st.metric("Will remain", f"{remaining_atoms}")
 
+                if n_substitute > 0:
+                    combinations = calculate_combinations(element_count, n_substitute)
+
+                    st.markdown("---")
+                    st.markdown("### 🧮 **Combinations Calculator**")
+
+                    col_calc1, col_calc2, col_calc3 = st.columns(3)
+
+                    with col_calc1:
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 15px; border-radius: 10px; text-align: center; color: white;">
+                            <h4 style="margin: 0; font-size: 1.1em;">Available Sites</h4>
+                            <h2 style="margin: 5px 0; font-size: 2em;">{element_count}</h2>
+                            <p style="margin: 0; opacity: 0.9;">{element} atoms</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with col_calc2:
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(135deg, #f093fb, #f5576c); padding: 15px; border-radius: 10px; text-align: center; color: white;">
+                            <h4 style="margin: 0; font-size: 1.1em;">To Substitute</h4>
+                            <h2 style="margin: 5px 0; font-size: 2em;">{n_substitute}</h2>
+                            <p style="margin: 0; opacity: 0.9;">positions</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with col_calc3:
+                        combinations_formatted = format_large_number(combinations)
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(135deg, #4facfe, #00f2fe); padding: 15px; border-radius: 10px; text-align: center; color: white;">
+                            <h4 style="margin: 0; font-size: 1.1em;">Possible Arrangements</h4>
+                            <h2 style="margin: 5px 0; font-size: 2em;">{combinations_formatted}</h2>
+                            <p style="margin: 0; opacity: 0.9;">combinations</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    if isinstance(combinations, int) and combinations > 1:
+                        st.info(
+                            f"💡 **Mathematical formula:** C({element_count}, {n_substitute}) = {element_count}! / ({n_substitute}! × {element_count - n_substitute}!)")
+
+                        if combinations > 1_000_000:
+                            st.warning(
+                                f"⚠️ **Large search space:** With {combinations_formatted} possible arrangements, the genetic algorithm will help find optimal configurations efficiently.")
+                        elif combinations > 1000:
+                            st.success(
+                                f"✅ **Manageable search space:** {combinations_formatted} arrangements provide good diversity for optimization.")
+                        else:
+                            st.success(
+                                f"✅ **Small search space:** Only {combinations} possible arrangements - GA can explore most of them.")
+
                 if new_element == "VACANCY":
                     st.write(f"**Result:** {remaining_atoms} {element} + {n_substitute} 🕳️ vacancies")
                 else:
@@ -1271,6 +1382,56 @@ def setup_substitution_ui(structure):
 
     if substitutions:
         st.success(f"✅ Configured substitutions for {len(substitutions)} element(s)")
+
+        total_combinations, combination_details = calculate_total_combinations(substitutions, structure)
+
+        with st.expander("🧮 **Overall Combinations Analysis**", expanded=True):
+            st.markdown("### Individual Element Combinations:")
+
+            combinations_data = []
+            for detail in combination_details:
+                combinations_data.append({
+                    'Element': detail['element'],
+                    'Target': detail['target'] if detail['target'] != 'VACANCY' else '🕳️ Vacancy',
+                    'Total Sites': detail['total_sites'],
+                    'To Substitute': detail['n_substitute'],
+                    'Combinations': format_large_number(detail['combinations'])
+                })
+
+            if combinations_data:
+                df_combinations = pd.DataFrame(combinations_data)
+                st.dataframe(df_combinations, use_container_width=True, hide_index=True)
+
+            st.markdown("### **Total Search Space:**")
+
+            if len(combination_details) == 1:
+                total_formatted = format_large_number(total_combinations)
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #43e97b, #38f9d7); padding: 20px; border-radius: 15px; text-align: center; color: black;">
+                    <h3 style="margin: 0;">Total Possible Structures</h3>
+                    <h1 style="margin: 10px 0; font-size: 3em;">{total_formatted}</h1>
+                    <p style="margin: 0; font-size: 1.1em;">different arrangements</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                formula_parts = []
+                for detail in combination_details:
+                    combo_str = format_large_number(detail['combinations'])
+                    formula_parts.append(f"C({detail['total_sites']},{detail['n_substitute']}) = {combo_str}")
+
+                formula = " × ".join(formula_parts)
+                total_formatted = format_large_number(total_combinations)
+
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #43e97b, #38f9d7); padding: 20px; border-radius: 15px; text-align: center; color: black;">
+                    <h3 style="margin: 0;">Total Possible Structures</h3>
+                    <p style="margin: 5px 0; font-size: 1.1em;">{formula}</p>
+                    <h1 style="margin: 10px 0; font-size: 3em;">{total_formatted}</h1>
+                    <p style="margin: 0; font-size: 1.1em;">different arrangements</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            
 
         with st.expander("📋 Detailed Substitution Summary", expanded=False):
             total_substitutions = 0
@@ -1299,22 +1460,17 @@ def setup_substitution_ui(structure):
                     'Concentration': f"{sub_info['concentration'] * 100:.1f}%"
                 })
 
-
-            import pandas as pd
             df_summary = pd.DataFrame(summary_data)
             st.dataframe(df_summary, use_container_width=True, hide_index=True)
-
 
             st.subheader("🔮 Expected Final Composition")
 
             final_composition = {}
             original_total_atoms = len(structure)
 
-
             for site in structure:
                 element = site.specie.symbol
                 final_composition[element] = final_composition.get(element, 0) + 1
-
 
             for orig_element, sub_info in substitutions.items():
                 n_substitute = sub_info['n_substitute']
