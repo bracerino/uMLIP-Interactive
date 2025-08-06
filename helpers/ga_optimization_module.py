@@ -1272,7 +1272,7 @@ def setup_substitution_ui(structure):
     if substitutions:
         st.success(f"✅ Configured substitutions for {len(substitutions)} element(s)")
 
-        with st.expander("📋 Detailed Substitution Summary", expanded=True):
+        with st.expander("📋 Detailed Substitution Summary", expanded=False):
             total_substitutions = 0
             total_vacancies = 0
 
