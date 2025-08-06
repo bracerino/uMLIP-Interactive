@@ -2952,7 +2952,11 @@ with tab1:
                     st.session_state.substitutions = substitutions
                     st.session_state.ga_base_structure = working_structure
 
-                    ga_params = setup_ga_parameters_ui()
+                    ga_params = setup_ga_parameters_ui(
+                        working_structure=working_structure,
+                        substitutions=substitutions,
+                        load_structure_func=load_structure  
+                    )
                     st.session_state.ga_params = ga_params
 
 
