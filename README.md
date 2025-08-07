@@ -36,7 +36,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
   
 
 
-Open your terminal console and write the following commands (the bold text):  
+**Compile the app:** Open your terminal console and write the following commands (the bold text):  
 (Optional) Install Git:  
       **sudo apt update**  
       **sudo apt install git**    
