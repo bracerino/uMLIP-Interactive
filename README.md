@@ -25,9 +25,16 @@ Supported MACE MLIPs:
 
 For calculations on **GPU, compile CUDA**:  
 https://developer.nvidia.com/cuda-toolkit  
-(do not forget to add it to the PATH, e.g.:  
+Do not forget to add it to the PATH, e.g.:  
+- In your console, open bashrc:  'nano ~/.bashrc'  
+- Scroll to the end of the file  
+- Add the following lines to the end of the file (modify accordingly for your version of CUDA):  
 export PATH=/usr/local/cuda-12.9/bin:$PATH  
-export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH  )  
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH  
+- Save the changes: press 'ctrl + c', and exit the nano with 'ctrl + x'  
+- Reload the config file by writting in console: 'source ~/.bashrc'
+  
+
 
 Open your terminal console and write the following commands (the bold text):  
 (Optional) Install Git:  
