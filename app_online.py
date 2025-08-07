@@ -18,8 +18,6 @@ import io
 import zipfile
 from pathlib import Path
 from plotly.subplots import make_subplots
-import psutil
-import GPUtil
 from collections import deque
 import streamlit as st
 import threading
@@ -153,8 +151,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Monitor CPU, GPU, RAM
-display_system_monitoring_detailed()
 
 
 def estimate_phonon_supercell(atoms, target_min_length=15.0, max_supercell=4, log_queue=None):
