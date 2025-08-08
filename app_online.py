@@ -2340,7 +2340,140 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 
-st.title("MACE Molecular Dynamic Batch Structure Calculator")
+st.title("MACE MLIP Batch Structure Calculator")
+st.markdown("""
+<div style="
+    background: linear-gradient(135deg, #dc2626, #b91c1c);
+    padding: 20px;
+    border-radius: 10px;
+    margin: 20px 0;
+    color: white;
+    border-left: 5px solid #7f1d1d;
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+">
+    <h3 style="margin: 0 0 10px 0; color: white;">⚠️ Online Version - Script Generation Only</h3>
+    <p style="margin: 0; font-size: 16px; line-height: 1.5;">
+        This <strong>online version</strong> works only for <strong>preparation of Python code</strong> for running simulations in external console, 
+        and to get familiar with the GUI environment. If you wish to <strong>run calculations directly</strong> in this application, 
+        you need to <strong>compile the app locally</strong>.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+# Expandable tutorial section
+show_local_tutorial = st.checkbox("📖 Show tutorial: How to run the app locally", value=False)
+
+if show_local_tutorial:
+    st.markdown("""
+    <div style="
+        background: linear-gradient(135deg, #f8fafc, #e2e8f0);
+        padding: 25px;
+        border-radius: 12px;
+        margin: 20px 0;
+        border: 2px solid #cbd5e1;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    ">
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 🖥️ Local Installation Tutorial")
+    
+    st.markdown("#### 🎮 For calculations on GPU, compile CUDA:")
+    st.markdown("**Download CUDA Toolkit:** https://developer.nvidia.com/cuda-toolkit")
+    st.markdown("**Do not forget to add it to the PATH**, e.g.:")
+    
+    st.code("""
+# In your console, open bashrc:
+nano ~/.bashrc
+
+# Scroll to the end of the file and add these two lines 
+# (modify accordingly for your version of CUDA, example shows version 12.9):
+export PATH=/usr/local/cuda-12.9/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
+
+# Save the changes: press 'Ctrl + O', then 'Enter', then exit with 'Ctrl + X'
+# Reload the config file:
+source ~/.bashrc
+    """, language="bash")
+    
+    st.markdown("#### 🚀 Compile the app:")
+    st.markdown("Open your terminal console and execute the following commands:")
+    
+    st.markdown("**(Optional) Install Git:**")
+    st.code("""
+sudo apt update
+sudo apt install git
+    """, language="bash")
+    
+    st.markdown("**1. Download the app code from GitHub:**")
+    st.markdown("(Alternative: Download manually from https://github.com/bracerino/mace-md-gui by clicking 'Code' → 'Download ZIP', then extract)")
+    st.code("""
+git clone https://github.com/bracerino/mace-md-gui.git
+    """, language="bash")
+    
+    st.markdown("**2. Navigate to the downloaded project folder:**")
+    st.code("""
+cd mace-md-gui/
+    """, language="bash")
+    
+    st.markdown("**3. Create a Python virtual environment:**")
+    st.markdown("(This prevents possible conflicts between packages)")
+    st.code("""
+python3 -m venv mace_env
+    """, language="bash")
+    
+    st.markdown("**4. Activate the Python virtual environment:**")
+    st.markdown("(Make sure you are inside the mace-md-gui folder)")
+    st.code("""
+source mace_env/bin/activate
+    """, language="bash")
+    
+    st.markdown("**5. Install all necessary Python packages:**")
+    st.code("""
+pip install -r requirements.txt
+    """, language="bash")
+    
+    st.markdown("**6. Run the app:**")
+    st.markdown("(Always activate the virtual environment before running - Step 4)")
+    st.code("""
+streamlit run app.py
+    """, language="bash")
+    
+    st.markdown("**7. To update the application:**")
+    st.code("""
+git pull
+    """, language="bash")
+    
+    st.markdown("#### 📦 Tested Python Package Versions")
+    
+    # Create a nice table for package versions
+    packages_data = {
+        'Package': [
+            'streamlit', 'plotly', 'pymatgen', 'ase', 'phonopy', 'py3Dmol', 
+            'psutil', 'gputil', 'torch', 'torchvision', 'torchaudio', 
+            'mace-torch', 'cuequivariance', 'cuequivariance-torch', 'cuequivariance-ops-torch-cu12'
+        ],
+        'Version': [
+            '1.46.0', '6.1.2', '2025.6.14', '3.25.0', '2.40.0', '2.5.0',
+            '7.0.0', '1.4.0', '2.7.1', '0.22.1', '2.7.1',
+            '0.3.13', '0.5.1', '0.5.1', '0.5.1'
+        ]
+    }
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Core Packages:**")
+        for i in range(8):
+            st.markdown(f"• **{packages_data['Package'][i]}** - {packages_data['Version'][i]}")
+    
+    with col2:
+        st.markdown("**ML/MACE Packages:**")
+        for i in range(8, len(packages_data['Package'])):
+            st.markdown(f"• **{packages_data['Package'][i]}** - {packages_data['Version'][i]}")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("---")
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
