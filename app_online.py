@@ -82,7 +82,6 @@ if os.path.exists(THREAD_COUNT_FILE):
     except (ValueError, FileNotFoundError):
         default_thread_count = 1
 os.environ['OMP_NUM_THREADS'] = str(default_thread_count)
-torch.set_num_threads(default_thread_count)
 
 if 'thread_count' not in st.session_state:
     st.session_state.thread_count = default_thread_count
@@ -2441,7 +2440,6 @@ with st.sidebar:
             with open(THREAD_COUNT_FILE, 'w') as f:
                 f.write(str(st.session_state.thread_count))
             os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
-            torch.set_num_threads(st.session_state.thread_count)
             st.toast("✅ Thread count saved and applied.")
 css = '''
 <style>
