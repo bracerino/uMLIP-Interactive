@@ -54,11 +54,11 @@ from ase import Atoms
 
 
 MACE_IMPORT_METHOD = None
-MACE_AVAILABLE = False
-MACE_OFF_AVAILABLE = False
-CELL_OPT_AVAILABLE = False
-ELASTIC_AVAILABLE = False
-PHONOPY_AVAILABLE = False
+MACE_AVAILABLE = True
+MACE_OFF_AVAILABLE = True
+CELL_OPT_AVAILABLE = True
+ELASTIC_AVAILABLE = True
+PHONOPY_AVAILABLE = True
 
 import numpy as np
 from ase.phonons import Phonons
