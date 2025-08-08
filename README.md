@@ -54,8 +54,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
       **source mace_env/bin/activate**
    
 5) Install all the necessary Python packages:  
-      **pip install -r requirements-pc.txt** (with CUDA for calculations on GPU), or:  
-      **pip install -r requirements-no-cuda.txt** (No GPU calculations)  
+      **pip install -r requirements-pc.txt** (with CUDA for calculations on GPU), or (pip install -r requirements-no-cuda.txt (No GPU calculations))  
 
 7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4):  
       **streamlit run app.py**
