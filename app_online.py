@@ -2443,6 +2443,26 @@ streamlit run app.py
     st.code("""
 git pull
     """, language="bash")
+
+
+
+    st.markdown("**8. (Optional) Setup launcher script:**")
+    st.markdown("The downloaded folder includes a `run-mace.sh` launcher script. To use it globally:")
+    st.code("""
+# Make the launcher executable
+chmod +x mace-gui.sh
+
+# Add the mace-md-gui folder to your PATH in bashrc
+echo 'export PATH="$(pwd):$PATH"' >> ~/.bashrc
+
+# Reload bashrc
+source ~/.bashrc
+    """, language="bash")
+    
+    st.markdown("Now you can run the app from anywhere with:")
+    st.code("""
+run-mace.sh
+    """, language="bash")
     
     st.markdown("#### 📦 Tested Python Package Versions")
     
