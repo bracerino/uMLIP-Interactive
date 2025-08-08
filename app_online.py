@@ -2430,7 +2430,7 @@ source mace_env/bin/activate
     
     st.markdown("**5. Install all necessary Python packages:**")
     st.code("""
-pip install -r requirements.txt
+pip install -r requirements-pc.txt # (with CUDA for calculations on GPU), or (pip install -r requirements-no-cuda.txt (No GPU calculations))
     """, language="bash")
     
     st.markdown("**6. Run the app:**")
