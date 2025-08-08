@@ -2341,21 +2341,22 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 st.title("MACE MLIP Batch Structure Calculator")
+
+
 st.markdown("""
 <div style="
-    background: linear-gradient(135deg, #dc2626, #b91c1c);
-    padding: 20px;
-    border-radius: 10px;
-    margin: 20px 0;
-    color: white;
-    border-left: 5px solid #7f1d1d;
-    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+    background: linear-gradient(135deg, #fef2f2, #fee2e2);
+    padding: 15px;
+    border-radius: 8px;
+    margin: 15px 0;
+    color: #991b1b;
+    border-left: 4px solid #dc2626;
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.1);
 ">
-    <h3 style="margin: 0 0 10px 0; color: white;">⚠️ Online Version - Script Generation Only</h3>
-    <p style="margin: 0; font-size: 16px; line-height: 1.5;">
-        This <strong>online version</strong> works only for <strong>preparation of Python code</strong> for running simulations in external console, 
-        and to get familiar with the GUI environment. If you wish to <strong>run calculations directly</strong> in this application, 
-        you need to <strong>compile the app locally</strong>.
+    <h4 style="margin: 0 0 8px 0; color: #7f1d1d; font-size: 18px;">⚠️ Online Version - Script Generation Only</h4>
+    <p style="margin: 0; font-size: 14px; line-height: 1.4;">
+        This online version generates Python code for external execution. 
+        For direct calculations, <strong>compile the app locally</strong>.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -2473,7 +2474,9 @@ git pull
     
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("---")
+st.markdown("---")  # Add a separator line
+
+                
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
