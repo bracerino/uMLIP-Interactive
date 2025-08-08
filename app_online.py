@@ -50,34 +50,24 @@ from pymatgen.io.cif import CifWriter
 from ase.io import read, write
 from ase import Atoms
 
-try:
-    from ase.optimize import BFGS, LBFGS
-    from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
-    from ase.stress import voigt_6_to_full_3x3_stress
 
-    CELL_OPT_AVAILABLE = True
-except ImportError:
-    CELL_OPT_AVAILABLE = False
+
 
 MACE_IMPORT_METHOD = None
 MACE_AVAILABLE = False
 MACE_OFF_AVAILABLE = False
-
+CELL_OPT_AVAILABLE = False
+ELASTIC_AVAILABLE = False
+PHONOPY_AVAILABLE = False
 
 import numpy as np
 from ase.phonons import Phonons
 from ase.dft.kpoints import bandpath
 import json
 
-try:
-    from ase.eos import EquationOfState
-    from ase.build import bulk
 
-    ELASTIC_AVAILABLE = True
-except ImportError:
-    ELASTIC_AVAILABLE = False
 
-import torch
+
 
 
 
@@ -800,17 +790,6 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
     try:
         log_queue.put(f"Starting Pymatgen+Phonopy phonon calculation for {structure_name}")
 
-        try:
-            from phonopy import Phonopy
-            from phonopy.structure.atoms import PhonopyAtoms
-            from pymatgen.io.phonopy import get_phonopy_structure
-            from pymatgen.phonon.bandstructure import PhononBandStructure
-            from pymatgen.phonon.dos import PhononDos
-            import phonopy.units as units_phonopy
-        except ImportError as e:
-            log_queue.put(f"❌ Missing dependencies: {str(e)}")
-            log_queue.put("Please install: pip install phonopy")
-            return {'success': False, 'error': f'Missing phonopy: {str(e)}'}
 
         atoms.calc = calculator
 
@@ -1277,32 +1256,6 @@ except ImportError:
     PHONOPY_AVAILABLE = False
     print("⚠️ Phonopy not available for phonon calculations")
 
-try:
-    from mace.calculators import mace_mp, mace_off  # Import both
-    MACE_IMPORT_METHOD = "mace_mp_and_off"
-    MACE_AVAILABLE = True
-    MACE_OFF_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import mace_mp
-        MACE_IMPORT_METHOD = "mace_mp"
-        MACE_AVAILABLE = True
-        MACE_OFF_AVAILABLE = False
-    except ImportError:
-        try:
-            from mace.calculators import MACECalculator
-            MACE_IMPORT_METHOD = "MACECalculator"
-            MACE_AVAILABLE = True
-            MACE_OFF_AVAILABLE = False
-        except ImportError:
-            try:
-                import mace
-                from mace.calculators import MACECalculator
-                MACE_IMPORT_METHOD = "MACECalculator"
-                MACE_AVAILABLE = True
-                MACE_OFF_AVAILABLE = False
-            except ImportError:
-                MACE_AVAILABLE = False
 
 class OptimizationLogger:
     def __init__(self, log_queue, structure_name):
