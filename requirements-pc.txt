@@ -17,4 +17,6 @@ cuequivariance==0.5.1
 cuequivariance-torch==0.5.1
 cuequivariance-ops-torch-cu12==0.5.1
 
+pip install chgnet
+
 
