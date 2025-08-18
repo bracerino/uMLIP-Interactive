@@ -1,3 +1,4 @@
+
 """
 Python Script Generator for MACE Calculations
 This module generates standalone Python scripts for MACE molecular dynamics calculations.
@@ -33,6 +34,9 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
+
+    is_chgnet = model_size.startswith("chgnet")
+
 
     script = f"""#!/usr/bin/env python3
 \"\"\"
@@ -86,6 +90,12 @@ except ImportError:
         MACE_AVAILABLE = False
         print("❌ MACE not available. Please install with: pip install mace-torch")
         exit(1)
+#CHGNet imports
+try:
+    from chgnet.model.model import CHGNet
+    from chgnet.model.dynamics import CHGNetCalculator
+except ImportError:
+    print("❌ CHGNet not available. Please install with: pip install chgnet")
 
 {_generate_utility_functions()}
 
@@ -110,7 +120,7 @@ def main():
 {structure_creation_code}
 
     # Setup calculator
-    print("\\n🔧 Setting up MACE calculator...")
+    print("\\n🔧 Setting up MLIP calculator...")
 {calculator_setup_code}
 
     # Run calculations
@@ -1509,9 +1519,34 @@ def _generate_structure_creation_code(structures):
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
     """Generate calculator setup code."""
     # Check if this is a MACE-OFF model by looking at the selected model key
+    is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
 
-    if is_mace_off:
+    if is_chgnet:
+        chgnet_version = model_size.split("-")[1] if "-" in model_size else "0.3.0"
+
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing CHGNet calculator on {{device}}...")
+    try:
+        from chgnet.model.model import CHGNet
+        from chgnet.model.dynamics import CHGNetCalculator
+        chgnet = CHGNet.load(model_name="{chgnet_version}", use_device=device, verbose=False)
+        calculator = CHGNetCalculator(model=chgnet, use_device=device)
+        print(f"✅ CHGNet {chgnet_version} initialized successfully on {{device}}")
+    except Exception as e:
+        print(f"❌ CHGNet initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                chgnet = CHGNet.load(model_name="{chgnet_version}", use_device="cpu", verbose=False)
+                calculator = CHGNetCalculator(model=chgnet, use_device="cpu")
+                print("✅ CHGNet initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+    elif is_mace_off:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
