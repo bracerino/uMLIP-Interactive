@@ -1,3 +1,4 @@
+from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
@@ -32,6 +33,17 @@ from helpers.phase_diagram import *
 from helpers.monitor_resources import *
 from helpers.mace_cards import *
 from helpers.generate_python_code import *
+
+
+
+
+from helpers.ga_optimization_module import (
+    run_ga_optimization,
+    setup_ga_parameters_ui,
+    setup_substitution_ui,
+    display_ga_results, display_ga_overview
+)
+
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -101,6 +113,14 @@ if 'total_calculation_start_time' not in st.session_state:
     st.session_state.total_calculation_start_time = None
 if 'results_backup_file' not in st.session_state:
     st.session_state.results_backup_file = None
+
+if 'ga_progress_info' not in st.session_state:
+    st.session_state.ga_progress_info = {}
+if 'ga_structure_timings' not in st.session_state:
+    st.session_state.ga_structure_timings = []
+
+if 'last_ga_progress_update' not in st.session_state:
+    st.session_state.last_ga_progress_update = 0
 
 st.markdown("""
     <style>
@@ -193,25 +213,69 @@ def load_structure(file):
 
         filename = file.name.lower()
 
-        if filename.endswith(".cif"):
-            mg_structure = Structure.from_file(file.name)
-        elif filename.endswith(".data"):
-            lmp_filename = file.name.replace(".data", ".lmp")
-            os.rename(file.name, lmp_filename)
-            lammps_data = LammpsData.from_file(lmp_filename, atom_style="atomic")
-            mg_structure = lammps_data.structure
-        elif filename.endswith(".lmp"):
-            lammps_data = LammpsData.from_file(file.name, atom_style="atomic")
-            mg_structure = lammps_data.structure
+        if filename.endswith(".vasp") or filename.endswith("poscar") or filename.endswith("contcar"):
+            atoms = read(file.name, format='vasp')
+
+            selective_dynamics = None
+            constraints = []
+
+            with open(file.name, 'r') as f:
+                lines = f.readlines()
+
+            selective_line_idx = None
+            for i, line in enumerate(lines):
+                if line.strip().lower().startswith('selective'):
+                    selective_line_idx = i
+                    break
+
+            if selective_line_idx is not None:
+                coord_start = selective_line_idx + 2
+
+                fixed_indices = []
+                cartesian_constraints = []
+
+                for i, line in enumerate(lines[coord_start:]):
+                    if line.strip() == '' or line.startswith('#'):
+                        break
+
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        fx, fy, fz = parts[3:6]
+
+                        fix_x = fx.upper() == 'F'
+                        fix_y = fy.upper() == 'F'
+                        fix_z = fz.upper() == 'F'
+
+                        if fix_x and fix_y and fix_z:
+                            fixed_indices.append(i)
+                        elif fix_x or fix_y or fix_z:
+                            mask = [fix_x, fix_y, fix_z]
+                            cartesian_constraints.append((i, mask))
+
+                if fixed_indices:
+                    constraints.append(FixAtoms(indices=fixed_indices))
+
+                for atom_idx, mask in cartesian_constraints:
+                    constraints.append(FixCartesian(atom_idx, mask))
+
+                if constraints:
+                    atoms.set_constraint(constraints)
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            mg_structure = AseAtomsAdaptor.get_structure(atoms)
+
+            if constraints:
+                mg_structure.constraints_info = constraints
+
         else:
             atoms = read(file.name)
-            
+
             constraints_info = None
             if hasattr(atoms, 'constraints') and atoms.constraints:
                 constraints_info = atoms.constraints
-            
+
+            from pymatgen.io.ase import AseAtomsAdaptor
             mg_structure = AseAtomsAdaptor.get_structure(atoms)
-            
 
             if constraints_info:
                 mg_structure.constraints_info = constraints_info
@@ -223,9 +287,6 @@ def load_structure(file):
 
     except Exception as e:
         st.error(f"Failed to parse {file.name}: {e}")
-        st.error(
-            f"Failed to load structure file. Supported formats: CIF, POSCAR, LMP, XSF, PW, CFG, and other ASE-compatible formats. "
-            f"Please check your file format and try again. 😊")
         if os.path.exists(file.name):
             os.remove(file.name)
         raise e
@@ -423,31 +484,180 @@ def append_to_backup_file(result, backup_file_path):
     try:
         backup_dir = os.path.dirname(backup_file_path)
         os.makedirs(backup_dir, exist_ok=True)
-        
+
         name = result['name']
         energy = result.get('energy', 'N/A')
         formation_energy = result.get('formation_energy', 'N/A')
-        
+
         if 'structure' in result and result['structure']:
             structure = result['structure']
             lattice = structure.lattice
             lattice_info = f"a={lattice.a:.4f}, b={lattice.b:.4f}, c={lattice.c:.4f}, α={lattice.alpha:.2f}°, β={lattice.beta:.2f}°, γ={lattice.gamma:.2f}°"
         else:
             lattice_info = "N/A"
-        
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"{timestamp}\t{name}\t{energy}\t{formation_energy}\t{lattice_info}\n"
-        
+
         write_header = not os.path.exists(backup_file_path)
-        
+
         with open(backup_file_path, 'a', encoding='utf-8') as f:
             if write_header:
                 header = "Time\tStructure_Name\tTotal_Energy(eV)\tFormation_Energy(eV/atom)\tLattice_Parameters\n"
                 f.write(header)
             f.write(line)
+
+    except Exception as e:
+        pass
+
+
+
+def save_optimized_structure_backup(result, backup_dir):
+    """Save optimized structure as POSCAR in backup directory"""
+    try:
+        # Only save if this is a geometry optimization with a structure
+        if (result.get('calc_type') == 'Geometry Optimization' and 
+            'structure' in result and result['structure'] and 
+            result.get('energy') is not None):
+            
+            structure = result['structure']
+            name = result['name']
+
+            # Create structures subdirectory
+            structures_dir = os.path.join(backup_dir, "optimized_structures")
+            os.makedirs(structures_dir, exist_ok=True)
+
+            # Generate filename (remove extension and add _optimized)
+            base_name = os.path.splitext(name)[0]
+            poscar_filename = f"{base_name}_optimized_POSCAR.vasp"
+            poscar_path = os.path.join(structures_dir, poscar_filename)
+            
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            from ase.io import write
+
+            new_struct = Structure(structure.lattice, [], [])
+            for site in structure:
+                new_struct.append(
+                    species=site.species,
+                    coords=site.frac_coords,
+                    coords_are_cartesian=False,
+                )
+
+            ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+
+            write(poscar_path, ase_structure, format="vasp", direct=True, sort=True)
+
+            summary_path = os.path.join(structures_dir, f"{base_name}_optimization_summary.txt")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(f"Optimization Summary for {name}\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Final Energy: {result['energy']:.6f} eV\n")
+                if result.get('formation_energy'):
+                    f.write(f"Formation Energy: {result['formation_energy']:.6f} eV/atom\n")
+                f.write(f"Convergence Status: {result.get('convergence_status', 'Unknown')}\n")
+                f.write(f"Calculation Type: {result['calc_type']}\n")
+                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+                lattice = structure.lattice
+                f.write("Final Lattice Parameters:\n")
+                f.write(f"  a = {lattice.a:.6f} Å\n")
+                f.write(f"  b = {lattice.b:.6f} Å\n")
+                f.write(f"  c = {lattice.c:.6f} Å\n")
+                f.write(f"  α = {lattice.alpha:.3f}°\n")
+                f.write(f"  β = {lattice.beta:.3f}°\n")
+                f.write(f"  γ = {lattice.gamma:.3f}°\n")
+                f.write(f"  Volume = {lattice.volume:.6f} Å³\n\n")
+                
+                # Composition
+                f.write(f"Composition: {structure.composition.reduced_formula}\n")
+                f.write(f"Number of atoms: {len(structure)}\n\n")
+                
+                f.write(f"Optimized POSCAR saved as: {poscar_filename}\n")
+                
+            return poscar_path
             
     except Exception as e:
         pass
+    
+    return None
+
+
+def save_ga_best_structure_backup(ga_results, structure_name, backup_dir, run_id):
+    try:
+        if not ga_results or not ga_results.get('best_structure'):
+            return None
+
+        best_structure = ga_results['best_structure']
+        best_energy = ga_results['best_energy']
+
+
+        ga_structures_dir = os.path.join(backup_dir, "ga_optimized_structures")
+        os.makedirs(ga_structures_dir, exist_ok=True)
+
+        base_name = os.path.splitext(structure_name)[0]
+        poscar_filename = f"{base_name}_ga_run_{run_id + 1}_best_POSCAR.vasp"
+        poscar_path = os.path.join(ga_structures_dir, poscar_filename)
+
+
+        from pymatgen.io.ase import AseAtomsAdaptor
+        from ase.io import write
+
+        new_struct = Structure(best_structure.lattice, [], [])
+        for site in best_structure:
+            new_struct.append(
+                species=site.species,
+                coords=site.frac_coords,
+                coords_are_cartesian=False,
+            )
+
+        ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
+        write(poscar_path, ase_structure, format="vasp", direct=True, sort=True)
+
+        summary_filename = f"{base_name}_ga_run_{run_id + 1}_summary.txt"
+        summary_path = os.path.join(ga_structures_dir, summary_filename)
+
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(f"GA Optimization Summary for {structure_name} - Run {run_id + 1}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Best Energy: {best_energy:.6f} eV\n")
+            f.write(f"Number of GA Runs: {ga_results.get('num_runs', 'N/A')}\n")
+            f.write(f"Population Size: {ga_results.get('ga_params', {}).get('population_size', 'N/A')}\n")
+            f.write(f"Max Generations: {ga_results.get('ga_params', {}).get('max_generations', 'N/A')}\n")
+            f.write(f"Final Generation: {len(ga_results.get('fitness_history', []))}\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            lattice = best_structure.lattice
+            f.write("Best Structure Lattice Parameters:\n")
+            f.write(f"  a = {lattice.a:.6f} Å\n")
+            f.write(f"  b = {lattice.b:.6f} Å\n")
+            f.write(f"  c = {lattice.c:.6f} Å\n")
+            f.write(f"  α = {lattice.alpha:.3f}°\n")
+            f.write(f"  β = {lattice.beta:.3f}°\n")
+            f.write(f"  γ = {lattice.gamma:.3f}°\n")
+            f.write(f"  Volume = {lattice.volume:.6f} Å³\n\n")
+
+            f.write(f"Composition: {best_structure.composition.reduced_formula}\n")
+            f.write(f"Number of atoms: {len(best_structure)}\n\n")
+
+            if 'substitutions' in ga_results:
+                f.write("Substitutions Applied:\n")
+                for orig_elem, sub_info in ga_results['substitutions'].items():
+                    if sub_info['new_element'] == 'VACANCY':
+                        f.write(f"  {orig_elem} → VACANCY: {sub_info['n_substitute']} sites\n")
+                    else:
+                        f.write(f"  {orig_elem} → {sub_info['new_element']}: {sub_info['n_substitute']} sites\n")
+                f.write("\n")
+
+            f.write(f"Optimized POSCAR saved as: {poscar_filename}\n")
+
+        return poscar_path
+
+    except Exception as e:
+        print(f"Error saving GA structure backup: {str(e)}")
+        return None
+
+
 def check_mechanical_stability(C, log_queue):
     try:
         criteria = {}
@@ -1347,12 +1557,15 @@ def pymatgen_to_ase(structure):
         cell=structure.lattice.matrix,
         pbc=True
     )
-    
+
     wrapped_atoms = wrap_positions_in_cell(atoms)
-    
+
     if hasattr(structure, 'constraints_info') and structure.constraints_info:
-        wrapped_atoms.set_constraint(structure.constraints_info)
-    
+        if isinstance(structure.constraints_info, list):
+            wrapped_atoms.set_constraint(structure.constraints_info)
+        else:
+            wrapped_atoms.set_constraint([structure.constraints_info])
+
     return wrapped_atoms
 
 
@@ -1445,22 +1658,40 @@ def create_cell_filter(atoms, optimization_params):
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+
 def check_selective_dynamics(atoms):
-    """Check if atoms have selective dynamics constraints"""
-    if hasattr(atoms, 'constraints') and atoms.constraints:
-        for constraint in atoms.constraints:
+    if not hasattr(atoms, 'constraints') or not atoms.constraints:
+        return False, 0, len(atoms)
+
+    total_atoms = len(atoms)
+    constrained_atoms = set()
+
+    for constraint in atoms.constraints:
+        try:
             if isinstance(constraint, FixAtoms):
                 fixed_indices = constraint.get_indices()
-                total_atoms = len(atoms)
-                fixed_atoms = len(fixed_indices)
-                return True, fixed_atoms, total_atoms
-    return False, 0, len(atoms)
+                constrained_atoms.update(fixed_indices)
+            else:
+                constrained_atoms.add(0)
+        except Exception:
+            continue
+
+    has_constraints = len(constrained_atoms) > 0
+    total_constrained = len(constrained_atoms)
+
+    # Return empty dict as 4th value to match expected unpacking
+    return has_constraints, total_constrained, total_atoms
 
 
 def setup_optimization_constraints(atoms, optimization_params):
-    opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
-    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
-    
+    opt_type = optimization_params.get(
+        'optimization_type', 'Both atoms and cell')
+
+    has_constraints, total_constrained, total_atoms = check_selective_dynamics(
+        atoms)
+
+    existing_constraints = atoms.constraints if hasattr(
+        atoms, 'constraints') and atoms.constraints else []
 
     if opt_type == "Atoms only (fixed cell)":
         return atoms, None
@@ -1620,8 +1851,7 @@ class CellOptimizationLogger:
 
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
-                         elastic_params,
-                         calc_formation_energy, log_queue, stop_event):
+                         elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None, ga_params=None):
     import time
     try:
         total_start_time = time.time()
@@ -1634,6 +1864,11 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
         log_queue.put(f"Model size: {model_size}")
         log_queue.put(f"Device: {device}")
+
+        if calc_type == "GA Structure Optimization":
+            log_queue.put(f"DEBUG: Substitutions received: {substitutions}")
+            log_queue.put(f"DEBUG: GA params received: {ga_params}")
+
 
         calculator = None
 
@@ -1650,14 +1885,14 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(
                         f"Initializing MACE-OFF calculator on {device}...")
                     calculator = mace_off(
-                        model=model_size, default_dtype="float64", device=device)
+                        model=model_size, default_dtype=dtype, device=device)
                     log_queue.put(
                         f"✅ MACE-OFF calculator initialized successfully on {device}")
                 else:
                     log_queue.put(
                         f"Initializing MACE-MP calculator on {device}...")
                     calculator = mace_mp(
-                        model=model_size, dispersion=False, default_dtype="float64", device=device)
+                        model=model_size, dispersion=False, default_dtype=dtype, device=device)
                     log_queue.put(
                         f"✅ MACE-MP calculator initialized successfully on {device}")
             except Exception as e:
@@ -1669,10 +1904,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     try:
                         if is_mace_off:
                             calculator = mace_off(
-                                model=model_size, default_dtype="float64", device="cpu")
+                                model=model_size, default_dtype=dtype, device="cpu")
                         else:
                             calculator = mace_mp(
-                                model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                                model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
                         log_queue.put(
                             "✅ Calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
@@ -1691,7 +1926,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(
                     f"Initializing mace_mp calculator on {device}...")
                 calculator = mace_mp(
-                    model=model_size, dispersion=False, default_dtype="float64", device=device)
+                    model=model_size, dispersion=False, default_dtype=dtype, device=device)
                 log_queue.put(
                     f"✅ mace_mp calculator initialized successfully on {device}")
             except Exception as e:
@@ -1702,7 +1937,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         "⚠️ GPU initialization failed, falling back to CPU...")
                     try:
                         calculator = mace_mp(
-                            model=model_size, dispersion=False, default_dtype="float64", device="cpu")
+                            model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
                         log_queue.put(
                             "✅ mace_mp calculator initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
@@ -1818,19 +2053,24 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(f"Starting geometry optimization for {name}")
 
                     opt_type = optimization_params['optimization_type']
-
                     log_queue.put(f"Optimization type: {opt_type}")
 
                     atoms = pymatgen_to_ase(structure)
                     atoms.calc = calculator
-                    
-                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
-                    
+
+                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(
+                        atoms)
+
+                    print("HER?")
                     if has_constraints:
-                        log_queue.put(f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are fixed")
-                        log_queue.put(f"  Fixed atoms will remain at their original positions during optimization")
+                        log_queue.put(
+                            f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
+                        log_queue.put(
+                            f"  Constrained atoms will respect their original selective dynamics during optimization")
                     else:
-                        log_queue.put(f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+                        log_queue.put(
+                            f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+
                     if optimization_params.get('cell_constraint'):
                         log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
 
@@ -1840,6 +2080,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if optimization_params.get('hydrostatic_strain'):
                         log_queue.put("Using hydrostatic strain constraint")
 
+
+                    print("NOTH ERE?")
                     log_queue.put({
                         'type': 'opt_start',
                         'structure': name,
@@ -1955,6 +2197,84 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             raise opt_error
 
 
+
+
+
+
+
+                elif calc_type == "GA Structure Optimization":
+                    if not substitutions:
+                        log_queue.put("❌ No substitutions configured for GA optimization")
+                        continue
+
+                    log_queue.put(f"Starting GA structure optimization for {name}")
+                    log_queue.put(f"Substitutions: {substitutions}")
+                    log_queue.put(f"GA parameters: {ga_params}")
+
+                    # Use the structure (which should be the supercell if set)
+                    base_structure = structure
+                    log_queue.put(f"Using structure with {len(base_structure)} atoms")
+
+                    # Run GA optimization
+                    ga_results = None
+                    try:
+                        # Start GA optimization in a separate thread
+                        ga_thread = threading.Thread(
+                            target=run_ga_optimization,
+                            args=(base_structure, calculator, substitutions, ga_params, log_queue, stop_event)
+                        )
+                        ga_thread.start()
+
+                        # Wait for GA thread to complete
+                        ga_thread.join()
+
+                        # Process messages - look for GA results
+                        temp_messages = []
+                        ga_finished = False
+
+                        # Keep processing until we get the finish signal
+                        while not ga_finished:
+                            try:
+                                msg = log_queue.get(timeout=1.0)
+
+                                if isinstance(msg, dict) and msg.get('type') == 'ga_result':
+                                    ga_results = msg
+                                    energy = msg['best_energy']
+                                    final_structure = msg['best_structure']
+                                    log_queue.put(
+                                        f"✅ GA optimization completed for {name}: Best energy = {energy:.6f} eV")
+
+                                elif msg == "GA_OPTIMIZATION_FINISHED":
+                                    ga_finished = True
+                                    log_queue.put(f"🏁 GA optimization finished for {name}")
+
+                                else:
+                                    temp_messages.append(msg)
+
+                            except queue.Empty:
+                                # Check if thread is still alive
+                                if not ga_thread.is_alive():
+                                    # Thread finished but no finish message received
+                                    log_queue.put("⚠️ GA thread finished unexpectedly")
+                                    break
+                                continue
+
+                        # Put back non-GA messages
+                        for msg in temp_messages:
+                            log_queue.put(msg)
+
+                        if ga_results is None:
+                            log_queue.put(f"⚠️ No GA results received for {name}")
+                            energy = None
+
+                    except Exception as ga_error:
+                        log_queue.put(f"❌ GA optimization failed for {name}: {str(ga_error)}")
+                        import traceback
+                        log_queue.put(f"Traceback: {traceback.format_exc()}")
+                        energy = None
+                        ga_results = None
+
+
                 elif calc_type == "Phonon Calculation":
                     if optimization_params['max_steps'] > 0:
                         log_queue.put(f"Running brief pre-phonon optimization for {name}")
@@ -1984,7 +2304,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         try:
                             temp_optimizer = LBFGS(temp_atoms, logfile=None)
                             temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
-                            temp_optimizer.run(fmax=0.015, steps=100)
+                            temp_optimizer.run(fmax=0.01, steps=400)
                             atoms = temp_atoms
                             energy = atoms.get_potential_energy()
                             log_queue.put(
@@ -2015,7 +2335,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     'calc_type': calc_type,
                     'convergence_status': convergence_status,
                     'phonon_results': phonon_results,
-                    'elastic_results': elastic_results
+                    'elastic_results': elastic_results,
+                    'ga_results': ga_results if calc_type == "GA Structure Optimization" else None
                 })
 
                 structure_end_time = time.time()
@@ -2138,12 +2459,23 @@ with st.sidebar:
     else:
         st.info(f"🔬 **{model_type}**: {description}")
 
-    device_option = st.radio(
-        "Compute Device",
-        ["CPU", "GPU (CUDA)"],
-        help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
-    )
-    device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
+    cols1, cols2 = st.columns([1,1])
+    with cols1:
+        device_option = st.radio(
+            "Compute Device",
+            ["CPU", "GPU (CUDA)"],
+            help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
+        )
+        device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
+
+    with cols2:
+        precision_option = st.radio(
+            "Precision",
+            ["Float32", "Float64"],
+            index=1,
+            help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
+        )
+        dtype = "float32" if precision_option == "Float32" else "float64"
     col_c1, col_c2 = st.columns([1,1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -2183,7 +2515,7 @@ if st.session_state.calculation_running:
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             with st.spinner("Calculation in progress..."):
-                st.info("VASP calculations are running, please wait. 😊")
+                st.info("The calculations are running, please wait. 😊")
                 if st.session_state.get('progress_text', ''):
                     st.write(f"📈 {st.session_state.progress_text}")
                 st.write("👀 **Switch to 'Calculation Console' tab for detailed output**")
@@ -2308,10 +2640,10 @@ with tab1:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
     st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
-        "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. 📺 **[Quick tutorial here](https://youtu.be/GGo_9T5wqus?si=xJItv-j0shr8hte_)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
+        "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. 📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
     )
 
-    st.sidebar.link_button("GitHub page", "https://github.com/bracerino/atat-sqs-gui.git",
+    st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
                            type="primary")
     if st.session_state.structures:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
@@ -2362,10 +2694,11 @@ with tab1:
 
         col_calc_setup, col_calc_image = st.columns([2, 1])
 
+
         with col_calc_setup:
             calc_type = st.radio(
                 "Calculation Type",
-                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties"],
+                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties", "GA Structure Optimization"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -2432,6 +2765,16 @@ with tab1:
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
+            elif calc_type == "GA Structure Optimization":
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">🧬 Evolutionary Optimization</strong>
+                <div style="font-size: 18px; line-height: 1.4;">
+                Optimal substitution patterns<br>
+                & defect configurations
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
 
         optimization_params = {
             'optimizer': "BFGS",
@@ -2453,6 +2796,192 @@ with tab1:
             'density': None
         }
 
+        if calc_type == "GA Structure Optimization":
+            st.divider()
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.subheader("🔢 Supercell Generation")
+            if not st.session_state.structures:
+                st.warning("⚠️ Please upload at least one structure first")
+            else:
+                first_structure_name = list(st.session_state.structures.keys())[0]
+                first_structure = st.session_state.structures[first_structure_name]
+
+                st.info(f"🧬 **GA Optimization will use base structure:** {first_structure_name}")
+                st.info(
+                    f"📊 **Base composition:** {first_structure.composition.reduced_formula} ({len(first_structure)} atoms)")
+
+                if 'supercell_confirmed' not in st.session_state:
+                    st.session_state.supercell_confirmed = False
+                if 'confirmed_supercell_structure' not in st.session_state:
+                    st.session_state.confirmed_supercell_structure = None
+
+
+
+                if not st.session_state.supercell_confirmed:
+
+                    col_super1, col_super2, col_super3, col_super4 = st.columns(4)
+
+                    with col_super1:
+                        enable_supercell = st.checkbox("Generate Supercell", value=False,
+                                                       help="Create a larger supercell before applying substitutions")
+
+                    supercell_structure = first_structure
+
+                    if enable_supercell:
+                        with col_super2:
+                            supercell_a = st.number_input("a-direction", min_value=1, max_value=10, value=2, step=1)
+                        with col_super3:
+                            supercell_b = st.number_input("b-direction", min_value=1, max_value=10, value=2, step=1)
+                        with col_super4:
+                            supercell_c = st.number_input("c-direction", min_value=1, max_value=10, value=2, step=1)
+
+                        st.session_state.supercell_multipliers = [supercell_a, supercell_b, supercell_c]
+
+                        # Generate supercell preview
+                        supercell_structure = first_structure.copy()
+                        supercell_structure.make_supercell([supercell_a, supercell_b, supercell_c])
+
+                        # Display supercell info
+                        st.success(
+                            f"✅ Supercell preview: {supercell_structure.composition.reduced_formula} ({len(supercell_structure)} atoms)")
+
+                        col_info1, col_info2 = st.columns(2)
+                        with col_info1:
+                            st.write("**Original Structure:**")
+                            st.write(f"• Atoms: {len(first_structure)}")
+                            st.write(f"• Formula: {first_structure.composition.reduced_formula}")
+                            st.write(
+                                f"• Lattice: {first_structure.lattice.a:.3f} × {first_structure.lattice.b:.3f} × {first_structure.lattice.c:.3f} Å")
+
+                        with col_info2:
+                            st.write("**Supercell Preview:**")
+                            st.write(f"• Atoms: {len(supercell_structure)}")
+                            st.write(f"• Formula: {supercell_structure.composition.reduced_formula}")
+                            st.write(
+                                f"• Lattice: {supercell_structure.lattice.a:.3f} × {supercell_structure.lattice.b:.3f} × {supercell_structure.lattice.c:.3f} Å")
+                            st.write(f"• Multiplier: {supercell_a}×{supercell_b}×{supercell_c}")
+
+                        # Show concentration resolution improvement
+                        st.subheader("📊 Concentration Resolution Analysis")
+
+                        # Get unique elements and show concentration options
+                        unique_elements = list(set([site.specie.symbol for site in supercell_structure]))
+
+                        for element in unique_elements:
+                            original_count = sum(1 for site in first_structure if site.specie.symbol == element)
+                            supercell_count = sum(1 for site in supercell_structure if site.specie.symbol == element)
+
+                            col_elem1, col_elem2 = st.columns(2)
+
+                            with col_elem1:
+                                st.write(f"**{element} atoms:**")
+                                st.write(f"• Original: {original_count} atoms")
+                                st.write(f"• Supercell: {supercell_count} atoms")
+
+                            with col_elem2:
+                                st.write(f"**Concentration steps:**")
+                                if original_count == 1:
+                                    st.write("• Original: 0%, 100% (2 options)")
+                                else:
+                                    original_step = 100 / original_count
+                                    st.write(f"• Original: {original_step:.1f}% steps ({original_count + 1} options)")
+
+                                supercell_step = 100 / supercell_count
+                                st.write(f"• Supercell: {supercell_step:.1f}% steps ({supercell_count + 1} options)")
+
+                    # Confirmation button
+                    col_confirm1, col_confirm2 = st.columns([1, 3])
+
+                    with col_confirm1:
+                        if st.button("✅ Confirm Structure", type="primary",):
+                            st.session_state.supercell_confirmed = True
+                            st.session_state.confirmed_supercell_structure = supercell_structure
+                            st.success("✅ Structure confirmed!")
+                            st.rerun()
+
+                    with col_confirm2:
+                        if enable_supercell:
+                            st.info("⚠️ Confirm the supercell configuration before proceeding to substitution setup")
+
+                else:
+                    # Show confirmed structure info (read-only)
+                    confirmed_structure = st.session_state.confirmed_supercell_structure
+
+                    # Check if it's a supercell or original
+                    is_supercell = len(confirmed_structure) > len(first_structure)
+
+                    if is_supercell:
+                        st.success(
+                            f"✅ **Confirmed Supercell:** {confirmed_structure.composition.reduced_formula} ({len(confirmed_structure)} atoms)")
+                    else:
+                        st.success(
+                            f"✅ **Confirmed Original Structure:** {confirmed_structure.composition.reduced_formula} ({len(confirmed_structure)} atoms)")
+
+                    # Display confirmed structure details
+                    col_confirmed1, col_confirmed2, col_confirmed3 = st.columns(3)
+
+                    with col_confirmed1:
+                        st.write("**Structure Details:**")
+                        st.write(f"• Atoms: {len(confirmed_structure)}")
+                        st.write(f"• Formula: {confirmed_structure.composition.reduced_formula}")
+                        st.write(
+                            f"• Lattice: {confirmed_structure.lattice.a:.3f} × {confirmed_structure.lattice.b:.3f} × {confirmed_structure.lattice.c:.3f} Å")
+
+                    with col_confirmed2:
+                        if is_supercell:
+                            # Calculate supercell multiplier
+                            volume_ratio = confirmed_structure.lattice.volume / first_structure.lattice.volume
+                            multiplier = round(volume_ratio ** (1 / 3))
+                            st.write("**Supercell Info:**")
+                            st.write(f"• Multiplier: ~{multiplier}×{multiplier}×{multiplier}")
+                            st.write(f"• Volume ratio: {volume_ratio:.1f}×")
+                            st.write(f"• Atom ratio: {len(confirmed_structure) / len(first_structure):.0f}×")
+                        if st.button("🔄 Reset Structure", type="secondary",
+                                     ):
+                            st.session_state.supercell_confirmed = False
+                            st.session_state.confirmed_supercell_structure = None
+                            st.session_state.substitutions = {}  # Clear substitutions too
+                            st.session_state.ga_base_structure = None
+                            st.info("🔄 Structure reset. You can now reconfigure the supercell.")
+                            st.rerun()
+
+                if st.session_state.supercell_confirmed and st.session_state.confirmed_supercell_structure:
+                    working_structure = st.session_state.confirmed_supercell_structure
+
+                    substitutions = setup_substitution_ui(working_structure)
+                    st.session_state.substitutions = substitutions
+                    st.session_state.ga_base_structure = working_structure
+
+                    ga_params = setup_ga_parameters_ui(
+                        working_structure=working_structure,
+                        substitutions=substitutions,
+                        load_structure_func=load_structure  
+                    )
+                    st.session_state.ga_params = ga_params
+
+
+                    if not substitutions:
+                        st.warning("⚠️ Please configure at least one element substitution to enable GA optimization")
+                    else:
+                        st.subheader("✅ GA Configuration Summary")
+
+                        total_atoms = len(working_structure)
+                        total_substitutions = sum(sub['n_substitute'] for sub in substitutions.values())
+
+                        col_val1, col_val2, col_val3, col_val4 = st.columns(4)
+
+                        with col_val1:
+                            st.metric("Total Atoms", total_atoms)
+                        with col_val2:
+                            st.metric("Substitutions", total_substitutions)
+                        with col_val3:
+                            st.metric("Substitution %", f"{(total_substitutions / total_atoms) * 100:.1f}%")
+                        with col_val4:
+                            st.metric("GA Runs", ga_params.get('num_runs', 1))
+                    st.subheader("✅ Start the GA run by changing the Tab to 'Start Calculations' at the top of the site.")
+                else:
+                    st.info("👆 Please confirm your structure configuration above before setting up substitutions")
+            display_ga_overview()
         if calc_type == "Geometry Optimization":
             st.subheader("Optimization Parameters")
 
@@ -2684,7 +3213,7 @@ with tab1:
                 st.stop()
             st.subheader("Elastic Properties Parameters")
             st.info(
-                "A brief pre-optimization (fmax=0.015 eV/Å, max 100 steps) will be performed for stability before elastic calculations.")
+                "A brief pre-optimization (fmax=0.01 eV/Å, max 400 steps) will be performed for stability before elastic calculations.")
 
             elastic_params['strain_magnitude'] = st.number_input("Strain Magnitude (e.g., 0.01 for 1%)",
                                                                  min_value=0.001, max_value=0.1, value=0.01, step=0.001,
@@ -2693,16 +3222,20 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
-        
-        
+
+
+
+
     else:
         st.info("Upload structure files to begin")
 with tab_st:           
     if st.session_state.structures_locked:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
-        st.info(f"💾 **Auto-backup**: Results (energies & lattice parameters) will be automatically saved to: `{backup_folder}`")
-        col1, col2 = st.columns(2) 
+        st.info(
+            f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`.\n"
+            "The generated Python code is still being tested, but it should work for energies, geometry optimization, elastic properties, and genetic algorithm.")
+        col1, col2, col3 = st.columns(3)
 
         st.markdown("""
             <style>
@@ -2749,50 +3282,157 @@ with tab_st:
 
         with col2:
             but_script = st.button(
-                "📝 Generate Python Script (⚠️ In Testing Mode!)",
+                "📝 Generate Python Script (Will automatically create structures from the uploaded ones)",
                 type="tertiary",
                 disabled=len(st.session_state.structures) == 0,
             )
+
+        with col3:
+            but_local_script = st.button(
+                "📂 Generate Python Script (Will use local POSCAR files in the same folder where the script will be placed)",
+                type="secondary",
+                disabled=False,
+            )
+
+        if but_local_script:
+            substitutions_for_script = None
+            ga_params_for_script = None
+
+            if calc_type == "GA Structure Optimization":
+                substitutions_for_script = st.session_state.get('substitutions', {})
+                ga_params_for_script = st.session_state.get('ga_params', {})
+
+                if not substitutions_for_script:
+                    st.error("❌ No substitutions configured for GA optimization. Please configure substitutions first.")
+                    st.stop()
+
+                if not ga_params_for_script:
+                    st.error("❌ No GA parameters configured. Please configure GA parameters first.")
+                    st.stop()
+
+            supercell_info = None
+            if (hasattr(st.session_state, 'confirmed_supercell_structure') and
+                    st.session_state.confirmed_supercell_structure and
+                    hasattr(st.session_state, 'supercell_multipliers')):
+                supercell_info = {
+                    'enabled': True,
+                    'multipliers': getattr(st.session_state, 'supercell_multipliers', [1, 1, 1])
+                }
+
+            thread_count = st.session_state.get('thread_count', 4)
+
+
+            local_script_content = generate_python_script_local_files(
+                calc_type=calc_type,
+                model_size=model_size,
+                device=device,
+                dtype=dtype,
+                optimization_params=optimization_params,
+                phonon_params=phonon_params,
+                elastic_params=elastic_params,
+                calc_formation_energy=calculate_formation_energy_flag,
+                selected_model_key=selected_model,
+                substitutions=substitutions_for_script,
+                ga_params=ga_params_for_script,
+                supercell_info=supercell_info,
+                thread_count=thread_count
+            )
+
+            local_script_key = f"local_script_{hash(local_script_content) % 10000}"
+
+            if f"copied_{local_script_key}" not in st.session_state:
+                st.session_state[f"copied_{local_script_key}"] = False
+
+            st.download_button(
+                label="💾 Download Local POSCAR Script",
+                data=local_script_content,
+                file_name="mace_local_calculation_script.py",
+                mime="text/x-python",
+                help="Download the Python script that reads local POSCAR files",
+                type='primary'
+            )
+
+            with st.expander("📋 Generated Local POSCAR Script", expanded=True):
+                st.code(local_script_content, language='python')
+
+                st.info("""
+                        **Usage Instructions:**
+                        1. Save the script as `mace_local_calculation_script.py`
+                        2. Place your POSCAR files in the same directory as the script
+                        3. Install required packages: `pip install mace-torch ase pymatgen numpy pandas matplotlib`
+                        4. Run: `python mace_local_calculation_script.py`
+
+                        **Supported File Names:**
+                        - Files starting with "POSCAR" or ending with ".vasp"
+                        - Examples: `POSCAR`, `POSCAR_1`, `structure.vasp`, etc.
+
+                        **Output Files:**
+                        - `results_summary.txt` - Main results and energies
+                        - `trajectory_*.xyz` - Optimization trajectories (if applicable)
+                        - `optimized_structures/` - Final optimized structures (if applicable)
+                        - `phonon_data_*.json` - Phonon results (if applicable)
+                        - `elastic_data_*.json` - Elastic properties (if applicable)
+                        - Various plots and visualizations
+                        """)
+
         if but_script:
+            substitutions_for_script = None
+            ga_params_for_script = None
+
+            if calc_type == "GA Structure Optimization":
+                substitutions_for_script = st.session_state.get('substitutions', {})
+                ga_params_for_script = st.session_state.get('ga_params', {})
+
+
+                if not substitutions_for_script:
+                    st.error("❌ No substitutions configured for GA optimization. Please configure substitutions first.")
+                    st.stop()
+
+                if not ga_params_for_script:
+                    st.error("❌ No GA parameters configured. Please configure GA parameters first.")
+                    st.stop()
+
+            supercell_info = None
+            if (hasattr(st.session_state, 'confirmed_supercell_structure') and
+                    st.session_state.confirmed_supercell_structure and
+                    hasattr(st.session_state, 'supercell_multipliers')):
+                supercell_info = {
+                    'enabled': True,
+                    'multipliers': getattr(st.session_state, 'supercell_multipliers', [1, 1, 1])
+                }
+
+            thread_count = st.session_state.get('thread_count', 4)
+
+
             script_content = generate_python_script(
                 structures=st.session_state.structures,
                 calc_type=calc_type,
                 model_size=model_size,
                 device=device,
+                dtype=dtype,
                 optimization_params=optimization_params,
                 phonon_params=phonon_params,
                 elastic_params=elastic_params,
-                calc_formation_energy=calculate_formation_energy_flag
+                calc_formation_energy=calculate_formation_energy_flag,
+                selected_model_key=selected_model,
+                substitutions=substitutions_for_script,
+                ga_params=ga_params_for_script,
+                supercell_info=supercell_info,
+                thread_count=thread_count
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
     
             if f"copied_{script_key}" not in st.session_state:
                 st.session_state[f"copied_{script_key}"] = False
-            if st.button("📋 Copy All Code", key=f"copy_btn_{script_key}", type="secondary"):
-                # Store the script content in session state
-                st.session_state[f"script_content_{script_key}"] = script_content
-                st.session_state[f"copied_{script_key}"] = True
-                
-                # Create a JavaScript snippet to copy to clipboard
-                copy_js = f"""
-                <script>
-                navigator.clipboard.writeText(`{script_content.replace('`', '\\`').replace('$', '\\$')}`);
-                </script>
-                """
-                st.components.v1.html(copy_js, height=0)
-                st.success("✅ Code copied to clipboard!")
-                
-                # Reset the copied state after a delay
-                time.sleep(1)
-                st.session_state[f"copied_{script_key}"] = False
+            
 
             st.download_button(
                     label="💾 Download Script",
                     data=script_content,
                     file_name="mace_calculation_script.py",
                     mime="text/x-python",
-                    help="Download the Python script file"
+                    help="Download the Python script file", type = 'primary'
                 )
 
             with st.expander("📋 Generated Python Script", expanded=True):
@@ -2829,11 +3469,19 @@ with tab_st:
             backup_filename = f"results_{current_time}.txt"
             st.session_state.results_backup_file = os.path.join("results_backup", backup_filename)
 
+            if calc_type == "GA Structure Optimization":
+                if hasattr(st.session_state, 'ga_base_structure') and st.session_state.ga_base_structure:
+                    first_structure_name = list(st.session_state.structures.keys())[0]
+                    st.session_state.structures[first_structure_name] = st.session_state.ga_base_structure
+
+            substitutions = st.session_state.get('substitutions', {})
+            ga_params = st.session_state.get('ga_params', {})
+
             thread = threading.Thread(
                 target=run_mace_calculation,
                 args=(st.session_state.structures, calc_type, model_size, device, optimization_params,
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
-                      st.session_state.stop_event)
+                      st.session_state.stop_event, substitutions, ga_params)
             )
             thread.start()
             st.rerun()
@@ -2903,6 +3551,32 @@ with tab2:
                     'stress_threshold': message.get('stress_threshold', 0.1),
                     'is_optimizing': True
                 }
+
+
+            elif message.get('type') == 'ga_progress':
+                current_time = time.time()
+                if current_time - st.session_state.last_ga_progress_update > 0.1:
+                    st.session_state.ga_progress_info = {
+                        'run_id': message['run_id'],
+                        'generation': message['generation'],
+                        'current_structure': message['current_structure'],
+                        'total_structures': message['total_structures'],
+                        'phase': message['phase']
+                    }
+                    st.session_state.last_ga_progress_update = current_time
+
+            elif message.get('type') == 'ga_structure_timing':
+                st.session_state.ga_structure_timings.append({
+                    'run_id': message['run_id'],
+                    'duration': message['duration'],
+                    'energy': message['energy'],
+                    'timestamp': time.time()
+                })
+
+                # Keep only recent timings (last 20 for averaging)
+                if len(st.session_state.ga_structure_timings) > 20:
+                    st.session_state.ga_structure_timings = st.session_state.ga_structure_timings[-20:]
+
             elif message.get('type') == 'opt_step':
                 structure_name = message['structure']
                 if structure_name not in st.session_state.optimization_steps:
@@ -2939,6 +3613,8 @@ with tab2:
                 st.session_state.results.append(message)
                 if st.session_state.results_backup_file:
                     append_to_backup_file(message, st.session_state.results_backup_file)
+                    backup_dir = os.path.dirname(st.session_state.results_backup_file)
+                    save_optimized_structure_backup(message, backup_dir)
         elif message == "CALCULATION_FINISHED":
             st.session_state.calculation_running = False
             st.session_state.current_structure_progress = {}
@@ -2949,7 +3625,77 @@ with tab2:
         else:
             st.session_state.log_messages.append(str(message))
 
-    if st.session_state.calculation_running:
+
+    if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
+        if st.session_state.ga_progress_info:
+            ga_info = st.session_state.ga_progress_info
+            ga_params = st.session_state.get('ga_params', {})
+
+            current_run = ga_info['run_id'] + 1
+            total_runs = ga_params.get('num_runs', 1)
+            current_generation = ga_info['generation']
+            max_generations = ga_params.get('max_generations', 100)
+            current_structure = ga_info['current_structure']
+            total_structures = ga_info['total_structures']
+
+            if len(st.session_state.ga_structure_timings) >= 5:
+                recent_timings = st.session_state.ga_structure_timings[-5:]
+                avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
+
+
+                remaining_structures_this_gen = max(0, total_structures - current_structure)
+                remaining_generations = max(0, max_generations - current_generation)
+                remaining_runs = max(0, total_runs - current_run)
+
+                remaining_time_this_gen = remaining_structures_this_gen * avg_time_per_structure
+                remaining_time_this_run = remaining_generations * total_structures * avg_time_per_structure
+                remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
+
+                total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
+
+
+                def format_time(seconds):
+                    if seconds < 60:
+                        return f"{seconds:.0f}s"
+                    elif seconds < 3600:
+                        return f"{seconds / 60:.1f}m"
+                    else:
+                        return f"{seconds / 3600:.1f}h"
+            else:
+                avg_time_per_structure = 0
+                total_remaining_time = 0
+
+            st.markdown("### 🧬 Genetic Algorithm Progress")
+
+            phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
+            progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}"
+
+            if total_runs > 0 and max_generations > 0 and total_structures > 0:
+                total_structures_overall = total_runs * max_generations * total_structures
+                completed_structures = ((current_run - 1) * max_generations * total_structures +
+                                        current_generation * total_structures + current_structure)
+                overall_progress = min(1.0, completed_structures / total_structures_overall)
+            else:
+                overall_progress = 0.0
+
+            st.progress(overall_progress, text=progress_text)
+
+
+            col_ga1, col_ga2, col_ga3 = st.columns(3)
+
+            with col_ga1:
+                st.metric("Run", f"{current_run}/{total_runs}")
+
+            with col_ga2:
+                st.metric("Generation", f"{current_generation}/{max_generations}")
+
+            with col_ga3:
+                if total_remaining_time > 0:
+                    st.metric("Est. Remaining", format_time(total_remaining_time))
+                else:
+                    st.metric("Est. Remaining", "Calculating...")
+
+    elif st.session_state.calculation_running:
         if st.session_state.current_structure_progress:
             progress_data = st.session_state.current_structure_progress
             st.progress(progress_data['progress'], text=progress_data['text'])
@@ -2969,7 +3715,7 @@ with tab2:
             if 'current_max_stress' in opt_info:
                 opt_text += f" | Max Stress: {opt_info['current_max_stress']:.4f} GPa"
 
-            # Add time estimation to display
+
             if 'estimated_remaining_time' in opt_info and opt_info['estimated_remaining_time']:
                 remaining_time = opt_info['estimated_remaining_time']
                 if remaining_time < 60:
@@ -3018,7 +3764,6 @@ with tab2:
                             st.metric("Max Stress (GPa)", f"{opt_info['current_max_stress']:.4f}",
                                     delta="✅ Converged" if stress_converged else "❌ Not converged")
 
-                # Time estimation metrics
                 time_col = col4 if opt_type == "Atoms only (fixed cell)" else (
                     col4 if opt_type == "Cell only (fixed atoms)" else col5)
                 with time_col:
@@ -3035,8 +3780,7 @@ with tab2:
                             time_display = f"{remaining_time/60:.1f}m"
                         else:
                             time_display = f"{remaining_time/3600:.1f}h"
-                        
-                        # Color code based on remaining time
+
                         if remaining_time < 300:  # < 5 minutes
                             delta_color = "< less than, ✅ Soon"
                         elif remaining_time < 1800:  # < 30 minutes
@@ -3046,7 +3790,6 @@ with tab2:
                         
                         st.metric("Est. Remaining", time_display, delta=delta_color)
 
-                # Energy convergence metric (always last)
                 energy_col = col5 if opt_type == "Cell only (fixed atoms)" else (
                     col5 if opt_type == "Atoms only (fixed cell)" else col6)
                 
@@ -3066,12 +3809,13 @@ with tab2:
                             st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
                                     delta="✅ Converged" if energy_converged else "❌ Not converged")
 
+
     if st.session_state.log_messages:
         recent_messages = st.session_state.log_messages[-20:]
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
 
     if has_new_messages and st.session_state.calculation_running:
-        time.sleep(1)
+        time.sleep(0.5)
         st.rerun()
 
 
@@ -3093,14 +3837,72 @@ def get_atomic_concentrations_from_structure(structure):
 with tab3:
     st.header("Results & Analysis")
     if st.session_state.results:
-        results_tab1, results_tab2, results_tab3, results_tab4, results_tab5 = st.tabs(["📊 Energies",
+        results_tab1, results_tab2, results_tab3, results_tab4,results_tab6, results_tab5, = st.tabs(["📊 Energies",
                                                                                         "🔧 Geometry Optimization Details",
                                                                                         "Elastic properties", "Phonons",
+                                                                                        "🧬 GA Optimization",
                                                                                         "⏱️ Computation times"])
     else:
         st.info("Please start some calculation first.")
 
     if st.session_state.results:
+
+        with results_tab6:
+            ga_results_list = [r for r in st.session_state.results if
+                               r['calc_type'] == 'GA Structure Optimization' and r.get('ga_results')]
+
+            if ga_results_list:
+                st.subheader("🧬 Genetic Algorithm Optimization Results")
+
+                if len(ga_results_list) == 1:
+                    selected_ga = ga_results_list[0]
+                else:
+                    ga_names = [r['name'] for r in ga_results_list]
+                    selected_name = st.selectbox("Select GA run:", ga_names, key="ga_selector")
+                    selected_ga = next(r for r in ga_results_list if r['name'] == selected_name)
+
+                display_ga_results(selected_ga['ga_results'])
+
+                if selected_ga['name'] in st.session_state.structures:
+                    original_structure = st.session_state.structures[selected_ga['name']]
+                    optimized_structure = selected_ga['ga_results']['best_structure']
+
+                    st.subheader("📊 Structure Comparison")
+
+                    col_comp1, col_comp2 = st.columns(2)
+
+                    with col_comp1:
+                        st.write("**Original Structure:**")
+                        st.write(f"Composition: {original_structure.composition.reduced_formula}")
+                        st.write(f"Total atoms: {len(original_structure)}")
+
+                        orig_composition = {}
+                        for site in original_structure:
+                            element = site.specie.symbol
+                            orig_composition[element] = orig_composition.get(element, 0) + 1
+
+                        for element, count in orig_composition.items():
+                            percentage = (count / len(original_structure)) * 100
+                            st.write(f"• {element}: {count} atoms ({percentage:.1f}%)")
+
+                    with col_comp2:
+                        st.write("**Optimized Structure:**")
+                        st.write(f"Composition: {optimized_structure.composition.reduced_formula}")
+                        st.write(f"Total atoms: {len(optimized_structure)}")
+                        st.write(f"**Energy: {selected_ga['ga_results']['best_energy']:.6f} eV**")
+
+                        opt_composition = {}
+                        for site in optimized_structure:
+                            element = site.specie.symbol
+                            opt_composition[element] = opt_composition.get(element, 0) + 1
+
+                        for element, count in opt_composition.items():
+                            percentage = (count / len(optimized_structure)) * 100
+                            st.write(f"• {element}: {count} atoms ({percentage:.1f}%)")
+            else:
+                st.info("No GA optimization results found. Results will appear here after GA calculations complete.")
+
+                
         with results_tab5:
             st.subheader("⏱️ Computation Time Analysis")
 
@@ -3229,66 +4031,7 @@ with tab3:
                             </div>
                             """, unsafe_allow_html=True)
 
-                if len(timing_data) > 2:
-                    st.subheader("📅 Calculation Timeline")
-                    timeline_data = []
-                    for structure_name, timing_info in st.session_state.computation_times.items():
-                        start_time = timing_info['start_time']
-                        end_time = timing_info['end_time']
-
-                        timeline_data.append({
-                            'Structure': structure_name,
-                            'Start': pd.to_datetime(start_time, unit='s'),
-                            'Finish': pd.to_datetime(end_time, unit='s'),
-                            'Duration': timing_info['duration'],
-                            'Status': "Success" if not timing_info.get('failed', False) else "Failed"
-                        })
-
-                    fig_timeline = go.Figure()
-
-                    for i, data in enumerate(timeline_data):
-                        color = 'green' if data['Status'] == 'Success' else 'red'
-
-                        fig_timeline.add_trace(go.Scatter(
-                            x=[data['Start'], data['Finish']],
-                            y=[i, i],
-                            mode='lines+markers',
-                            line=dict(color=color, width=8),
-                            marker=dict(size=8, color=color),
-                            name=data['Structure'],
-                            hovertemplate=f"<b>{data['Structure']}</b><br>" +
-                                          f"Start: %{{x}}<br>" +
-                                          f"Duration: {format_duration(data['Duration'])}<br>" +
-                                          f"Status: {data['Status']}<extra></extra>",
-                            showlegend=False
-                        ))
-
-                    fig_timeline.update_layout(
-                        title=dict(text="Calculation Timeline", font=dict(size=24)),
-                        xaxis_title="Time",
-                        yaxis=dict(
-                            tickmode='array',
-                            tickvals=list(range(len(timeline_data))),
-                            ticktext=[d['Structure'] for d in timeline_data],
-                            title="Structure",
-                            title_font=dict(size=18),
-                            tickfont=dict(size=14)
-                        ),
-                        height=max(650, len(timeline_data) * 40),
-                        font=dict(size=16),
-                        xaxis=dict(
-                            title_font=dict(size=18),
-                            tickfont=dict(size=14)
-                        ),
-                        hoverlabel=dict(
-                            bgcolor="white",
-                            bordercolor="black",
-                            font_size=20,
-                            font_family="Arial"
-                        )
-                    )
-
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    
                 st.subheader("🎯 Performance Insights")
 
                 if len(timing_data) > 1:
@@ -5401,8 +6144,7 @@ with tab3:
                     with col_download2:
                         if len(geometry_results) > 1:
                             st.write("**Bulk Download Options:**")
-                        
-                            # Format selection
+
                             bulk_formats = st.multiselect(
                                 "Select formats:",
                                 ["POSCAR", "CIF", "LAMMPS", "XYZ"],
