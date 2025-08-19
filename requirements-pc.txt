@@ -8,15 +8,15 @@ py3Dmol==2.5.0
 psutil
 gputil
 
-torch==2.7.1
-torchvision==0.22.1
-torchaudio==2.7.1
-mace-torch==0.3.13
+torch==2.4.0 #Compatible for
+#torchvision==0.22.1
+#torch==2.7.1
+#torchaudio==2.7.1
+mace-torch
 
-cuequivariance==0.5.1
-cuequivariance-torch==0.5.1
-cuequivariance-ops-torch-cu12==0.5.1
+cuequivariance
+cuequivariance-torch
+cuequivariance-ops-torch-cu12
 
-chgnet
-
-
+chgnet==0.3.8
+sevenn==0.10.4
