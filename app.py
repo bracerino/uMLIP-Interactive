@@ -1292,6 +1292,12 @@ except ImportError:
     CHGNET_AVAILABLE = False
 
 
+try:
+    from sevenn.calculator import SevenNetCalculator
+    SEVENNET_AVAILABLE = True
+except ImportError:
+    SEVENNET_AVAILABLE = False
+
 
 try:
     from mace.calculators import mace_mp, mace_off  # Import both
@@ -1503,6 +1509,9 @@ MACE_MODELS = {
     "CHGNet-0.3.0 (Latest Universal)": "chgnet-0.3.0",
     "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
 
+# ========== SEVENNET MODELS ==========
+    "SevenNet-0 (Latest Universal)": "7net-0",
+    "SevenNet-L3I5": "7net-l3i5",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1562,6 +1571,8 @@ def check_mace_compatibility(structure, selected_model_key="MACE-MP-0 (medium) -
 def get_model_type_from_selection(selected_model_name):
     if "OFF" in selected_model_name:
         return "MACE-OFF", "Organic molecules (H, C, N, O, F, P, S, Cl, Br, I)"
+    elif "SevenNet" in selected_model_name:
+        return "SevenNet", "Universal potential (89 elements)"
     else:
         return "MACE-MP", "General materials (89 elements)"
 
@@ -1877,6 +1888,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         })
 
         is_chgnet = model_size.startswith("chgnet")
+        is_sevennet = selected_model.startswith("SevenNet")
 
         if is_chgnet:
             # CHGNet setup
@@ -1902,6 +1914,44 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         return
                 else:
                     return
+
+        elif is_sevennet:
+            # SevenNet setup
+            log_queue.put("Setting up SevenNet calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                # Parse model and modal from the model_size
+                if model_size == "7net-mf-ompa-mpa":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+                    log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
+                elif model_size == "7net-mf-ompa-omat24":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+                    log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+                else:
+                    # Standard models without modal parameter
+                    calculator = SevenNetCalculator(model=model_size, device=device)
+                    log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
+
+            except Exception as e:
+                log_queue.put(f"❌ SevenNet initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        if model_size == "7net-mf-ompa-mpa":
+                            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
+                        elif model_size == "7net-mf-ompa-omat24":
+                            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                        else:
+                            calculator = SevenNetCalculator(model=model_size, device="cpu")
+                        log_queue.put("✅ SevenNet initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+
         else:
             log_queue.put("Setting up MACE calculator...")
             log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
@@ -2479,6 +2529,7 @@ with st.sidebar:
         st.error("⚠️ No calculators available!")
         st.error("Please install MACE: `pip install mace-torch`")
         st.error("Or install CHGNet: `pip install chgnet`")
+        st.error("Or install SevenNet: `pip install sevenn`")
         st.stop()
 
     #st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
