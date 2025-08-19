@@ -8,7 +8,6 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 - **Video tutorial for using the genetic algorithm with MACE to obtain candidates for the lowest energy distributions of point defects in crystal structure [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.   
 - **Video tutorial for using the generated Python script for the calculations at [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw).** Make sure that before running the Python code, you activated the virtual Python environment with the installed necessary Python packages (Step 4 in the compilation manual below).
 
-To get in touch with the application GUI, you can try the online version (which does not directly supports the calculations with MACE in its interface, but can serve for preparation of the Python input file for calculations in external console): https://mace-gui.streamlit.app/ 
 
 If you using my app, do not forgot from time to time to **update it with 'git pull' in the main folder**, I might be adding additional small features.   
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
