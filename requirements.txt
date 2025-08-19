@@ -4,9 +4,19 @@ pymatgen==2025.6.14
 ase==3.25.0
 phonopy==2.40.0
 py3Dmol==2.5.0
-psutil
 
-#torch==2.7.1
+psutil
+gputil
+
+torch==2.4.0 # compatible for MACE, CHGNet,SevenNet
 #torchvision==0.22.1
+#torch==2.7.1
 #torchaudio==2.7.1
-#mace-torch==0.3.13
+mace-torch
+
+cuequivariance
+cuequivariance-torch
+cuequivariance-ops-torch-cu12
+
+chgnet==0.3.8
+sevenn==0.10.4
