@@ -8,7 +8,7 @@ py3Dmol==2.5.0
 psutil
 gputil
 
-torch==2.4.0 #Compatible for
+torch==2.4.0 
 #torchvision==0.22.1
 #torch==2.7.1
 #torchaudio==2.7.1
