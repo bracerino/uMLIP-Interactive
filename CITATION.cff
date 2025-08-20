@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the following article."
+title: "XRDlicious: an interactive web-based platform for online calculation of diffraction patterns and radial distribution functions from crystal structures"
+authors:
+  - family-names: Lebeda
+    given-names: Miroslav
+  - family-names: Drahokoupil
+    given-names: Jan
+  - family-names: Veřtát
+    given-names: Petr
+  - family-names: Svoboda
+    given-names: Šimon
+  - family-names: Smola
+    given-names: Vojtěch
+  - family-names: Ahmed
+    given-names: Ubaid
+  - family-names: Vlčák
+    given-names: Petr
+version: 1.0.0
+identifiers:
+  - type: doi
+    value: 10.1107/S1600576725005370
+date-released: 2025-09-01   
+type: software
+url: "https://doi.org/10.1107/S1600576725005370"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Lebeda
+      given-names: Miroslav
+    - family-names: Drahokoupil
+      given-names: Jan
+    - family-names: Veřtát
+      given-names: Petr
+    - family-names: Svoboda
+      given-names: Šimon
+    - family-names: Smola
+      given-names: Vojtěch
+    - family-names: Ahmed
+      given-names: Ubaid
+    - family-names: Vlčák
+      given-names: Petr
+  title: "XRDlicious: an interactive web-based platform for online calculation of diffraction patterns and radial distribution functions from crystal structures"
+  journal: "Journal of Applied Crystallography"
+  volume: 58
+  issue: 5
+  year: 2025
+  doi: 10.1107/S1600576725005370
+  start: 1     
+  end: 7  
