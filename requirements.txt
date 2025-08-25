@@ -5,18 +5,21 @@ ase==3.25.0
 phonopy==2.40.0
 py3Dmol==2.5.0
 
+
 psutil
 gputil
 
-torch==2.4.0 # compatible for MACE, CHGNet,SevenNet
+torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models 
 #torchvision==0.22.1
 #torch==2.7.1
 #torchaudio==2.7.1
-mace-torch
 
 cuequivariance
 cuequivariance-torch
 cuequivariance-ops-torch-cu12
 
+mace-torch==3.1.4
 chgnet==0.3.8
 sevenn==0.10.4
+#mattersim
+orb-models==0.5.5
