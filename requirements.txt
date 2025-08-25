@@ -18,7 +18,7 @@ cuequivariance
 cuequivariance-torch
 cuequivariance-ops-torch-cu12
 
-mace-torch==3.1.4
+mace-torch==0.3.14
 chgnet==0.3.8
 sevenn==0.10.4
 #mattersim
