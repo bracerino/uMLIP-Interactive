@@ -7,6 +7,77 @@ This module generates standalone Python scripts for MACE molecular dynamics calc
 import json
 from datetime import datetime
 
+
+
+
+def _generate_mlip_imports():
+    """Generate imports for all supported MLIP models."""
+    return """# MACE imports
+try:
+    from mace.calculators import mace_mp, mace_off
+    MACE_AVAILABLE = True
+except ImportError:
+    try:
+        from mace.calculators import MACECalculator
+        MACE_AVAILABLE = True
+    except ImportError:
+        MACE_AVAILABLE = False
+
+# CHGNet imports
+try:
+    from chgnet.model.model import CHGNet
+    from chgnet.model.dynamics import CHGNetCalculator
+    CHGNET_AVAILABLE = True
+except ImportError:
+    CHGNET_AVAILABLE = False
+
+# SevenNet imports (requires torch 2.6 compatibility)
+try:
+    torch.serialization.add_safe_globals([slice])  # Required for torch 2.6
+    from sevenn.calculator import SevenNetCalculator
+    SEVENNET_AVAILABLE = True
+except ImportError:
+    SEVENNET_AVAILABLE = False
+
+# MatterSim imports
+try:
+    from mattersim.forcefield import MatterSimCalculator
+    MATTERSIM_AVAILABLE = True
+except ImportError:
+    MATTERSIM_AVAILABLE = False
+
+# ORB imports
+try:
+    from orb_models.forcefield import pretrained
+    from orb_models.forcefield.calculator import ORBCalculator
+    ORB_AVAILABLE = True
+except ImportError:
+    ORB_AVAILABLE = False
+
+# Check if any calculator is available
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE):
+    print("❌ No MLIP calculators available!")
+    print("Please install at least one:")
+    print("  - MACE: pip install mace-torch")
+    print("  - CHGNet: pip install chgnet") 
+    print("  - SevenNet: pip install sevenn")
+    print("  - MatterSim: pip install mattersim")
+    print("  - ORB: pip install orb-models")
+    exit(1)
+else:
+    available_models = []
+    if MACE_AVAILABLE:
+        available_models.append("MACE")
+    if CHGNET_AVAILABLE:
+        available_models.append("CHGNet")
+    if SEVENNET_AVAILABLE:
+        available_models.append("SevenNet")
+    if MATTERSIM_AVAILABLE:
+        available_models.append("MatterSim")
+    if ORB_AVAILABLE:
+        available_models.append("ORB")
+    print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
+
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
@@ -35,15 +106,12 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
 
-    is_chgnet = model_size.startswith("chgnet")
-
-
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
-Model: {model_size}
+Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}
 \"\"\"
@@ -78,24 +146,7 @@ from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-# MACE imports
-try:
-    from mace.calculators import mace_mp, mace_off
-    MACE_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import MACECalculator
-        MACE_AVAILABLE = True
-    except ImportError:
-        MACE_AVAILABLE = False
-        print("❌ MACE not available. Please install with: pip install mace-torch")
-        exit(1)
-#CHGNet imports
-try:
-    from chgnet.model.model import CHGNet
-    from chgnet.model.dynamics import CHGNetCalculator
-except ImportError:
-    print("❌ CHGNet not available. Please install with: pip install chgnet")
+{_generate_mlip_imports()}
 
 {_generate_utility_functions()}
 
@@ -106,7 +157,7 @@ def main():
     print("🚀 Starting MACE calculation script...")
     print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
     print(f"🔬 Calculation type: {calc_type}")
-    print(f"🤖 Model: {model_size}")
+    print(f"🤖 Model: {selected_model_key or model_size}")
     print(f"💻 Device: {device}")
     print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
 
@@ -133,7 +184,6 @@ def main():
     print(f"\\n✅ All calculations completed!")
     print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
     print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
-    #print("📊 Check the results/ directory for output files")
 
 if __name__ == "__main__":
     main()
@@ -141,19 +191,16 @@ if __name__ == "__main__":
 
     return script
 
-
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
-    This is identical to generate_python_script() but replaces structure creation with local file reading.
     """
 
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype)
 
-    # Use the same calculation code as the original function
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
     elif calc_type == "Geometry Optimization":
@@ -171,13 +218,12 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
 
-    # The script template is identical to the original, just without structure creation
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
-Model: {model_size}
+Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}
 
@@ -215,18 +261,7 @@ from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-# MACE imports
-try:
-    from mace.calculators import mace_mp, mace_off
-    MACE_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import MACECalculator
-        MACE_AVAILABLE = True
-    except ImportError:
-        MACE_AVAILABLE = False
-        print("❌ MACE not available. Please install with: pip install mace-torch")
-        exit(1)
+{_generate_mlip_imports()}
 
 {_generate_utility_functions()}
 
@@ -237,7 +272,7 @@ def main():
     print("🚀 Starting MACE calculation script...")
     print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
     print(f"🔬 Calculation type: {calc_type}")
-    print(f"🤖 Model: {model_size}")
+    print(f"🤖 Model: {selected_model_key or model_size}")
     print(f"💻 Device: {device}")
     print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
 
@@ -266,7 +301,7 @@ def main():
             print(f"  {{i}}. {{filename}} - ❌ Error: {{str(e)}}")
 
     # Setup calculator
-    print("\\n🔧 Setting up MACE calculator...")
+    print("\\n🔧 Setting up MLIP calculator...")
 {calculator_setup_code}
 
     # Run calculations
@@ -1517,12 +1552,139 @@ def _generate_structure_creation_code(structures):
 
 
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
-    """Generate calculator setup code."""
-    # Check if this is a MACE-OFF model by looking at the selected model key
+    """Generate calculator setup code with support for all MLIP models."""
+
+    # Determine model type from selected model key
     is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
+    is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
+    is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
+    is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
 
-    if is_chgnet:
+    if is_orb:
+        # ORB setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing ORB calculator on {{device}}...")
+    try:
+        from orb_models.forcefield import pretrained
+        from orb_models.forcefield.calculator import ORBCalculator
+
+        # Convert dtype to ORB precision format
+        if "{dtype}" == "float32":
+            precision = "float32-high"  # Recommended for GPU acceleration
+        else:
+            precision = "float32-highest"  # Higher precision option
+
+        print(f"🎯 Using precision: {{precision}}")
+
+        # Get the pretrained model function by name
+        model_function = getattr(pretrained, "{model_size}")
+        orbff = model_function(
+            device=device,
+            precision=precision
+        )
+        calculator = ORBCalculator(orbff, device=device)
+        print(f"✅ ORB {model_size} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ ORB initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                model_function = getattr(pretrained, "{model_size}")
+                orbff = model_function(
+                    device="cpu",
+                    precision=precision
+                )
+                calculator = ORBCalculator(orbff, device="cpu")
+                print("✅ ORB initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_mattersim:
+        # MatterSim setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing MatterSim calculator on {{device}}...")
+    try:
+        from mattersim.forcefield import MatterSimCalculator
+
+        # Determine model path based on model_size
+        if "{model_size}" == "mattersim-1m":
+            model_path = "MatterSim-v1.0.0-1M.pth"
+        elif "{model_size}" == "mattersim-5m":
+            model_path = "MatterSim-v1.0.0-5M.pth"
+        else:
+            model_path = "{model_size}"
+
+        print(f"📁 Model path: {{model_path}}")
+
+        calculator = MatterSimCalculator(
+            model_path=model_path,
+            device=device
+        )
+        print(f"✅ MatterSim {{model_path}} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ MatterSim initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = MatterSimCalculator(
+                    model_path=model_path,
+                    device="cpu"
+                )
+                print("✅ MatterSim initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_sevennet:
+        # SevenNet setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing SevenNet calculator on {{device}}...")
+    try:
+        from sevenn.calculator import SevenNetCalculator
+
+        print(f"🎯 Selected model: {selected_model_key}")
+        print(f"🎯 Model function: {model_size}")
+
+        # Parse model and modal from the model_size
+        if "{model_size}" == "7net-mf-ompa-mpa":
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+            print("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
+        elif "{model_size}" == "7net-mf-ompa-omat24":
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+            print("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+        else:
+            # Standard models without modal parameter
+            calculator = SevenNetCalculator(model="{model_size}", device=device)
+            print(f"✅ SevenNet {model_size} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ SevenNet initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                if "{model_size}" == "7net-mf-ompa-mpa":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
+                elif "{model_size}" == "7net-mf-ompa-omat24":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                else:
+                    calculator = SevenNetCalculator(model="{model_size}", device="cpu")
+                print("✅ SevenNet initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_chgnet:
+        # CHGNet setup
         chgnet_version = model_size.split("-")[1] if "-" in model_size else "0.3.0"
 
         calc_code = f'''    device = "{device}"
@@ -1530,9 +1692,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     try:
         from chgnet.model.model import CHGNet
         from chgnet.model.dynamics import CHGNetCalculator
+
         chgnet = CHGNet.load(model_name="{chgnet_version}", use_device=device, verbose=False)
         calculator = CHGNetCalculator(model=chgnet, use_device=device)
         print(f"✅ CHGNet {chgnet_version} initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ CHGNet initialization failed on {{device}}: {{e}}")
         if device == "cuda":
@@ -1546,13 +1710,18 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
+
     elif is_mace_off:
+        # MACE-OFF setup
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
+        from mace.calculators import mace_off
+
         calculator = mace_off(
             model="{model_size}", default_dtype="{dtype}", device=device)
         print(f"✅ MACE-OFF calculator initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ MACE-OFF initialization failed on {{device}}: {{e}}")
         if device == "cuda":
@@ -1566,13 +1735,18 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
+
     else:
+        # MACE-MP setup (default)
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
     try:
+        from mace.calculators import mace_mp
+
         calculator = mace_mp(
             model="{model_size}", dispersion=False, default_dtype="{dtype}", device=device)
         print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
         if device == "cuda":
