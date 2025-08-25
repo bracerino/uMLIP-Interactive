@@ -1291,7 +1291,32 @@ try:
 except ImportError:
     CHGNET_AVAILABLE = False
 
+# MatterSim
+try:
+    from mattersim.forcefield import MatterSimCalculator
+    MATTERSIM_AVAILABLE = True
+except ImportError:
+    MATTERSIM_AVAILABLE = False
 
+#Orb-Models
+try:
+    from orb_models.forcefield import pretrained
+    from orb_models.forcefield.calculator import ORBCalculator
+    ORB_AVAILABLE = True
+except ImportError:
+    ORB_AVAILABLE = False
+
+
+#try:
+#    from orb_models.forcefield import pretrained
+#    from orb_models.forcefield.calculator import ORBCalculator
+#    print("✅ ORB imports successful")
+#    print("Available models:", [attr for attr in dir(pretrained) if not attr.startswith('_')])
+#except ImportError as e:
+#    print(f"❌ Import failed: {e}")
+
+#Added for torch 2.6 and SevenNet
+torch.serialization.add_safe_globals([slice])
 try:
     from sevenn.calculator import SevenNetCalculator
     SEVENNET_AVAILABLE = True
@@ -1300,7 +1325,7 @@ except ImportError:
 
 
 try:
-    from mace.calculators import mace_mp, mace_off  # Import both
+    from mace.calculators import mace_mp, mace_off
     MACE_IMPORT_METHOD = "mace_mp_and_off"
     MACE_AVAILABLE = True
     MACE_OFF_AVAILABLE = True
@@ -1512,6 +1537,17 @@ MACE_MODELS = {
 # ========== SEVENNET MODELS ==========
     "SevenNet-0 (Latest Universal)": "7net-0",
     "SevenNet-L3I5": "7net-l3i5",
+# ========== MATTERSIM MODELS ==========
+    "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
+    "MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
+    # ========== ORB MODELS ==========
+    "ORB-v3 Conservative OMAT (Recommended)": "orb_v3_conservative_inf_omat",
+    "ORB-v3 Conservative OMol (Molecular)": "orb_v3_conservative_omol",
+    "ORB-v3 Direct OMAT (Fast)": "orb_v3_direct_inf_omat",
+    "ORB-v3 Direct OMol (Molecular Fast)": "orb_v3_direct_omol",
+    "ORB-v3 Conservative 20-neighbors OMAT": "orb_v3_conservative_20_omat",
+    "ORB-v3 Direct 20-neighbors OMAT": "orb_v3_direct_20_omat",
+    "ORB-v2 (Legacy)": "orb_v2",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1573,6 +1609,10 @@ def get_model_type_from_selection(selected_model_name):
         return "MACE-OFF", "Organic molecules (H, C, N, O, F, P, S, Cl, Br, I)"
     elif "SevenNet" in selected_model_name:
         return "SevenNet", "Universal potential (89 elements)"
+    elif "MatterSim" in selected_model_name:
+        return "MatterSim", "Universal potential (89 elements, high T/P, specifically made for bulk materials)"
+    elif "ORB" in selected_model_name:
+        return "ORB", "Universal potential with confidence estimation"
     else:
         return "MACE-MP", "General materials (89 elements)"
 
@@ -1889,8 +1929,89 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         is_chgnet = model_size.startswith("chgnet")
         is_sevennet = selected_model.startswith("SevenNet")
+        is_mattersim = selected_model.startswith("MatterSim")
+        is_orb = selected_model.startswith("ORB")
+        if is_orb:
+            # ORB setup
+            log_queue.put("Setting up ORB calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Model function: {model_size}")
+            log_queue.put(f"Device: {device}")
 
-        if is_chgnet:
+            try:
+                # Convert dtype to ORB precision format
+                if dtype == "float32":
+                    precision = "float32-high"  # Recommended for GPU acceleration
+                else:
+                    precision = "float32-highest"  # Higher precision option
+
+                log_queue.put(f"Precision: {precision}")
+
+                # Get the pretrained model function by name
+                model_function = getattr(pretrained, model_size)
+                orbff = model_function(
+                    device=device,
+                    precision=precision
+                )
+                calculator = ORBCalculator(orbff, device=device)
+                log_queue.put(f"✅ ORB {model_size} initialized successfully on {device}")
+
+            except Exception as e:
+                log_queue.put(f"❌ ORB initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        model_function = getattr(pretrained, model_size)
+                        orbff = model_function(
+                            device="cpu",
+                            precision=precision
+                        )
+                        calculator = ORBCalculator(orbff, device="cpu")
+                        log_queue.put("✅ ORB initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+        elif is_mattersim:
+            # MatterSim setup
+            log_queue.put("Setting up MatterSim calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                # Determine model path based on model_size
+                if model_size == "mattersim-1m":
+                    model_path = "MatterSim-v1.0.0-1M.pth"
+                elif model_size == "mattersim-5m":
+                    model_path = "MatterSim-v1.0.0-5M.pth"
+                else:
+                    model_path = model_size
+
+                log_queue.put(f"Model path: {model_path}")
+
+                calculator = MatterSimCalculator(
+                    model_path=model_path,
+                    device=device
+                )
+                log_queue.put(f"✅ MatterSim {model_path} initialized successfully on {device}")
+
+            except Exception as e:
+                log_queue.put(f"❌ MatterSim initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        calculator = MatterSimCalculator(
+                            model_path=model_path,
+                            device="cpu"
+                        )
+                        log_queue.put("✅ MatterSim initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+        elif is_chgnet:
             # CHGNet setup
             log_queue.put("Setting up CHGNet calculator...")
             chgnet_version = model_size.split("-")[1]  # Extract version from "chgnet-0.3.0"
@@ -2525,14 +2646,14 @@ def format_duration(seconds):
 with st.sidebar:
     st.header("Model Selection")
 
-    if not MACE_AVAILABLE and not CHGNET_AVAILABLE:
+    if not MACE_AVAILABLE and not CHGNET_AVAILABLE and not MATTERSIM_AVAILABLE and not ORB_AVAILABLE:
         st.error("⚠️ No calculators available!")
         st.error("Please install MACE: `pip install mace-torch`")
         st.error("Or install CHGNet: `pip install chgnet`")
+        st.error("Or install MatterSim: `pip install mattersim`")
+        st.error("Or install ORB: `pip install orb-models`")
         st.error("Or install SevenNet: `pip install sevenn`")
-        st.stop()
-
-    #st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
+       # st.stop()
 
     if MACE_OFF_AVAILABLE:
       #  st.success("✅ MACE-OFF (organic molecules) available")
@@ -2547,7 +2668,20 @@ with st.sidebar:
 
     is_chgnet = selected_model.startswith("CHGNet")
 
-    if is_chgnet:
+    is_sevennet = selected_model.startswith("SevenNet")
+
+    is_mattersim = selected_model.startswith("MatterSim")
+    if is_mattersim:
+        if not MATTERSIM_AVAILABLE:
+            st.error("❌ MatterSim not available! Please install: `pip install mattersim`")
+            st.stop()
+        st.info("🧠 **MatterSim**: Universal ML potential for bulk materials")
+    elif is_sevennet:
+        if not SEVENNET_AVAILABLE:
+            st.error("❌ SevenNet not available! Please install: `pip install sevenn`")
+            st.stop()
+        st.info("⚡ **SevenNet**: Fast universal ML potential")
+    elif is_chgnet:
         if not CHGNET_AVAILABLE:
             st.error("❌ CHGNet not available! Please install: `pip install chgnet`")
             st.stop()
@@ -2560,6 +2694,8 @@ with st.sidebar:
             if not MACE_OFF_AVAILABLE:
                 st.error("❌ MACE-OFF models require updated MACE installation!")
         else:
+            if not MACE_AVAILABLE:
+                st.error("❌ MACE models not available! Please install: 'pip install mace-torch'")
             st.info(f"🔬 **{model_type}**: {description}")
 
     cols1, cols2 = st.columns([1,1])
