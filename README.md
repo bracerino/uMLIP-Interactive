@@ -42,16 +42,14 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
 (Optional) Install Git:  
       **sudo apt update**  
       **sudo apt install git**    
-      
-  1) Download the app code from GitHub (or download it manually without Git on the following link by clicking on 'Code' and 'Download ZIP', then extract the ZIP. With Git, it is automatically   extracted):  
-      **git clone https://github.com/bracerino/mace-md-gui.git**
-
-  2) Navigate to the downloaded project folder:  
-      **cd mace-md-gui/**
 
 Currently, certain u-MLIP does not share compatible versions of certain packages (Torch, ...) with each other. Depending on which u-MLIP you want to use, please choose one option: 
-To run simulations with **MACE, CHGNet, SevenNet, and Orb-v3**:
+#### To run simulations with **MACE, CHGNet, SevenNet, and Orb-v3**:
 
+  1) Download the app code from GitHub (or download it manually without Git on the following link by clicking on 'Code' and 'Download ZIP', then extract the ZIP. With Git, it is automatically   extracted):  
+      **git clone https://github.com/bracerino/mace-md-gui.git**
+  2) Navigate to the downloaded project folder:  
+      **cd mace-md-gui/**  
   3) Create a Python virtual environment to prevent possible conflicts between packages:  
       **python3 -m venv mace_env**
   4) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
@@ -59,20 +57,26 @@ To run simulations with **MACE, CHGNet, SevenNet, and Orb-v3**:
   5) Install all the necessary Python packages:  
    **pip install -r requirements.txt** (with CUDA for calculations on GPU), or (pip install -r requirements-no-cuda.txt (No GPU calculations))  
   6) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
-      **streamlit run app.py**  
+      **streamlit run app.py**
+  7) To update the application, write in the main folder:  
+      **git pull**
 
-To run simulations with **MatterSim**:  
+#### To run simulations with **MatterSim**:  
+  1) Download the app code from GitHub (or download it manually without Git on the following link by clicking on 'Code' and 'Download ZIP', then extract the ZIP. With Git, it is automatically   extracted):  
+      **git clone https://github.com/bracerino/mace-md-gui.git**
+  2) Navigate to the downloaded project folder:  
+      **cd mace-md-gui/**  
   3) Create a Python virtual environment to prevent possible conflicts between packages:  
-      **python3 -m venv mattersim_env**  
+      **python3 -m venv mattersim_env**
   4) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mattersim_env/bin/activate**  
   5) Install all the necessary Python packages:  
-      **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU)))  
-  6) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4b):  
-      **streamlit run app.py**  
-
+   **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU))  
+  6) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
+      **streamlit run app.py**
   7) To update the application, write in the main folder:  
       **git pull**
+
  
 ### **Tested Python packages**  
 - streamlit - 1.46.0  
