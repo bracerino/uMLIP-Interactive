@@ -1281,6 +1281,24 @@ except ImportError:
     PHONOPY_AVAILABLE = False
     print("⚠️ Phonopy not available for phonon calculations")
 
+
+
+try:
+    from chgnet.model.model import CHGNet
+    from chgnet.model.dynamics import CHGNetCalculator
+    CHGNET_AVAILABLE = True
+    CHGNET_IMPORT_METHOD = "CHGNet"
+except ImportError:
+    CHGNET_AVAILABLE = False
+
+
+try:
+    from sevenn.calculator import SevenNetCalculator
+    SEVENNET_AVAILABLE = True
+except ImportError:
+    SEVENNET_AVAILABLE = False
+
+
 try:
     from mace.calculators import mace_mp, mace_off  # Import both
     MACE_IMPORT_METHOD = "mace_mp_and_off"
@@ -1487,6 +1505,13 @@ MACE_MODELS = {
     "MACE-OFF23 (small) - Organic": "small",
     "MACE-OFF23 (medium) - Organic": "medium",
     "MACE-OFF23 (large) - Organic": "large",
+# ========== MACE-OFF MODELS (Organic Force Fields) ==========
+    "CHGNet-0.3.0 (Latest Universal)": "chgnet-0.3.0",
+    "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
+
+# ========== SEVENNET MODELS ==========
+    "SevenNet-0 (Latest Universal)": "7net-0",
+    "SevenNet-L3I5": "7net-l3i5",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1546,6 +1571,8 @@ def check_mace_compatibility(structure, selected_model_key="MACE-MP-0 (medium) -
 def get_model_type_from_selection(selected_model_name):
     if "OFF" in selected_model_name:
         return "MACE-OFF", "Organic molecules (H, C, N, O, F, P, S, Cl, Br, I)"
+    elif "SevenNet" in selected_model_name:
+        return "SevenNet", "Universal potential (89 elements)"
     else:
         return "MACE-MP", "General materials (89 elements)"
 
@@ -1860,123 +1887,189 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             'start_time': total_start_time
         })
 
-        log_queue.put("Setting up MACE calculator...")
-        log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
-        log_queue.put(f"Model size: {model_size}")
-        log_queue.put(f"Device: {device}")
+        is_chgnet = model_size.startswith("chgnet")
+        is_sevennet = selected_model.startswith("SevenNet")
 
-        if calc_type == "GA Structure Optimization":
-            log_queue.put(f"DEBUG: Substitutions received: {substitutions}")
-            log_queue.put(f"DEBUG: GA params received: {ga_params}")
+        if is_chgnet:
+            # CHGNet setup
+            log_queue.put("Setting up CHGNet calculator...")
+            chgnet_version = model_size.split("-")[1]  # Extract version from "chgnet-0.3.0"
+            log_queue.put(f"CHGNet version: {chgnet_version}")
+            log_queue.put(f"Device: {device}")
 
-
-        calculator = None
-
-        is_mace_off = "OFF" in selected_model
-
-        if is_mace_off and not MACE_OFF_AVAILABLE:
-            log_queue.put(
-                "❌ MACE-OFF models requested but not available. Please update your MACE installation.")
-            return
-
-        if MACE_IMPORT_METHOD == "mace_mp_and_off":
             try:
+                chgnet = CHGNet.load(model_name=chgnet_version, use_device=device, verbose=False)
+                calculator = CHGNetCalculator(model=chgnet, use_device=device)
+                log_queue.put(f"✅ CHGNet {chgnet_version} initialized successfully on {device}")
+            except Exception as e:
+                log_queue.put(f"❌ CHGNet initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        chgnet = CHGNet.load(model_name=chgnet_version, use_device="cpu", verbose=False)
+                        calculator = CHGNetCalculator(model=chgnet, use_device="cpu")
+                        log_queue.put("✅ CHGNet initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+
+        elif is_sevennet:
+            # SevenNet setup
+            log_queue.put("Setting up SevenNet calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                # Parse model and modal from the model_size
+                if model_size == "7net-mf-ompa-mpa":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+                    log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
+                elif model_size == "7net-mf-ompa-omat24":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+                    log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+                else:
+                    # Standard models without modal parameter
+                    calculator = SevenNetCalculator(model=model_size, device=device)
+                    log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
+
+            except Exception as e:
+                log_queue.put(f"❌ SevenNet initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        if model_size == "7net-mf-ompa-mpa":
+                            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
+                        elif model_size == "7net-mf-ompa-omat24":
+                            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                        else:
+                            calculator = SevenNetCalculator(model=model_size, device="cpu")
+                        log_queue.put("✅ SevenNet initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+
+        else:
+            log_queue.put("Setting up MACE calculator...")
+            log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
+            log_queue.put(f"Model size: {model_size}")
+            log_queue.put(f"Device: {device}")
+
+            if calc_type == "GA Structure Optimization":
+                log_queue.put(f"DEBUG: Substitutions received: {substitutions}")
+                log_queue.put(f"DEBUG: GA params received: {ga_params}")
+
+
+            calculator = None
+
+            is_mace_off = "OFF" in selected_model
+
+            if is_mace_off and not MACE_OFF_AVAILABLE:
+                log_queue.put(
+                    "❌ MACE-OFF models requested but not available. Please update your MACE installation.")
+                return
+
+            if MACE_IMPORT_METHOD == "mace_mp_and_off":
+                try:
+                    if is_mace_off:
+                        log_queue.put(
+                            f"Initializing MACE-OFF calculator on {device}...")
+                        calculator = mace_off(
+                            model=model_size, default_dtype=dtype, device=device)
+                        log_queue.put(
+                            f"✅ MACE-OFF calculator initialized successfully on {device}")
+                    else:
+                        log_queue.put(
+                            f"Initializing MACE-MP calculator on {device}...")
+                        calculator = mace_mp(
+                            model=model_size, dispersion=False, default_dtype=dtype, device=device)
+                        log_queue.put(
+                            f"✅ MACE-MP calculator initialized successfully on {device}")
+                except Exception as e:
+                    log_queue.put(
+                        f"❌ Calculator initialization failed on {device}: {str(e)}")
+                    if device == "cuda":
+                        log_queue.put(
+                            "⚠️ GPU initialization failed, falling back to CPU...")
+                        try:
+                            if is_mace_off:
+                                calculator = mace_off(
+                                    model=model_size, default_dtype=dtype, device="cpu")
+                            else:
+                                calculator = mace_mp(
+                                    model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
+                            log_queue.put(
+                                "✅ Calculator initialized successfully on CPU (fallback)")
+                        except Exception as cpu_error:
+                            log_queue.put(
+                                f"❌ CPU fallback also failed: {str(cpu_error)}")
+                            return
+                    else:
+                        return
+
+            elif MACE_IMPORT_METHOD == "mace_mp":
                 if is_mace_off:
                     log_queue.put(
-                        f"Initializing MACE-OFF calculator on {device}...")
-                    calculator = mace_off(
-                        model=model_size, default_dtype=dtype, device=device)
+                        "❌ MACE-OFF models requested but only MACE-MP available. Please update your MACE installation.")
+                    return
+                try:
                     log_queue.put(
-                        f"✅ MACE-OFF calculator initialized successfully on {device}")
-                else:
-                    log_queue.put(
-                        f"Initializing MACE-MP calculator on {device}...")
+                        f"Initializing mace_mp calculator on {device}...")
                     calculator = mace_mp(
                         model=model_size, dispersion=False, default_dtype=dtype, device=device)
                     log_queue.put(
-                        f"✅ MACE-MP calculator initialized successfully on {device}")
-            except Exception as e:
-                log_queue.put(
-                    f"❌ Calculator initialization failed on {device}: {str(e)}")
-                if device == "cuda":
+                        f"✅ mace_mp calculator initialized successfully on {device}")
+                except Exception as e:
                     log_queue.put(
-                        "⚠️ GPU initialization failed, falling back to CPU...")
-                    try:
-                        if is_mace_off:
-                            calculator = mace_off(
-                                model=model_size, default_dtype=dtype, device="cpu")
-                        else:
+                        f"❌ mace_mp initialization failed on {device}: {str(e)}")
+                    if device == "cuda":
+                        log_queue.put(
+                            "⚠️ GPU initialization failed, falling back to CPU...")
+                        try:
                             calculator = mace_mp(
                                 model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
-                        log_queue.put(
-                            "✅ Calculator initialized successfully on CPU (fallback)")
-                    except Exception as cpu_error:
-                        log_queue.put(
-                            f"❌ CPU fallback also failed: {str(cpu_error)}")
+                            log_queue.put(
+                                "✅ mace_mp calculator initialized successfully on CPU (fallback)")
+                        except Exception as cpu_error:
+                            log_queue.put(
+                                f"❌ CPU fallback also failed: {str(cpu_error)}")
+                            return
+                    else:
                         return
-                else:
-                    return
 
-        elif MACE_IMPORT_METHOD == "mace_mp":
-            if is_mace_off:
-                log_queue.put(
-                    "❌ MACE-OFF models requested but only MACE-MP available. Please update your MACE installation.")
-                return
-            try:
-                log_queue.put(
-                    f"Initializing mace_mp calculator on {device}...")
-                calculator = mace_mp(
-                    model=model_size, dispersion=False, default_dtype=dtype, device=device)
-                log_queue.put(
-                    f"✅ mace_mp calculator initialized successfully on {device}")
-            except Exception as e:
-                log_queue.put(
-                    f"❌ mace_mp initialization failed on {device}: {str(e)}")
-                if device == "cuda":
+            elif MACE_IMPORT_METHOD == "MACECalculator":
+                if is_mace_off:
                     log_queue.put(
-                        "⚠️ GPU initialization failed, falling back to CPU...")
-                    try:
-                        calculator = mace_mp(
-                            model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
-                        log_queue.put(
-                            "✅ mace_mp calculator initialized successfully on CPU (fallback)")
-                    except Exception as cpu_error:
-                        log_queue.put(
-                            f"❌ CPU fallback also failed: {str(cpu_error)}")
-                        return
-                else:
+                        "❌ MACE-OFF models not supported with MACECalculator import method.")
                     return
-
-        elif MACE_IMPORT_METHOD == "MACECalculator":
-            if is_mace_off:
                 log_queue.put(
-                    "❌ MACE-OFF models not supported with MACECalculator import method.")
-                return
-            log_queue.put(
-                "Warning: Using MACECalculator - you may need to provide model paths manually")
-            try:
-                calculator = MACECalculator(device=device)
-                log_queue.put(f"✅ MACECalculator initialized on {device}")
-            except Exception as e:
-                log_queue.put(
-                    f"❌ MACECalculator initialization failed on {device}: {str(e)}")
-                if device == "cuda":
+                    "Warning: Using MACECalculator - you may need to provide model paths manually")
+                try:
+                    calculator = MACECalculator(device=device)
+                    log_queue.put(f"✅ MACECalculator initialized on {device}")
+                except Exception as e:
                     log_queue.put(
-                        "⚠️ GPU initialization failed, falling back to CPU...")
-                    try:
-                        calculator = MACECalculator(device="cpu")
+                        f"❌ MACECalculator initialization failed on {device}: {str(e)}")
+                    if device == "cuda":
                         log_queue.put(
-                            "✅ MACECalculator initialized on CPU (fallback)")
-                    except Exception as cpu_error:
-                        log_queue.put(
-                            f"❌ CPU fallback also failed: {str(cpu_error)}")
+                            "⚠️ GPU initialization failed, falling back to CPU...")
+                        try:
+                            calculator = MACECalculator(device="cpu")
+                            log_queue.put(
+                                "✅ MACECalculator initialized on CPU (fallback)")
+                        except Exception as cpu_error:
+                            log_queue.put(
+                                f"❌ CPU fallback also failed: {str(cpu_error)}")
+                            return
+                    else:
                         return
-                else:
-                    return
-        else:
-            log_queue.put(
-                "❌ MACE not available - please install with: pip install mace-torch")
-            return
+            else:
+                log_queue.put(
+                    "❌ MACE not available - please install with: pip install mace-torch")
+                return
 
         if calculator is None:
             log_queue.put("❌ Failed to create calculator")
@@ -2430,11 +2523,13 @@ def format_duration(seconds):
 
 
 with st.sidebar:
-    st.header("MACE Model Selection")
+    st.header("Model Selection")
 
-    if not MACE_AVAILABLE:
-        st.error("⚠️ MACE not available!")
-        st.error("Please install with: `pip install mace-torch`")
+    if not MACE_AVAILABLE and not CHGNET_AVAILABLE:
+        st.error("⚠️ No calculators available!")
+        st.error("Please install MACE: `pip install mace-torch`")
+        st.error("Or install CHGNet: `pip install chgnet`")
+        st.error("Or install SevenNet: `pip install sevenn`")
         st.stop()
 
     #st.success(f"✅ MACE available via: {MACE_IMPORT_METHOD}")
@@ -2446,18 +2541,26 @@ with st.sidebar:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
     selected_model = st.selectbox(
-        "Choose MACE Model", list(MACE_MODELS.keys()))
+        "Choose MLIP Model", list(MACE_MODELS.keys()))
     model_size = MACE_MODELS[selected_model]
 
-    # Show model type information
-    model_type, description = get_model_type_from_selection(selected_model)
 
-    if model_type == "MACE-OFF":
-        st.info(f"🧪 **{model_type}**: {description}")
-        if not MACE_OFF_AVAILABLE:
-            st.error("❌ MACE-OFF models require updated MACE installation!")
+    is_chgnet = selected_model.startswith("CHGNet")
+
+    if is_chgnet:
+        if not CHGNET_AVAILABLE:
+            st.error("❌ CHGNet not available! Please install: `pip install chgnet`")
+            st.stop()
+        st.info("🔬 **CHGNet**: Universal potential with magnetic moments")
+        st.info("📊 **Coverage**: All elements, 146k compounds from Materials Project")
     else:
-        st.info(f"🔬 **{model_type}**: {description}")
+        model_type, description = get_model_type_from_selection(selected_model)
+        if model_type == "MACE-OFF":
+            st.info(f"🧪 **{model_type}**: {description}")
+            if not MACE_OFF_AVAILABLE:
+                st.error("❌ MACE-OFF models require updated MACE installation!")
+        else:
+            st.info(f"🔬 **{model_type}**: {description}")
 
     cols1, cols2 = st.columns([1,1])
     with cols1:
@@ -2469,13 +2572,17 @@ with st.sidebar:
         device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
 
     with cols2:
-        precision_option = st.radio(
-            "Precision",
-            ["Float32", "Float64"],
-            index=1,
-            help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
-        )
-        dtype = "float32" if precision_option == "Float32" else "float64"
+        if not is_chgnet:  # Only show precision for MACE
+            precision_option = st.radio(
+                "Precision",
+                ["Float32", "Float64"],
+                index=1,
+                help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
+            )
+            dtype = "float32" if precision_option == "Float32" else "float64"
+        else:
+            st.info("CHGNet uses fixed precision.")
+            dtype = "float32"
     col_c1, col_c2 = st.columns([1,1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -2955,7 +3062,7 @@ with tab1:
                     ga_params = setup_ga_parameters_ui(
                         working_structure=working_structure,
                         substitutions=substitutions,
-                        load_structure_func=load_structure  
+                        load_structure_func=load_structure
                     )
                     st.session_state.ga_params = ga_params
 
