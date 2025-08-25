@@ -1,6 +1,6 @@
-# MACE-Interactive: GUI interface for MACE (and others - CHGNet, SevenNet) machine learning interatomic potential calculations
+# MACE-Interactive: GUI interface for universal machine learning interatomic potentials (u-MLIP) - MACE, CHGNet, SevenNet, Orb-v3, MatterSim 
 
-Run basic molecular dynamics/static simulations (**single-point energy, geometry optimization, elastic properties, phonons, genetic algorithm for finding the energetically most favorible atomic site configurations of substitutes/vacancies**) in an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE/CHGNet/SevenNet** interatomic potential. It is also possible to generate Python code with the set settings and run the simulations directly in the console (this option currently works for energies, geometry optimization, and elastic properties). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
+Run basic molecular dynamics/static simulations (**single-point energy, geometry optimization, elastic properties, phonons, genetic algorithm for finding the energetically most favorible atomic site configurations of substitutes/vacancies**) in an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE/CHGNet/SevenNet/Orb-v3/MatterSim interatomic potential**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (this option currently works for energies, geometry optimization, and elastic properties). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 
@@ -13,13 +13,13 @@ If you using my app, do not forgot from time to time to **update it with 'git pu
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
 Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000**. 
 
-Supported MACE MLIPs:  
-**Anorganic**:  
-- MP-0, MP-0b3, MPA, OMAT,  
-- MATPES-PBE-0, MATPES-r2SCAN-0  
+Currently supported u-MLIP:
+- [MACE](https://github.com/ACEsuit/mace)  
+- [CHGNet](https://github.com/CederGroupHub/chgnet)  
+- [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
+- [Orb-v3](https://github.com/orbital-materials/orb-models)  
+- [MatterSim](https://github.com/microsoft/mattersim)  
 
-**Organic**:
-- MACE-OFF23  
 ---
 ![MACE GUI illustration](images/Mace-1.png)
 
