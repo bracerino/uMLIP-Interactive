@@ -6,7 +6,7 @@ py3Dmol==2.5.0
 psutil
 gputil
 
-torch==2.4.0
+torch
 mattersim
 
 cuequivariance
