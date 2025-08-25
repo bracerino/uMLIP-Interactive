@@ -66,7 +66,7 @@ To run simulations with **MatterSim**:
       **python3 -m venv mattersim_env**  
   4) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mattersim_env/bin/activate**  
-  5) Install all the necessary Python packages: 
+  5) Install all the necessary Python packages:  
       **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU)))  
   6) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4b):  
       **streamlit run app.py**  
