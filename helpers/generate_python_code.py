@@ -54,8 +54,15 @@ try:
 except ImportError:
     ORB_AVAILABLE = False
 
+# Nequix imports
+try:
+    from nequix.calculator import NequixCalculator
+    NEQUIX_AVAILABLE = True
+except ImportError:
+    NEQUIX_AVAILABLE = False
+
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -63,6 +70,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AV
     print("  - SevenNet: pip install sevenn")
     print("  - MatterSim: pip install mattersim")
     print("  - ORB: pip install orb-models")
+    print("  - Nequix: pip install nequix")
     exit(1)
 else:
     available_models = []
@@ -76,14 +84,15 @@ else:
         available_models.append("MatterSim")
     if ORB_AVAILABLE:
         available_models.append("ORB")
+    if NEQUIX_AVAILABLE:
+        available_models.append("Nequix")
     print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
+
 
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
-    """
-    Generate a complete Python script for MACE calculations with all parameters properly configured.
-    """
+
 
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
@@ -1557,11 +1566,26 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     # Determine model type from selected model key
     is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
     is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
+    is_nequix = selected_model_key is not None and selected_model_key.startswith("Nequix")
     is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
     is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
 
-    if is_orb:
+    if is_nequix:
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing Nequix calculator...")
+    try:
+        from nequix.calculator import NequixCalculator
+
+        print(f"🎯 Using Nequix model: {model_size}")
+
+        calculator = NequixCalculator("{model_size}")
+        print(f"✅ Nequix {model_size} initialized successfully")
+
+    except Exception as e:
+        print(f"❌ Nequix initialization failed: {{e}}")
+        raise e'''
+    elif is_orb:
         # ORB setup
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing ORB calculator on {{device}}...")
