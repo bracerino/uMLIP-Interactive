@@ -13,7 +13,7 @@ If you using my app, do not forgot from time to time to **update it with 'git pu
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
 Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000**. 
 
-Currently supported u-MLIP:
+#### Currently supported u-MLIP:
 - [MACE](https://github.com/ACEsuit/mace)  
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
 - [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
