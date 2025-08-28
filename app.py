@@ -2687,7 +2687,7 @@ with st.sidebar:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
     selected_model = st.selectbox(
-        "Choose MLIP Model", list(MACE_MODELS.keys()))
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)", list(MACE_MODELS.keys()))
     model_size = MACE_MODELS[selected_model]
 
 
