@@ -1,4 +1,4 @@
-# MACE-Interactive: GUI interface for universal machine learning interatomic potentials (u-MLIP) - MACE, CHGNet, SevenNet, Orb-v3, MatterSim 
+# MACE-Interactive: GUI interface for universal machine learning interatomic potentials (u-MLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim 
 
 Run basic molecular dynamics/static simulations (**single-point energy, geometry optimization, elastic properties, phonons, genetic algorithm for finding the energetically most favorible atomic site configurations of substitutes/vacancies**) in an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE/CHGNet/SevenNet/Orb-v3/MatterSim interatomic potential**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (this option currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
@@ -18,7 +18,8 @@ Currently supported u-MLIP:
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
 - [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
-- [MatterSim](https://github.com/microsoft/mattersim)  
+- [MatterSim](https://github.com/microsoft/mattersim)
+- [Nequix](https://github.com/atomicarchitects/nequix)
 
 ---
 ![MACE GUI illustration](images/Mace-1.png)
