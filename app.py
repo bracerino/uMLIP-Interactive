@@ -2,7 +2,7 @@ from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide")
 
 
 import os
@@ -2631,7 +2631,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 
-st.title("MACE Molecular Dynamic Batch Structure Calculator")
+st.title("MLIP-Interactive: Compute properties with universal MLIPs")
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
