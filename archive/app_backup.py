@@ -2,7 +2,7 @@ from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
 
-st.set_page_config(page_title="MACE Molecular Dynamics Batch Structure Calculator", layout="wide")
+st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide")
 
 
 import os
@@ -1281,7 +1281,12 @@ except ImportError:
     PHONOPY_AVAILABLE = False
     print("⚠️ Phonopy not available for phonon calculations")
 
-
+#Nequix models
+try:
+    from nequix.calculator import NequixCalculator
+    NEQUIX_AVAILABLE = True
+except ImportError:
+    NEQUIX_AVAILABLE = False
 
 try:
     from chgnet.model.model import CHGNet
@@ -1548,6 +1553,9 @@ MACE_MODELS = {
     "ORB-v3 Conservative 20-neighbors OMAT": "orb_v3_conservative_20_omat",
     "ORB-v3 Direct 20-neighbors OMAT": "orb_v3_direct_20_omat",
     "ORB-v2 (Legacy)": "orb_v2",
+
+    # ========== NEQUIX MODELS ==========
+    "Nequix-MP-1 (Universal Materials)": "nequix-mp-1",
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1613,6 +1621,8 @@ def get_model_type_from_selection(selected_model_name):
         return "MatterSim", "Universal potential (89 elements, high T/P, specifically made for bulk materials)"
     elif "ORB" in selected_model_name:
         return "ORB", "Universal potential with confidence estimation"
+    elif "Nequix" in selected_model_name:
+        return "Nequix", "Universal materials potential (foundation model)"
     else:
         return "MACE-MP", "General materials (89 elements)"
 
@@ -1931,7 +1941,22 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_sevennet = selected_model.startswith("SevenNet")
         is_mattersim = selected_model.startswith("MatterSim")
         is_orb = selected_model.startswith("ORB")
-        if is_orb:
+        is_nequix = selected_model.startswith("Nequix")
+
+        if is_nequix:
+            # Nequix setup
+            log_queue.put("Setting up Nequix calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                calculator = NequixCalculator(model_size)
+                log_queue.put(f"✅ Nequix {model_size} initialized successfully")
+
+            except Exception as e:
+                log_queue.put(f"❌ Nequix initialization failed: {str(e)}")
+                return
+        elif is_orb:
             # ORB setup
             log_queue.put("Setting up ORB calculator...")
             log_queue.put(f"Selected model: {selected_model}")
@@ -2606,7 +2631,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 
-st.title("MACE Molecular Dynamic Batch Structure Calculator")
+st.title("MLIP-Interactive: Compute properties with universal MLIPs")
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
@@ -2662,7 +2687,7 @@ with st.sidebar:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
     selected_model = st.selectbox(
-        "Choose MLIP Model", list(MACE_MODELS.keys()))
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)", list(MACE_MODELS.keys()))
     model_size = MACE_MODELS[selected_model]
 
 
@@ -2671,11 +2696,18 @@ with st.sidebar:
     is_sevennet = selected_model.startswith("SevenNet")
 
     is_mattersim = selected_model.startswith("MatterSim")
+    is_nequix = selected_model.startswith("Nequix")
+
     if is_mattersim:
         if not MATTERSIM_AVAILABLE:
             st.error("❌ MatterSim not available! Please install: `pip install mattersim`")
             st.stop()
         st.info("🧠 **MatterSim**: Universal ML potential for bulk materials")
+    elif is_nequix:
+        if not NEQUIX_AVAILABLE:
+            st.error("❌ Nequix not available! Please install: `pip install nequix`")
+            st.stop()
+        st.info("🧠 **Nequix**: Foundation model for materials trained on MPtrj data")
     elif is_sevennet:
         if not SEVENNET_AVAILABLE:
             st.error("❌ SevenNet not available! Please install: `pip install sevenn`")
