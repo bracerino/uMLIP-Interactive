@@ -3049,7 +3049,7 @@ with tab5:
     • **For fast screening**: Any small model - Lower computational cost
     • **For complex systems**: Large models - Higher accuracy for difficult cases
     """)
-    
+
 with tab1:
     st.sidebar.header("Upload Structure Files")
     if not st.session_state.structures_locked:
@@ -3463,7 +3463,28 @@ with tab1:
                         st.subheader("✅ GA Configuration Summary")
 
                         total_atoms = len(working_structure)
-                        total_substitutions = sum(sub['n_substitute'] for sub in substitutions.values())
+                        # Calculate totals based on the new structure
+                        total_substitutions = 0
+                        total_vacancies = 0
+
+                        for element, sub_info in substitutions.items():
+                            if 'concentration_list' in sub_info:
+                                # New structure: use first concentration for display
+                                concentration = sub_info['concentration_list'][0]
+                                element_count = sub_info['element_count']
+                                n_substitute = int(element_count * concentration)
+
+                                if sub_info['new_element'] == 'VACANCY':
+                                    total_vacancies += n_substitute
+                                else:
+                                    total_substitutions += n_substitute
+                            else:
+                                # Fallback for old structure (shouldn't happen with new code)
+                                if 'n_substitute' in sub_info:
+                                    if sub_info['new_element'] == 'VACANCY':
+                                        total_vacancies += sub_info['n_substitute']
+                                    else:
+                                        total_substitutions += sub_info['n_substitute']
 
                         col_val1, col_val2, col_val3, col_val4 = st.columns(4)
 
@@ -3725,7 +3746,7 @@ with tab1:
 
     else:
         st.info("Upload structure files to begin")
-with tab_st:           
+with tab_st:
     if st.session_state.structures_locked:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
@@ -3919,10 +3940,10 @@ with tab_st:
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
-    
+
             if f"copied_{script_key}" not in st.session_state:
                 st.session_state[f"copied_{script_key}"] = False
-            
+
 
             st.download_button(
                     label="💾 Download Script",
@@ -3934,7 +3955,7 @@ with tab_st:
 
             with st.expander("📋 Generated Python Script", expanded=True):
                 st.code(script_content, language='python')
-                
+
 
                 st.info("""
                         **Usage Instructions:**
@@ -4048,7 +4069,13 @@ with tab2:
                     'stress_threshold': message.get('stress_threshold', 0.1),
                     'is_optimizing': True
                 }
-
+            elif message.get('type') == 'ga_combination_start':
+                st.session_state.current_ga_combination = {
+                    'combination_idx': message['combination_idx'],
+                    'total_combinations': message['total_combinations'],
+                    'combination_name': message['combination_name'],
+                    'combination_substitutions': message['combination_substitutions']
+                }
             elif message.get('type') == 'md_step':
                 structure_name = message['structure']
                 st.session_state.current_md_info = {
@@ -4076,7 +4103,10 @@ with tab2:
                         'phase': message['phase']
                     }
                     st.session_state.last_ga_progress_update = current_time
-
+            elif message.get('type') == 'reset_ga_progress':
+                st.session_state.ga_progress_info = {}
+                st.session_state.ga_structure_timings = []
+                st.session_state.last_ga_progress_update = 0
             elif message.get('type') == 'ga_structure_timing':
                 st.session_state.ga_structure_timings.append({
                     'run_id': message['run_id'],
@@ -4143,74 +4173,98 @@ with tab2:
             st.session_state.log_messages.append(str(message))
 
 
-    if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
-        if st.session_state.ga_progress_info:
-            ga_info = st.session_state.ga_progress_info
-            ga_params = st.session_state.get('ga_params', {})
+if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
+    if st.session_state.ga_progress_info:
+        ga_info = st.session_state.ga_progress_info
+        ga_params = st.session_state.get('ga_params', {})
 
-            current_run = ga_info['run_id'] + 1
-            total_runs = ga_params.get('num_runs', 1)
-            current_generation = ga_info['generation']
-            max_generations = ga_params.get('max_generations', 100)
-            current_structure = ga_info['current_structure']
-            total_structures = ga_info['total_structures']
+        current_run = ga_info['run_id'] + 1
+        total_runs = ga_params.get('num_runs', 1)
+        current_generation = ga_info['generation']
+        max_generations = ga_params.get('max_generations', 100)
+        current_structure = ga_info['current_structure']
+        total_structures = ga_info['total_structures']
 
-            if len(st.session_state.ga_structure_timings) >= 5:
-                recent_timings = st.session_state.ga_structure_timings[-5:]
-                avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
+        # Show current combination info if available
+        combination_info = ""
+        if 'current_ga_combination' in st.session_state:
+            combo_info = st.session_state.current_ga_combination
+            combo_idx = combo_info['combination_idx']
+            total_combos = combo_info['total_combinations']
+            combo_name = combo_info['combination_name']
+            combination_info = f" | Combination: {combo_name} ({combo_idx + 1}/{total_combos})"
 
+        if len(st.session_state.ga_structure_timings) >= 5:
+            recent_timings = st.session_state.ga_structure_timings[-5:]
+            avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
 
-                remaining_structures_this_gen = max(0, total_structures - current_structure)
-                remaining_generations = max(0, max_generations - current_generation)
-                remaining_runs = max(0, total_runs - current_run)
+            remaining_structures_this_gen = max(0, total_structures - current_structure)
+            remaining_generations = max(0, max_generations - current_generation)
+            remaining_runs = max(0, total_runs - current_run)
 
-                remaining_time_this_gen = remaining_structures_this_gen * avg_time_per_structure
-                remaining_time_this_run = remaining_generations * total_structures * avg_time_per_structure
-                remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
+            remaining_time_this_gen = remaining_structures_this_gen * avg_time_per_structure
+            remaining_time_this_run = remaining_generations * total_structures * avg_time_per_structure
+            remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
 
-                total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
+            total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
 
-
-                def format_time(seconds):
-                    if seconds < 60:
-                        return f"{seconds:.0f}s"
-                    elif seconds < 3600:
-                        return f"{seconds / 60:.1f}m"
-                    else:
-                        return f"{seconds / 3600:.1f}h"
-            else:
-                avg_time_per_structure = 0
-                total_remaining_time = 0
-
-            st.markdown("### 🧬 Genetic Algorithm Progress")
-
-            phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
-            progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}"
-
-            if total_runs > 0 and max_generations > 0 and total_structures > 0:
-                total_structures_overall = total_runs * max_generations * total_structures
-                completed_structures = ((current_run - 1) * max_generations * total_structures +
-                                        current_generation * total_structures + current_structure)
-                overall_progress = min(1.0, completed_structures / total_structures_overall)
-            else:
-                overall_progress = 0.0
-
-            st.progress(overall_progress, text=progress_text)
-
-
-            col_ga1, col_ga2, col_ga3 = st.columns(3)
-
-            with col_ga1:
-                st.metric("Run", f"{current_run}/{total_runs}")
-
-            with col_ga2:
-                st.metric("Generation", f"{current_generation}/{max_generations}")
-
-            with col_ga3:
-                if total_remaining_time > 0:
-                    st.metric("Est. Remaining", format_time(total_remaining_time))
+            def format_time(seconds):
+                if seconds < 60:
+                    return f"{seconds:.0f}s"
+                elif seconds < 3600:
+                    return f"{seconds / 60:.1f}m"
                 else:
-                    st.metric("Est. Remaining", "Calculating...")
+                    return f"{seconds / 3600:.1f}h"
+        else:
+            avg_time_per_structure = 0
+            total_remaining_time = 0
+
+        st.markdown("### 🧬 Genetic Algorithm Progress")
+
+        phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
+        progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}{combination_info}"
+
+        if total_runs > 0 and max_generations > 0 and total_structures > 0:
+            total_structures_overall = total_runs * max_generations * total_structures
+            completed_structures = ((current_run - 1) * max_generations * total_structures +
+                                    current_generation * total_structures + current_structure)
+            overall_progress = min(1.0, completed_structures / total_structures_overall)
+        else:
+            overall_progress = 0.0
+
+        st.progress(overall_progress, text=progress_text)
+
+        col_ga1, col_ga2, col_ga3 = st.columns(3)
+
+        with col_ga1:
+            st.metric("Run", f"{current_run}/{total_runs}")
+
+        with col_ga2:
+            st.metric("Generation", f"{current_generation}/{max_generations}")
+
+        with col_ga3:
+            if total_remaining_time > 0:
+                st.metric("Est. Remaining", format_time(total_remaining_time))
+            else:
+                st.metric("Est. Remaining", "Calculating...")
+
+        # Show current combination details if in sweep mode
+        if 'current_ga_combination' in st.session_state:
+            combo_info = st.session_state.current_ga_combination
+            st.info(f"🎯 Current concentration: {combo_info['combination_name']}")
+
+            # Show substitution details
+            substitution_details = []
+            for elem, sub_info in combo_info['combination_substitutions'].items():
+                conc_pct = sub_info['concentration'] * 100
+                new_elem = sub_info['new_element']
+                if new_elem == 'VACANCY':
+                    substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {conc_pct:.1f}% vacant")
+                else:
+                    substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
+
+            if substitution_details:
+                st.caption(" | ".join(substitution_details))
 
     elif st.session_state.calculation_running:
         if st.session_state.current_structure_progress:
