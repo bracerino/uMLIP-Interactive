@@ -800,7 +800,7 @@ class GeneticAlgorithmOptimizer:
                     f"Run {self.run_id + 1} - Generation {generation}: Best={best_fitness:.6f} eV, Avg={avg_fitness:.6f} eV, Worst={worst_fitness:.6f} eV")
 
             if generation > 20:
-                recent_best = [f['best'] for f in self.fitness_history[-10:]]
+                recent_best = [f['best'] for f in self.fitness_history[-50:]]
                 if max(recent_best) - min(recent_best) < self.ga_params.get('convergence_threshold', 1e-6):
                     self.log_queue.put(f"Run {self.run_id + 1} - Converged at generation {generation}")
                     break
@@ -2880,7 +2880,7 @@ def display_ga_overview():
     - **🎯 GUI Parameters**:
       - **Max Generations** = maximum number of evolution cycles
       - **Elitism Ratio** = percentage of best arrangements automatically kept each generation (prevents losing good solutions)
-      - **Convergence Threshold** = stops early when energy improvements become smaller than this value (the convergence is considered only above 20 generations and when 10 generations fulfill this treshold)
+      - **Convergence Threshold** = stops early when energy improvements become smaller than this value (the convergence is considered only above 20 generations and when 50 consecutive generations fulfill this treshold)
 
     #### **7. Multiple Independent Runs**
     - Runs the entire GA process multiple times with different random starting points
