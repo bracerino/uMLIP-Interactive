@@ -90,19 +90,66 @@ except ImportError:
 import torch
 
 
+# Add this after the existing THREAD_COUNT_FILE definition
+SETTINGS_FILE = "default_settings.json"
+
+
+
+
+DEFAULT_SETTINGS = {
+    'thread_count': 1,
+    'selected_model': "MACE-MP-0b3 (medium) - Latest",
+    'device': "cpu",
+    'dtype': "float64"
+}
+def load_default_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return DEFAULT_SETTINGS.copy()
+    return DEFAULT_SETTINGS.copy()
+
+def save_default_settings(settings):
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f)
+        return True
+    except:
+        return False
+
+
+if 'default_settings' not in st.session_state:
+    st.session_state.default_settings = load_default_settings()
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = st.session_state.default_settings['thread_count']
+
+os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+torch.set_num_threads(st.session_state.thread_count)
+
 
 #os.environ['OMP_NUM_THREADS'] = '8'
 #torch.set_num_threads(8)
+import json
+
+# Settings files
 THREAD_COUNT_FILE = "thread_count.txt"
-default_thread_count = 1
-if os.path.exists(THREAD_COUNT_FILE):
-    try:
-        with open(THREAD_COUNT_FILE, 'r') as f:
-            default_thread_count = int(f.read().strip())
-    except (ValueError, FileNotFoundError):
-        default_thread_count = 1
-os.environ['OMP_NUM_THREADS'] = str(default_thread_count)
-torch.set_num_threads(default_thread_count)
+SETTINGS_FILE = "default_settings.json"
+
+
+
+
+
+if 'default_settings' not in st.session_state:
+    st.session_state.default_settings = load_default_settings()
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = st.session_state.default_settings['thread_count']
+
+os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+torch.set_num_threads(st.session_state.thread_count)
 
 
 if 'md_trajectories' not in st.session_state:
@@ -495,7 +542,6 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
 
 
 def append_to_backup_file(result, backup_file_path):
-    """Append result information to backup file"""
     try:
         backup_dir = os.path.dirname(backup_file_path)
         os.makedirs(backup_dir, exist_ok=True)
@@ -528,7 +574,6 @@ def append_to_backup_file(result, backup_file_path):
 
 
 def save_optimized_structure_backup(result, backup_dir):
-    """Save optimized structure as POSCAR in backup directory"""
     try:
         # Only save if this is a geometry optimization with a structure
         if (result.get('calc_type') == 'Geometry Optimization' and 
@@ -1454,7 +1499,6 @@ class OptimizationLogger:
             })
 
     def _calculate_time_estimates(self, optimizer):
-        """Calculate time estimates based on recent step times"""
         if len(self.step_times) < 2:
             return 0, None, None
         
@@ -1473,7 +1517,6 @@ class OptimizationLogger:
         return avg_step_time, estimated_remaining_time, total_estimated_time
 
     def _format_time(self, seconds):
-        """Format time in human-readable format"""
         if seconds < 60:
             return f"{seconds:.0f}s"
         elif seconds < 3600:
@@ -1499,7 +1542,6 @@ def create_xyz_content(trajectory_data, structure_name):
         a, b, c = np.linalg.norm(cell, axis=1)
         
         def safe_angle(v1, v2):
-            """Calculate angle between vectors with numerical safety"""
             cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             cos_angle = np.clip(cos_angle, -1.0, 1.0)
             return np.degrees(np.arccos(cos_angle))
@@ -2020,7 +2062,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put(f"Device: {device}")
 
             try:
-                # Determine model path based on model_size
                 if model_size == "mattersim-1m":
                     model_path = "MatterSim-v1.0.0-1M.pth"
                 elif model_size == "mattersim-5m":
@@ -2057,10 +2098,17 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             chgnet_version = model_size.split("-")[1]
             log_queue.put(f"CHGNet version: {chgnet_version}")
             log_queue.put(f"Device: {device}")
+            log_queue.put("Note: CHGNet requires float32 precision")
 
             try:
+                original_dtype = torch.get_default_dtype()
+                torch.set_default_dtype(torch.float32)
+
                 chgnet = CHGNet.load(model_name=chgnet_version, use_device=device, verbose=False)
                 calculator = CHGNetCalculator(model=chgnet, use_device=device)
+
+                torch.set_default_dtype(original_dtype)
+
                 log_queue.put(f"✅ CHGNet {chgnet_version} initialized successfully on {device}")
             except Exception as e:
                 log_queue.put(f"❌ CHGNet initialization failed on {device}: {str(e)}")
@@ -2077,13 +2125,15 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     return
 
         elif is_sevennet:
-            # SevenNet setup
             log_queue.put("Setting up SevenNet calculator...")
             log_queue.put(f"Selected model: {selected_model}")
             log_queue.put(f"Device: {device}")
+            log_queue.put("Note: SevenNet requires float32 precision")
 
             try:
-                # Parse model and modal from the model_size
+                original_dtype = torch.get_default_dtype()
+                torch.set_default_dtype(torch.float32)
+
                 if model_size == "7net-mf-ompa-mpa":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
@@ -2091,9 +2141,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
                 else:
-                    # Standard models without modal parameter
                     calculator = SevenNetCalculator(model=model_size, device=device)
                     log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
+
+                torch.set_default_dtype(original_dtype)
 
             except Exception as e:
                 log_queue.put(f"❌ SevenNet initialization failed on {device}: {str(e)}")
@@ -2717,8 +2768,18 @@ with st.sidebar:
     else:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
+    defaults = st.session_state.default_settings
+    model_keys = list(MACE_MODELS.keys())
+
+    default_model_index = 0
+    if defaults['selected_model'] in model_keys:
+        default_model_index = model_keys.index(defaults['selected_model'])
+
     selected_model = st.selectbox(
-        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)", list(MACE_MODELS.keys()))
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)",
+        model_keys,
+        index=default_model_index
+    )
     model_size = MACE_MODELS[selected_model]
 
 
@@ -2761,45 +2822,58 @@ with st.sidebar:
                 st.error("❌ MACE models not available! Please install: 'pip install mace-torch'")
             st.info(f"🔬 **{model_type}**: {description}")
 
-    cols1, cols2 = st.columns([1,1])
+    cols1, cols2 = st.columns([1, 1])
     with cols1:
+        default_device_index = 0 if defaults['device'] == "cpu" else 1
         device_option = st.radio(
             "Compute Device",
             ["CPU", "GPU (CUDA)"],
+            index=default_device_index,
             help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
         )
         device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
 
     with cols2:
-        if not is_chgnet:  # Only show precision for MACE
+        if not selected_model.startswith("CHGNet"):
+            default_precision_index = 0 if defaults['dtype'] == "float32" else 1
             precision_option = st.radio(
                 "Precision",
                 ["Float32", "Float64"],
-                index=1,
+                index=default_precision_index,
                 help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
             )
             dtype = "float32" if precision_option == "Float32" else "float64"
         else:
             st.info("CHGNet uses fixed precision.")
             dtype = "float32"
-    col_c1, col_c2 = st.columns([1,1])
+
+    col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
-            "CPU Threads", 
-            min_value=1, 
-            max_value=32, 
+            "CPU Threads",
+            min_value=1,
+            max_value=32,
             value=st.session_state.thread_count,
             step=1,
             help="Number of CPU threads for calculations"
         )
-        
+
     with col_c2:
-        if st.button("💾 Save Thread"):
-            with open(THREAD_COUNT_FILE, 'w') as f:
-                f.write(str(st.session_state.thread_count))
-            os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
-            torch.set_num_threads(st.session_state.thread_count)
-            st.toast("✅ Thread count saved and applied.")
+        if st.button("💾 Save as Default"):
+            new_settings = {
+                'thread_count': st.session_state.thread_count,
+                'selected_model': selected_model,
+                'device': device,
+                'dtype': dtype
+            }
+
+            if save_default_settings(new_settings):
+                st.session_state.default_settings = new_settings
+                os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+                torch.set_num_threads(st.session_state.thread_count)
+                st.toast("✅ All settings saved as default!")
+            else:
+                st.toast("❌ Failed to save settings")
 css = '''
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
@@ -4172,99 +4246,98 @@ with tab2:
         else:
             st.session_state.log_messages.append(str(message))
 
+    if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
+        if st.session_state.ga_progress_info:
+            ga_info = st.session_state.ga_progress_info
+            ga_params = st.session_state.get('ga_params', {})
 
-if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
-    if st.session_state.ga_progress_info:
-        ga_info = st.session_state.ga_progress_info
-        ga_params = st.session_state.get('ga_params', {})
+            current_run = ga_info['run_id'] + 1
+            total_runs = ga_params.get('num_runs', 1)
+            current_generation = ga_info['generation']
+            max_generations = ga_params.get('max_generations', 100)
+            current_structure = ga_info['current_structure']
+            total_structures = ga_info['total_structures']
 
-        current_run = ga_info['run_id'] + 1
-        total_runs = ga_params.get('num_runs', 1)
-        current_generation = ga_info['generation']
-        max_generations = ga_params.get('max_generations', 100)
-        current_structure = ga_info['current_structure']
-        total_structures = ga_info['total_structures']
+            # Show current combination info if available
+            combination_info = ""
+            if 'current_ga_combination' in st.session_state:
+                combo_info = st.session_state.current_ga_combination
+                combo_idx = combo_info['combination_idx']
+                total_combos = combo_info['total_combinations']
+                combo_name = combo_info['combination_name']
+                combination_info = f" | Combination: {combo_name} ({combo_idx + 1}/{total_combos})"
 
-        # Show current combination info if available
-        combination_info = ""
-        if 'current_ga_combination' in st.session_state:
-            combo_info = st.session_state.current_ga_combination
-            combo_idx = combo_info['combination_idx']
-            total_combos = combo_info['total_combinations']
-            combo_name = combo_info['combination_name']
-            combination_info = f" | Combination: {combo_name} ({combo_idx + 1}/{total_combos})"
+            if len(st.session_state.ga_structure_timings) >= 5:
+                recent_timings = st.session_state.ga_structure_timings[-5:]
+                avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
 
-        if len(st.session_state.ga_structure_timings) >= 5:
-            recent_timings = st.session_state.ga_structure_timings[-5:]
-            avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
+                remaining_structures_this_gen = max(0, total_structures - current_structure)
+                remaining_generations = max(0, max_generations - current_generation)
+                remaining_runs = max(0, total_runs - current_run)
 
-            remaining_structures_this_gen = max(0, total_structures - current_structure)
-            remaining_generations = max(0, max_generations - current_generation)
-            remaining_runs = max(0, total_runs - current_run)
+                remaining_time_this_gen = remaining_structures_this_gen * avg_time_per_structure
+                remaining_time_this_run = remaining_generations * total_structures * avg_time_per_structure
+                remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
 
-            remaining_time_this_gen = remaining_structures_this_gen * avg_time_per_structure
-            remaining_time_this_run = remaining_generations * total_structures * avg_time_per_structure
-            remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
+                total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
 
-            total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
-
-            def format_time(seconds):
-                if seconds < 60:
-                    return f"{seconds:.0f}s"
-                elif seconds < 3600:
-                    return f"{seconds / 60:.1f}m"
-                else:
-                    return f"{seconds / 3600:.1f}h"
-        else:
-            avg_time_per_structure = 0
-            total_remaining_time = 0
-
-        st.markdown("### 🧬 Genetic Algorithm Progress")
-
-        phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
-        progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}{combination_info}"
-
-        if total_runs > 0 and max_generations > 0 and total_structures > 0:
-            total_structures_overall = total_runs * max_generations * total_structures
-            completed_structures = ((current_run - 1) * max_generations * total_structures +
-                                    current_generation * total_structures + current_structure)
-            overall_progress = min(1.0, completed_structures / total_structures_overall)
-        else:
-            overall_progress = 0.0
-
-        st.progress(overall_progress, text=progress_text)
-
-        col_ga1, col_ga2, col_ga3 = st.columns(3)
-
-        with col_ga1:
-            st.metric("Run", f"{current_run}/{total_runs}")
-
-        with col_ga2:
-            st.metric("Generation", f"{current_generation}/{max_generations}")
-
-        with col_ga3:
-            if total_remaining_time > 0:
-                st.metric("Est. Remaining", format_time(total_remaining_time))
+                def format_time(seconds):
+                    if seconds < 60:
+                        return f"{seconds:.0f}s"
+                    elif seconds < 3600:
+                        return f"{seconds / 60:.1f}m"
+                    else:
+                        return f"{seconds / 3600:.1f}h"
             else:
-                st.metric("Est. Remaining", "Calculating...")
+                avg_time_per_structure = 0
+                total_remaining_time = 0
 
-        # Show current combination details if in sweep mode
-        if 'current_ga_combination' in st.session_state:
-            combo_info = st.session_state.current_ga_combination
-            st.info(f"🎯 Current concentration: {combo_info['combination_name']}")
+            st.markdown("### 🧬 Genetic Algorithm Progress")
 
-            # Show substitution details
-            substitution_details = []
-            for elem, sub_info in combo_info['combination_substitutions'].items():
-                conc_pct = sub_info['concentration'] * 100
-                new_elem = sub_info['new_element']
-                if new_elem == 'VACANCY':
-                    substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {conc_pct:.1f}% vacant")
+            phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
+            progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}{combination_info}"
+
+            if total_runs > 0 and max_generations > 0 and total_structures > 0:
+                total_structures_overall = total_runs * max_generations * total_structures
+                completed_structures = ((current_run - 1) * max_generations * total_structures +
+                                        current_generation * total_structures + current_structure)
+                overall_progress = min(1.0, completed_structures / total_structures_overall)
+            else:
+                overall_progress = 0.0
+
+            st.progress(overall_progress, text=progress_text)
+
+            col_ga1, col_ga2, col_ga3 = st.columns(3)
+
+            with col_ga1:
+                st.metric("Run", f"{current_run}/{total_runs}")
+
+            with col_ga2:
+                st.metric("Generation", f"{current_generation}/{max_generations}")
+
+            with col_ga3:
+                if total_remaining_time > 0:
+                    st.metric("Est. Remaining", format_time(total_remaining_time))
                 else:
-                    substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
+                    st.metric("Est. Remaining", "Calculating...")
 
-            if substitution_details:
-                st.caption(" | ".join(substitution_details))
+            # Show current combination details if in sweep mode
+            if 'current_ga_combination' in st.session_state:
+                combo_info = st.session_state.current_ga_combination
+                st.info(f"🎯 Current concentration: {combo_info['combination_name']}")
+
+                # Show substitution details
+                substitution_details = []
+                for elem, sub_info in combo_info['combination_substitutions'].items():
+                    conc_pct = sub_info['concentration'] * 100
+                    new_elem = sub_info['new_element']
+                    if new_elem == 'VACANCY':
+                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {conc_pct:.1f}% vacant")
+                    else:
+                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
+
+                if substitution_details:
+                    st.caption(" | ".join(substitution_details))
 
     elif st.session_state.calculation_running:
         if st.session_state.current_structure_progress:
