@@ -1,9 +1,7 @@
 from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
-
 st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide")
-
 
 import os
 import pandas as pd
@@ -34,7 +32,6 @@ from helpers.monitor_resources import *
 from helpers.mace_cards import *
 from helpers.generate_python_code import *
 
-
 from helpers.MD_settings import (
     setup_md_parameters_ui,
     run_md_simulation,
@@ -43,15 +40,12 @@ from helpers.MD_settings import (
     export_md_results
 )
 
-
-
 from helpers.ga_optimization_module import (
     run_ga_optimization,
     setup_ga_parameters_ui,
     setup_substitution_ui,
     display_ga_results, display_ga_overview
 )
-
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -73,7 +67,6 @@ MACE_IMPORT_METHOD = None
 MACE_AVAILABLE = False
 MACE_OFF_AVAILABLE = False
 
-
 import numpy as np
 from ase.phonons import Phonons
 from ase.dft.kpoints import bandpath
@@ -89,12 +82,8 @@ except ImportError:
 
 import torch
 
-
 # Add this after the existing THREAD_COUNT_FILE definition
 SETTINGS_FILE = "default_settings.json"
-
-
-
 
 DEFAULT_SETTINGS = {
     'thread_count': 1,
@@ -102,6 +91,8 @@ DEFAULT_SETTINGS = {
     'device': "cpu",
     'dtype': "float64"
 }
+
+
 def load_default_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -110,6 +101,7 @@ def load_default_settings():
         except:
             return DEFAULT_SETTINGS.copy()
     return DEFAULT_SETTINGS.copy()
+
 
 def save_default_settings(settings):
     try:
@@ -129,18 +121,13 @@ if 'thread_count' not in st.session_state:
 os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
 torch.set_num_threads(st.session_state.thread_count)
 
-
-#os.environ['OMP_NUM_THREADS'] = '8'
-#torch.set_num_threads(8)
+# os.environ['OMP_NUM_THREADS'] = '8'
+# torch.set_num_threads(8)
 import json
 
 # Settings files
 THREAD_COUNT_FILE = "thread_count.txt"
 SETTINGS_FILE = "default_settings.json"
-
-
-
-
 
 if 'default_settings' not in st.session_state:
     st.session_state.default_settings = load_default_settings()
@@ -151,12 +138,10 @@ if 'thread_count' not in st.session_state:
 os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
 torch.set_num_threads(st.session_state.thread_count)
 
-
 if 'md_trajectories' not in st.session_state:
     st.session_state.md_trajectories = {}
 if 'current_md_info' not in st.session_state:
     st.session_state.current_md_info = {}
-
 
 if 'thread_count' not in st.session_state:
     st.session_state.thread_count = default_thread_count
@@ -539,8 +524,6 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
         }
 
 
-
-
 def append_to_backup_file(result, backup_file_path):
     try:
         backup_dir = os.path.dirname(backup_file_path)
@@ -572,14 +555,13 @@ def append_to_backup_file(result, backup_file_path):
         pass
 
 
-
 def save_optimized_structure_backup(result, backup_dir):
     try:
         # Only save if this is a geometry optimization with a structure
-        if (result.get('calc_type') == 'Geometry Optimization' and 
-            'structure' in result and result['structure'] and 
-            result.get('energy') is not None):
-            
+        if (result.get('calc_type') == 'Geometry Optimization' and
+                'structure' in result and result['structure'] and
+                result.get('energy') is not None):
+
             structure = result['structure']
             name = result['name']
 
@@ -591,7 +573,6 @@ def save_optimized_structure_backup(result, backup_dir):
             base_name = os.path.splitext(name)[0]
             poscar_filename = f"{base_name}_optimized_POSCAR.vasp"
             poscar_path = os.path.join(structures_dir, poscar_filename)
-            
 
             from pymatgen.io.ase import AseAtomsAdaptor
             from ase.io import write
@@ -628,18 +609,18 @@ def save_optimized_structure_backup(result, backup_dir):
                 f.write(f"  β = {lattice.beta:.3f}°\n")
                 f.write(f"  γ = {lattice.gamma:.3f}°\n")
                 f.write(f"  Volume = {lattice.volume:.6f} Å³\n\n")
-                
+
                 # Composition
                 f.write(f"Composition: {structure.composition.reduced_formula}\n")
                 f.write(f"Number of atoms: {len(structure)}\n\n")
-                
+
                 f.write(f"Optimized POSCAR saved as: {poscar_filename}\n")
-                
+
             return poscar_path
-            
+
     except Exception as e:
         pass
-    
+
     return None
 
 
@@ -651,14 +632,12 @@ def save_ga_best_structure_backup(ga_results, structure_name, backup_dir, run_id
         best_structure = ga_results['best_structure']
         best_energy = ga_results['best_energy']
 
-
         ga_structures_dir = os.path.join(backup_dir, "ga_optimized_structures")
         os.makedirs(ga_structures_dir, exist_ok=True)
 
         base_name = os.path.splitext(structure_name)[0]
         poscar_filename = f"{base_name}_ga_run_{run_id + 1}_best_POSCAR.vasp"
         poscar_path = os.path.join(ga_structures_dir, poscar_filename)
-
 
         from pymatgen.io.ase import AseAtomsAdaptor
         from ase.io import write
@@ -994,9 +973,8 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
             ase_cell = atoms.get_cell()
 
-
-            npoints_per_segment = phonon_params.get('npoints', 151)  
-            total_npoints = phonon_params.get('total_npoints', 501)  
+            npoints_per_segment = phonon_params.get('npoints', 151)
+            total_npoints = phonon_params.get('total_npoints', 501)
 
             log_queue.put(f"  Using {npoints_per_segment} points per segment")
 
@@ -1063,7 +1041,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     unique_label_positions.append(cumulative_distance[i])
                     unique_labels.append(label)
                     seen_labels.add(label)
-                elif label and i == len(path_labels) - 1: 
+                elif label and i == len(path_labels) - 1:
                     unique_label_positions.append(cumulative_distance[i])
                     if label not in unique_labels:
                         unique_labels.append(label)
@@ -1294,12 +1272,12 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
         return {
             'success': True,
-            'frequencies': frequencies,  
+            'frequencies': frequencies,
             'kpoints': kpoints_band,
             'kpoint_distances': np.array(cumulative_distance[:-1]) if len(cumulative_distance) > len(
-                kpoints_band) else np.array(cumulative_distance),  
-            'kpoint_labels': unique_labels,  
-            'kpoint_label_positions': unique_label_positions,  
+                kpoints_band) else np.array(cumulative_distance),
+            'kpoint_labels': unique_labels,
+            'kpoint_label_positions': unique_label_positions,
             'dos_energies': dos_frequencies,  # meV
             'dos': dos_values,
             'thermodynamics': thermo_props,
@@ -1308,7 +1286,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             'imaginary_modes': int(imaginary_count),
             'min_frequency': float(min_frequency),
             'method': 'Pymatgen+Phonopy',
-            'enhanced_kpoints': True  
+            'enhanced_kpoints': True
         }
 
     except Exception as e:
@@ -1341,9 +1319,10 @@ except ImportError:
     PHONOPY_AVAILABLE = False
     print("⚠️ Phonopy not available for phonon calculations")
 
-#Nequix models
+# Nequix models
 try:
     from nequix.calculator import NequixCalculator
+
     NEQUIX_AVAILABLE = True
 except ImportError:
     NEQUIX_AVAILABLE = False
@@ -1351,6 +1330,7 @@ except ImportError:
 try:
     from chgnet.model.model import CHGNet
     from chgnet.model.dynamics import CHGNetCalculator
+
     CHGNET_AVAILABLE = True
     CHGNET_IMPORT_METHOD = "CHGNet"
 except ImportError:
@@ -1359,50 +1339,54 @@ except ImportError:
 # MatterSim
 try:
     from mattersim.forcefield import MatterSimCalculator
+
     MATTERSIM_AVAILABLE = True
 except ImportError:
     MATTERSIM_AVAILABLE = False
 
-#Orb-Models
+# Orb-Models
 try:
     from orb_models.forcefield import pretrained
     from orb_models.forcefield.calculator import ORBCalculator
+
     ORB_AVAILABLE = True
 except ImportError:
     ORB_AVAILABLE = False
 
-
-#try:
+# try:
 #    from orb_models.forcefield import pretrained
 #    from orb_models.forcefield.calculator import ORBCalculator
 #    print("✅ ORB imports successful")
 #    print("Available models:", [attr for attr in dir(pretrained) if not attr.startswith('_')])
-#except ImportError as e:
+# except ImportError as e:
 #    print(f"❌ Import failed: {e}")
 
-#Added for torch 2.6 and SevenNet
+# Added for torch 2.6 and SevenNet
 torch.serialization.add_safe_globals([slice])
 try:
     from sevenn.calculator import SevenNetCalculator
+
     SEVENNET_AVAILABLE = True
 except ImportError:
     SEVENNET_AVAILABLE = False
 
-
 try:
     from mace.calculators import mace_mp, mace_off
+
     MACE_IMPORT_METHOD = "mace_mp_and_off"
     MACE_AVAILABLE = True
     MACE_OFF_AVAILABLE = True
 except ImportError:
     try:
         from mace.calculators import mace_mp
+
         MACE_IMPORT_METHOD = "mace_mp"
         MACE_AVAILABLE = True
         MACE_OFF_AVAILABLE = False
     except ImportError:
         try:
             from mace.calculators import MACECalculator
+
             MACE_IMPORT_METHOD = "MACECalculator"
             MACE_AVAILABLE = True
             MACE_OFF_AVAILABLE = False
@@ -1410,11 +1394,13 @@ except ImportError:
             try:
                 import mace
                 from mace.calculators import MACECalculator
+
                 MACE_IMPORT_METHOD = "MACECalculator"
                 MACE_AVAILABLE = True
                 MACE_OFF_AVAILABLE = False
             except ImportError:
                 MACE_AVAILABLE = False
+
 
 class OptimizationLogger:
     def __init__(self, log_queue, structure_name):
@@ -1423,20 +1409,20 @@ class OptimizationLogger:
         self.step_count = 0
         self.trajectory = []
         self.previous_energy = None
-        
+
         self.step_start_time = None
         self.step_times = deque(maxlen=10)  # Keep last 10 step times for averaging
         self.optimization_start_time = time.time()
-        
+
     def __call__(self, optimizer=None):
         current_time = time.time()
-        
+
         if self.step_start_time is not None:
             step_duration = current_time - self.step_start_time
             self.step_times.append(step_duration)
-        
+
         self.step_start_time = current_time
-        
+
         if optimizer is not None and hasattr(optimizer, 'atoms'):
             atoms = optimizer.atoms
             self.step_count += 1
@@ -1461,21 +1447,21 @@ class OptimizationLogger:
             self.trajectory.append(trajectory_step)
 
             avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
-            
+
             elapsed_time = current_time - self.optimization_start_time
             log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
-                          f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
-            
-            #if avg_step_time > 0:
+                           f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+
+            # if avg_step_time > 0:
             #    log_message += f" | Avg/step: {avg_step_time:.1f}s"
             #    if estimated_remaining_time:
             #        log_message += f" | Est. remaining: {self._format_time(estimated_remaining_time)}"
             #        log_message += f" | Total est.: {self._format_time(total_estimated_time)}"
-            
-            #log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
-            
+
+            # log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
+
             self.log_queue.put(log_message)
-            
+
             # Send enhanced progress data
             self.log_queue.put({
                 'type': 'opt_step',
@@ -1501,19 +1487,19 @@ class OptimizationLogger:
     def _calculate_time_estimates(self, optimizer):
         if len(self.step_times) < 2:
             return 0, None, None
-        
+
         avg_step_time = np.mean(list(self.step_times)[1:]) if len(self.step_times) > 1 else self.step_times[0]
-        
+
         max_steps = getattr(optimizer, 'max_steps', None)
         if max_steps is None:
             return avg_step_time, None, None
-        
+
         remaining_steps = max_steps - self.step_count
         estimated_remaining_time = remaining_steps * avg_step_time if remaining_steps > 0 else 0
-        
+
         elapsed_time = time.time() - self.optimization_start_time
         total_estimated_time = elapsed_time + estimated_remaining_time
-        
+
         return avg_step_time, estimated_remaining_time, total_estimated_time
 
     def _format_time(self, seconds):
@@ -1525,6 +1511,7 @@ class OptimizationLogger:
         else:
             hours = seconds / 3600
             return f"{hours:.1f}h"
+
 
 def create_xyz_content(trajectory_data, structure_name):
     xyz_content = ""
@@ -1540,23 +1527,23 @@ def create_xyz_content(trajectory_data, structure_name):
         xyz_content += f"{len(positions)}\n"
 
         a, b, c = np.linalg.norm(cell, axis=1)
-        
+
         def safe_angle(v1, v2):
             cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             cos_angle = np.clip(cos_angle, -1.0, 1.0)
             return np.degrees(np.arccos(cos_angle))
-        
-        alpha = safe_angle(cell[1], cell[2])  
-        beta = safe_angle(cell[0], cell[2])  
-        gamma = safe_angle(cell[0], cell[1])  
+
+        alpha = safe_angle(cell[1], cell[2])
+        beta = safe_angle(cell[0], cell[2])
+        gamma = safe_angle(cell[0], cell[1])
 
         cell_flat = cell.flatten()
         lattice_str = " ".join([f"{x:.6f}" for x in cell_flat])
-        
+
         comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
                    f'Lattice="{lattice_str}" '
                    f'Properties=species:S:1:pos:R:3:forces:R:3')
-        
+
         xyz_content += f"{comment}\n"
 
         for i, (symbol, pos, force) in enumerate(zip(symbols, positions, forces)):
@@ -1565,25 +1552,23 @@ def create_xyz_content(trajectory_data, structure_name):
     return xyz_content
 
 
-
 MACE_MODELS = {
-    "MACE-MP-0b3 (medium) - Latest": "medium-0b3", 
+    "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
     "MACE-MP-0 (small) - Original": "small",
-    "MACE-MP-0 (medium) - Original": "medium", 
+    "MACE-MP-0 (medium) - Original": "medium",
     "MACE-MP-0 (large) - Original": "large",
-    
+
     "MACE-MP-0b (small) - Improved": "small-0b",
     "MACE-MP-0b (medium) - Improved": "medium-0b",
-    
+
     "MACE-MP-0b2 (small) - Enhanced": "small-0b2",
     "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
     "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
-     
-    
+
     "MACE-MPA-0 (medium) - Latest": "medium-mpa-0",
-    
+
     "MACE-OMAT-0 (medium)": "medium-omat-0",
-    
+
     # ========== MATPES MODELS (need full URLs) ==========
     "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
     "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
@@ -1592,14 +1577,14 @@ MACE_MODELS = {
     "MACE-OFF23 (small) - Organic": "small",
     "MACE-OFF23 (medium) - Organic": "medium",
     "MACE-OFF23 (large) - Organic": "large",
-# ========== MACE-OFF MODELS (Organic Force Fields) ==========
+    # ========== MACE-OFF MODELS (Organic Force Fields) ==========
     "CHGNet-0.3.0 (Latest Universal)": "chgnet-0.3.0",
     "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
 
-# ========== SEVENNET MODELS ==========
+    # ========== SEVENNET MODELS ==========
     "SevenNet-0 (Latest Universal)": "7net-0",
     "SevenNet-L3I5": "7net-l3i5",
-# ========== MATTERSIM MODELS ==========
+    # ========== MATTERSIM MODELS ==========
     "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
     "MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
     # ========== ORB MODELS ==========
@@ -1636,7 +1621,6 @@ MACE_ELEMENTS = {
                   "Ac", "Th", "Pa", "U", "Np", "Pu"],
     "MACE-OFF": ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 
-
 }
 
 
@@ -1655,17 +1639,18 @@ def view_structure(structure, height=300, width=400):
     except:
         return f"<div style='height:{height}px;width:{width}px;background-color:#f0f0f0;display:flex;align-items:center;justify-content:center;'>Structure preview unavailable</div>"
 
+
 def check_mace_compatibility(structure, selected_model_key="MACE-MP-0 (medium) - Original"):
     elements = list(set([site.specie.symbol for site in structure]))
-    
+
     if "OFF" in selected_model_key:
         model_type = "MACE-OFF"
     else:
         model_type = "MACE-MP-0"
-    
+
     supported_elements = MACE_ELEMENTS[model_type]
     unsupported = [elem for elem in elements if elem not in supported_elements]
-    
+
     return len(unsupported) == 0, unsupported, elements, model_type
 
 
@@ -1837,6 +1822,7 @@ def setup_optimization_constraints(atoms, optimization_params):
         cell_filter = create_cell_filter(atoms, optimization_params)
         return cell_filter, "both"
 
+
 class CellOptimizationLogger:
     def __init__(self, log_queue, structure_name, opt_mode="both"):
         self.log_queue = log_queue
@@ -1845,21 +1831,20 @@ class CellOptimizationLogger:
         self.trajectory = []
         self.previous_energy = None
         self.opt_mode = opt_mode
-        
+
         self.step_start_time = None
-        self.step_times = deque(maxlen=10)  
+        self.step_times = deque(maxlen=10)
         self.optimization_start_time = time.time()
 
     def __call__(self, optimizer=None):
         current_time = time.time()
-        
 
         if self.step_start_time is not None:
             step_duration = current_time - self.step_start_time
             self.step_times.append(step_duration)
-        
+
         self.step_start_time = current_time
-        
+
         if optimizer is not None:
             if hasattr(optimizer.atoms, 'atoms'):
                 atoms = optimizer.atoms.atoms
@@ -1874,7 +1859,7 @@ class CellOptimizationLogger:
                 energy = atoms.get_potential_energy()
                 stress = None
                 max_stress = 0.0
-                
+
                 if self.opt_mode in ["cell_only", "both"]:
                     try:
                         stress_voigt = atoms.get_stress(voigt=True)
@@ -1901,29 +1886,30 @@ class CellOptimizationLogger:
                 }
                 self.trajectory.append(trajectory_step)
 
-                avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
-                
+                avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(
+                    optimizer)
+
                 elapsed_time = current_time - self.optimization_start_time
-                
+
                 if self.opt_mode == "cell_only":
                     log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
-                                  f"Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
+                                   f"Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
                 elif self.opt_mode == "both":
                     log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
-                                  f"Max Force = {max_force:.4f} eV/Å, Max Stress = {max_stress:.4f} GPa, "
-                                  f"ΔE = {energy_change:.2e} eV")
+                                   f"Max Force = {max_force:.4f} eV/Å, Max Stress = {max_stress:.4f} GPa, "
+                                   f"ΔE = {energy_change:.2e} eV")
                 else:
                     log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
-                                  f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
+                                   f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
 
-                #if avg_step_time > 0:
+                # if avg_step_time > 0:
                 #    log_message += f" | Avg/step: {avg_step_time:.1f}s"
                 #    if estimated_remaining_time:
                 #        log_message += f" | Est. remaining: {self._format_time(estimated_remaining_time)}"
                 #        log_message += f" | Total est.: {self._format_time(total_estimated_time)}"
-                
-                #log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
-                
+
+                # log_message += f" | Elapsed: {self._format_time(elapsed_time)}"
+
                 self.log_queue.put(log_message)
 
                 self.log_queue.put({
@@ -1955,21 +1941,21 @@ class CellOptimizationLogger:
         """Calculate time estimates based on recent step times"""
         if len(self.step_times) < 2:
             return 0, None, None
-        
+
         # Average time per step (excluding first step which is usually slower)
         avg_step_time = np.mean(list(self.step_times)[1:]) if len(self.step_times) > 1 else self.step_times[0]
-        
+
         # Get maximum steps from optimizer
         max_steps = getattr(optimizer, 'max_steps', None)
         if max_steps is None:
             return avg_step_time, None, None
-        
+
         remaining_steps = max_steps - self.step_count
         estimated_remaining_time = remaining_steps * avg_step_time if remaining_steps > 0 else 0
-        
+
         elapsed_time = time.time() - self.optimization_start_time
         total_estimated_time = elapsed_time + estimated_remaining_time
-        
+
         return avg_step_time, estimated_remaining_time, total_estimated_time
 
     def _format_time(self, seconds):
@@ -1985,7 +1971,8 @@ class CellOptimizationLogger:
 
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
-                         elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None, ga_params=None):
+                         elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
+                         ga_params=None):
     import time
     try:
         total_start_time = time.time()
@@ -2173,7 +2160,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             if calc_type == "GA Structure Optimization":
                 log_queue.put(f"DEBUG: Substitutions received: {substitutions}")
                 log_queue.put(f"DEBUG: GA params received: {ga_params}")
-
 
             calculator = None
 
@@ -2385,7 +2371,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if optimization_params.get('hydrostatic_strain'):
                         log_queue.put("Using hydrostatic strain constraint")
 
-
                     print("NOTH ERE?")
                     log_queue.put({
                         'type': 'opt_start',
@@ -2425,7 +2410,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                         force_converged = max_final_force < optimization_params['fmax']
                         energy_converged = False
-                        stress_converged = True  
+                        stress_converged = True
 
                         if len(logger.trajectory) > 1:
                             final_energy_change = logger.trajectory[-1]['energy_change']
@@ -2436,10 +2421,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             try:
                                 final_stress = final_atoms.get_stress(voigt=True)
                                 max_final_stress = np.max(np.abs(final_stress))
-                                stress_converged = max_final_stress < 0.1 
+                                stress_converged = max_final_stress < 0.1
                                 log_queue.put(f"  Final stress: {max_final_stress:.4f} GPa")
                             except:
-                                stress_converged = True 
+                                stress_converged = True
 
                         if opt_type == "Atoms only (fixed cell)":
                             if force_converged and energy_converged:
@@ -2712,7 +2697,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-
 st.title("MLIP-Interactive: Compute properties with universal MLIPs")
 
 if 'structures' not in st.session_state:
@@ -2760,10 +2744,10 @@ with st.sidebar:
         st.error("Or install MatterSim: `pip install mattersim`")
         st.error("Or install ORB: `pip install orb-models`")
         st.error("Or install SevenNet: `pip install sevenn`")
-       # st.stop()
+    # st.stop()
 
     if MACE_OFF_AVAILABLE:
-      #  st.success("✅ MACE-OFF (organic molecules) available")
+        #  st.success("✅ MACE-OFF (organic molecules) available")
         pass
     else:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
@@ -2781,7 +2765,6 @@ with st.sidebar:
         index=default_model_index
     )
     model_size = MACE_MODELS[selected_model]
-
 
     is_chgnet = selected_model.startswith("CHGNet")
 
@@ -2910,7 +2893,7 @@ if st.session_state.calculation_running:
 
 tab1, tab_st, tab2, tab3, tab4, tab4_1, tab5 = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence","🧬 MD Trajectories and Analysis", "🔬 MACE Models Info"])
+     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔬 MACE Models Info"])
 
 with tab4_1:  # MD Trajectories and Analysis tab
     st.header("MD Trajectories and Analysis")
@@ -3107,16 +3090,16 @@ with tab4_1:  # MD Trajectories and Analysis tab
         🔍 **Analysis Tools**: Statistical analysis of MD properties and equilibration
         """)
 with tab5:
-    display_mace_models_info()    
+    display_mace_models_info()
     st.markdown("---")
-    
+
     create_citation_info()
-    
+
     st.markdown("---")
-    
+
     st.info("""
     💡 **Tips for Model Selection:**
-    
+
     • **For general use**: MACE-MP-0b3 (medium) - Latest and most stable
     • **For highest accuracy**: MACE-MPA-0 (medium) - State-of-the-art performance  
     • **For phonon calculations**: MACE-OMAT-0 (medium) - Excellent vibrational properties
@@ -3130,7 +3113,7 @@ with tab1:
         uploaded_files = st.sidebar.file_uploader(
             "Upload structure files (CIF, POSCAR, LMP, XSF, PW, CFG, etc.)",
             accept_multiple_files=True,
-            type=None, 
+            type=None,
             help="Upload multiple structure files for batch processing. Supports CIF, POSCAR, LMP, XSF, PW, CFG and other ASE-compatible formats",
             key="structure_uploader"
         )
@@ -3193,7 +3176,7 @@ with tab1:
     else:
         st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
         st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
-        
+
         with st.expander("📋 Locked Structures", expanded=False):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
                 col1, col2, col3 = st.columns([3, 2, 2])
@@ -3225,7 +3208,6 @@ with tab1:
         if show_preview:
             st.header("2. Structure Preview & MACE Compatibility")
 
-
             structure_names = list(st.session_state.structures.keys())
 
             for i, (name, structure) in enumerate(st.session_state.structures.items()):
@@ -3243,7 +3225,8 @@ with tab1:
                         st.write(f"  b = {structure.lattice.b:.3f} Å")
                         st.write(f"  c = {structure.lattice.c:.3f} Å")
 
-                        is_compatible, unsupported, elements, detected_model_type =  check_mace_compatibility(structure, selected_model)
+                        is_compatible, unsupported, elements, detected_model_type = check_mace_compatibility(structure,
+                                                                                                             selected_model)
 
                         if is_compatible:
                             st.success(f"✅ Compatible with {detected_model_type}")
@@ -3255,7 +3238,7 @@ with tab1:
                             st.write("📌 **Selective Dynamics:** Present (some atoms fixed)")
                         else:
                             st.write("🔄 **Selective Dynamics:** None (all atoms free to move)")
-                
+
         st.divider()
 
         st.header("Calculation Setup")
@@ -3268,11 +3251,11 @@ with tab1:
 
         col_calc_setup, col_calc_image = st.columns([2, 1])
 
-
         with col_calc_setup:
             calc_type = st.radio(
                 "Calculation Type",
-                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties", "GA Structure Optimization", "Molecular Dynamics"],
+                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
+                 "GA Structure Optimization", "Molecular Dynamics"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -3392,8 +3375,6 @@ with tab1:
                 if 'confirmed_supercell_structure' not in st.session_state:
                     st.session_state.confirmed_supercell_structure = None
 
-
-
                 if not st.session_state.supercell_confirmed:
 
                     col_super1, col_super2, col_super3, col_super4 = st.columns(4)
@@ -3413,7 +3394,6 @@ with tab1:
                             supercell_c = st.number_input("c-direction", min_value=1, max_value=10, value=2, step=1)
 
                         st.session_state.supercell_multipliers = [supercell_a, supercell_b, supercell_c]
-
 
                         supercell_structure = first_structure.copy()
                         supercell_structure.make_supercell([supercell_a, supercell_b, supercell_c])
@@ -3438,9 +3418,7 @@ with tab1:
                                 f"• Lattice: {supercell_structure.lattice.a:.3f} × {supercell_structure.lattice.b:.3f} × {supercell_structure.lattice.c:.3f} Å")
                             st.write(f"• Multiplier: {supercell_a}×{supercell_b}×{supercell_c}")
 
-
                         st.subheader("📊 Concentration Resolution Analysis")
-
 
                         unique_elements = list(set([site.specie.symbol for site in supercell_structure]))
 
@@ -3469,7 +3447,7 @@ with tab1:
                     col_confirm1, col_confirm2 = st.columns([1, 3])
 
                     with col_confirm1:
-                        if st.button("✅ Confirm Structure", type="primary",):
+                        if st.button("✅ Confirm Structure", type="primary", ):
                             st.session_state.supercell_confirmed = True
                             st.session_state.confirmed_supercell_structure = supercell_structure
                             st.success("✅ Structure confirmed!")
@@ -3530,7 +3508,6 @@ with tab1:
                     )
                     st.session_state.ga_params = ga_params
 
-
                     if not substitutions:
                         st.warning("⚠️ Please configure at least one element substitution to enable GA optimization")
                     else:
@@ -3570,7 +3547,8 @@ with tab1:
                             st.metric("Substitution %", f"{(total_substitutions / total_atoms) * 100:.1f}%")
                         with col_val4:
                             st.metric("GA Runs", ga_params.get('num_runs', 1))
-                    st.subheader("✅ Start the GA run by changing the Tab to 'Start Calculations' at the top of the site.")
+                    st.subheader(
+                        "✅ Start the GA run by changing the Tab to 'Start Calculations' at the top of the site.")
                 else:
                     st.info("👆 Please confirm your structure configuration above before setting up substitutions")
             display_ga_overview()
@@ -3913,7 +3891,6 @@ with tab_st:
 
             thread_count = st.session_state.get('thread_count', 4)
 
-
             local_script_content = generate_python_script_local_files(
                 calc_type=calc_type,
                 model_size=model_size,
@@ -3975,7 +3952,6 @@ with tab_st:
                 substitutions_for_script = st.session_state.get('substitutions', {})
                 ga_params_for_script = st.session_state.get('ga_params', {})
 
-
                 if not substitutions_for_script:
                     st.error("❌ No substitutions configured for GA optimization. Please configure substitutions first.")
                     st.stop()
@@ -3994,7 +3970,6 @@ with tab_st:
                 }
 
             thread_count = st.session_state.get('thread_count', 4)
-
 
             script_content = generate_python_script(
                 structures=st.session_state.structures,
@@ -4018,18 +3993,16 @@ with tab_st:
             if f"copied_{script_key}" not in st.session_state:
                 st.session_state[f"copied_{script_key}"] = False
 
-
             st.download_button(
-                    label="💾 Download Script",
-                    data=script_content,
-                    file_name="mace_calculation_script.py",
-                    mime="text/x-python",
-                    help="Download the Python script file", type = 'primary'
-                )
+                label="💾 Download Script",
+                data=script_content,
+                file_name="mace_calculation_script.py",
+                mime="text/x-python",
+                help="Download the Python script file", type='primary'
+            )
 
             with st.expander("📋 Generated Python Script", expanded=True):
                 st.code(script_content, language='python')
-
 
                 st.info("""
                         **Usage Instructions:**
@@ -4281,6 +4254,7 @@ with tab2:
 
                 total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
 
+
                 def format_time(seconds):
                     if seconds < 60:
                         return f"{seconds:.0f}s"
@@ -4332,9 +4306,9 @@ with tab2:
                     conc_pct = sub_info['concentration'] * 100
                     new_elem = sub_info['new_element']
                     if new_elem == 'VACANCY':
-                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {conc_pct:.1f}% vacant")
+                        substitution_details.append(f"{elem}: {100 - conc_pct:.1f}% → {conc_pct:.1f}% vacant")
                     else:
-                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
+                        substitution_details.append(f"{elem}: {100 - conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
 
                 if substitution_details:
                     st.caption(" | ".join(substitution_details))
@@ -4344,10 +4318,12 @@ with tab2:
             progress_data = st.session_state.current_structure_progress
             st.progress(progress_data['progress'], text=progress_data['text'])
 
-        if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get('is_optimizing'):
+        if st.session_state.current_optimization_info and st.session_state.current_optimization_info.get(
+                'is_optimizing'):
             opt_info = st.session_state.current_optimization_info
 
-            opt_progress = min(1.0, opt_info.get('current_step', 0) / opt_info['max_steps']) if opt_info['max_steps'] > 0 else 0
+            opt_progress = min(1.0, opt_info.get('current_step', 0) / opt_info['max_steps']) if opt_info[
+                                                                                                    'max_steps'] > 0 else 0
             opt_text = f"Optimizing {opt_info['structure']}: Step {opt_info.get('current_step', 0)}/{opt_info['max_steps']}"
 
             if 'current_energy' in opt_info:
@@ -4359,15 +4335,14 @@ with tab2:
             if 'current_max_stress' in opt_info:
                 opt_text += f" | Max Stress: {opt_info['current_max_stress']:.4f} GPa"
 
-
             if 'estimated_remaining_time' in opt_info and opt_info['estimated_remaining_time']:
                 remaining_time = opt_info['estimated_remaining_time']
                 if remaining_time < 60:
                     time_str = f"{remaining_time:.0f}s"
                 elif remaining_time < 3600:
-                    time_str = f"{remaining_time/60:.1f}m"
+                    time_str = f"{remaining_time / 60:.1f}m"
                 else:
-                    time_str = f"{remaining_time/3600:.1f}h"
+                    time_str = f"{remaining_time / 3600:.1f}h"
                 opt_text += f" | Est. remaining: {time_str}"
 
             if 'current_energy_change' in opt_info:
@@ -4397,7 +4372,7 @@ with tab2:
                         if 'current_max_force' in opt_info:
                             force_converged = opt_info['current_max_force'] < opt_info['fmax']
                             st.metric("Max Force (eV/Å)", f"{opt_info['current_max_force']:.4f}",
-                                    delta="✅ Converged" if force_converged else "❌ Not converged")
+                                      delta="✅ Converged" if force_converged else "❌ Not converged")
 
                 if opt_type in ["Cell only (fixed atoms)", "Both atoms and cell"]:
                     stress_col = col3 if opt_type == "Cell only (fixed atoms)" else col4
@@ -4406,7 +4381,7 @@ with tab2:
                             stress_threshold = opt_info.get('stress_threshold', 0.1)
                             stress_converged = opt_info['current_max_stress'] < stress_threshold
                             st.metric("Max Stress (GPa)", f"{opt_info['current_max_stress']:.4f}",
-                                    delta="✅ Converged" if stress_converged else "❌ Not converged")
+                                      delta="✅ Converged" if stress_converged else "❌ Not converged")
 
                 time_col = col4 if opt_type == "Atoms only (fixed cell)" else (
                     col4 if opt_type == "Cell only (fixed atoms)" else col5)
@@ -4414,16 +4389,17 @@ with tab2:
                     if 'avg_step_time' in opt_info and opt_info['avg_step_time'] > 0:
                         st.metric("Avg Time/Step", f"{opt_info['avg_step_time']:.1f}s")
 
-                remaining_time_col = col5 if opt_type in ["Atoms only (fixed cell)", "Cell only (fixed atoms)"] else col6
+                remaining_time_col = col5 if opt_type in ["Atoms only (fixed cell)",
+                                                          "Cell only (fixed atoms)"] else col6
                 with remaining_time_col:
                     if 'estimated_remaining_time' in opt_info and opt_info['estimated_remaining_time']:
                         remaining_time = opt_info['estimated_remaining_time']
                         if remaining_time < 60:
                             time_display = f"{remaining_time:.0f}s"
                         elif remaining_time < 3600:
-                            time_display = f"{remaining_time/60:.1f}m"
+                            time_display = f"{remaining_time / 60:.1f}m"
                         else:
-                            time_display = f"{remaining_time/3600:.1f}h"
+                            time_display = f"{remaining_time / 3600:.1f}h"
 
                         if remaining_time < 300:  # < 5 minutes
                             delta_color = "< less than, ✅ Soon"
@@ -4431,12 +4407,12 @@ with tab2:
                             delta_color = "less than, 🟡 Medium"
                         else:
                             delta_color = "less than, 🔴 Long"
-                        
+
                         st.metric("Est. Remaining", time_display, delta=delta_color)
 
                 energy_col = col5 if opt_type == "Cell only (fixed atoms)" else (
                     col5 if opt_type == "Atoms only (fixed cell)" else col6)
-                
+
                 if opt_type == "Both atoms and cell" and 'estimated_remaining_time' in opt_info:
                     if 'current_energy_change' in opt_info:
                         st.markdown("---")
@@ -4444,14 +4420,14 @@ with tab2:
                         with col_energy:
                             energy_converged = opt_info['current_energy_change'] < opt_info['ediff']
                             st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
-                                    delta="✅ Converged" if energy_converged else "❌ Not converged")
+                                      delta="✅ Converged" if energy_converged else "❌ Not converged")
                             st.info('ΔE is not convergence criterion, it is shown only for control.')
                 else:
                     with energy_col:
                         if 'current_energy_change' in opt_info:
                             energy_converged = opt_info['current_energy_change'] < opt_info['ediff']
                             st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
-                                    delta="✅ Converged" if energy_converged else "❌ Not converged")
+                                      delta="✅ Converged" if energy_converged else "❌ Not converged")
 
         elif calc_type == "Molecular Dynamics" and st.session_state.get('current_md_info'):
             md_info = st.session_state.current_md_info
@@ -4516,11 +4492,12 @@ def get_atomic_concentrations_from_structure(structure):
 with tab3:
     st.header("Results & Analysis")
     if st.session_state.results:
-        results_tab1, results_tab2, results_tab3, results_tab4,results_tab6, results_tab5, = st.tabs(["📊 Energies",
-                                                                                        "🔧 Geometry Optimization Details",
-                                                                                        "Elastic properties", "Phonons",
-                                                                                        "🧬 GA Optimization",
-                                                                                        "⏱️ Computation times"])
+        results_tab1, results_tab2, results_tab3, results_tab4, results_tab6, results_tab5, = st.tabs(["📊 Energies",
+                                                                                                       "🔧 Geometry Optimization Details",
+                                                                                                       "Elastic properties",
+                                                                                                       "Phonons",
+                                                                                                       "🧬 GA Optimization",
+                                                                                                       "⏱️ Computation times"])
     else:
         st.info("Please start some calculation first.")
 
@@ -4581,7 +4558,6 @@ with tab3:
             else:
                 st.info("No GA optimization results found. Results will appear here after GA calculations complete.")
 
-                
         with results_tab5:
             st.subheader("⏱️ Computation Time Analysis")
 
@@ -4710,7 +4686,6 @@ with tab3:
                             </div>
                             """, unsafe_allow_html=True)
 
-                    
                 st.subheader("🎯 Performance Insights")
 
                 if len(timing_data) > 1:
@@ -4735,7 +4710,7 @@ with tab3:
                         - Type: {slowest['Calculation Type']}
                         """)
 
-                
+
 
             else:
                 st.info("⏱️ Computation timing data will appear here after calculations complete.")
@@ -5072,11 +5047,10 @@ with tab3:
                     data=csv_data,
                     file_name="mace_batch_results.csv",
                     mime="text/csv",
-                    key=f"download_csv_{len(successful_results)}", type = 'primary'
+                    key=f"download_csv_{len(successful_results)}", type='primary'
                 )
 
                 optimized_structures = [r for r in successful_results if r['calc_type'] == 'Geometry Optimization']
-                
 
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
@@ -5302,7 +5276,7 @@ with tab3:
                         label="📥 Download Phonon Data (JSON)",
                         data=phonon_json,
                         file_name=f"phonon_data_{selected_phonon['name'].replace('.', '_')}.json",
-                        mime="application/json", type = 'primary'
+                        mime="application/json", type='primary'
                     )
                 if phonon_data.get('thermal_properties_dict'):
                     st.write("**Temperature-Dependent Analysis**")
@@ -6425,18 +6399,18 @@ with tab3:
                     st.error("❌ Crystal may be mechanically unstable")
                     st.warning("Check the elastic tensor eigenvalues and Born stability criteria")
                 with st.expander("Detailed Stability Criteria"):
-                        stability_details = []
-                        for criterion, value in stability.items():
-                            if criterion != 'mechanically_stable' and isinstance(value, bool):
-                                status = "✅ Pass" if value else "❌ Fail"
-                                stability_details.append({
-                                    'Criterion': criterion.replace('_', ' ').title(),
-                                    'Status': status
-                                })
+                    stability_details = []
+                    for criterion, value in stability.items():
+                        if criterion != 'mechanically_stable' and isinstance(value, bool):
+                            status = "✅ Pass" if value else "❌ Fail"
+                            stability_details.append({
+                                'Criterion': criterion.replace('_', ' ').title(),
+                                'Status': status
+                            })
 
-                        if stability_details:
-                            df_stability = pd.DataFrame(stability_details)
-                            st.dataframe(df_stability, use_container_width=True, hide_index=True)
+                    if stability_details:
+                        df_stability = pd.DataFrame(stability_details)
+                        st.dataframe(df_stability, use_container_width=True, hide_index=True)
                 if bulk_data['reuss'] and shear_data['reuss'] and shear_data['reuss'] != 0 and bulk_data['reuss'] != 0:
                     A_U = 5 * (shear_data['voigt'] / shear_data['reuss']) + (
                             bulk_data['voigt'] / bulk_data['reuss']) - 6
@@ -6482,6 +6456,21 @@ with tab3:
                     st.info(f"Found {len(geometry_results)} completed geometry optimizations")
                     st.subheader("📐 Lattice Parameters Comparison")
 
+                    # Get all unique elements across all structures
+                    all_elements = set()
+                    for result in geometry_results:
+                        initial_structure = st.session_state.structures.get(result['name'])
+                        final_structure = result['structure']
+
+                        if initial_structure:
+                            for site in initial_structure:
+                                all_elements.add(site.specie.symbol)
+                        if final_structure:
+                            for site in final_structure:
+                                all_elements.add(site.specie.symbol)
+
+                    all_elements = sorted(list(all_elements))  # Sort alphabetically
+
                     lattice_data = []
                     for result in geometry_results:
                         try:
@@ -6501,9 +6490,18 @@ with tab3:
                                 gamma_change = final_lattice.gamma - initial_lattice.gamma
 
                                 volume_change = ((
-                                                         final_lattice.volume - initial_lattice.volume) / initial_lattice.volume) * 100
+                                                             final_lattice.volume - initial_lattice.volume) / initial_lattice.volume) * 100
 
-                                lattice_data.append({
+                                # Calculate element concentrations for final structure
+                                final_element_counts = {}
+                                total_atoms = len(final_structure)
+
+                                for site in final_structure:
+                                    element = site.specie.symbol
+                                    final_element_counts[element] = final_element_counts.get(element, 0) + 1
+
+                                # Create the basic lattice data row
+                                row_data = {
                                     'Structure': result['name'],
                                     'Initial a (Å)': f"{initial_lattice.a:.4f}",
                                     'Final a (Å)': f"{final_lattice.a:.4f}",
@@ -6527,20 +6525,32 @@ with tab3:
                                     'Final Vol (Å³)': f"{final_lattice.volume:.2f}",
                                     'ΔVol (%)': f"{volume_change:+.2f}",
                                     'Convergence': result.get('convergence_status', 'Unknown')
-                                })
+                                }
+
+                                # Add element concentration columns
+                                for element in all_elements:
+                                    count = final_element_counts.get(element, 0)
+                                    concentration = (count / total_atoms) * 100 if total_atoms > 0 else 0
+                                    row_data[f'{element} (%)'] = f"{concentration:.1f}"
+
+                                lattice_data.append(row_data)
+
                         except Exception as e:
                             st.warning(f"Could not process lattice data for {result['name']}: {str(e)}")
 
                     if lattice_data:
                         df_lattice = pd.DataFrame(lattice_data)
+
                         st.dataframe(df_lattice, use_container_width=True, hide_index=True)
+
 
                         lattice_csv = df_lattice.to_csv(index=False)
                         st.download_button(
-                            label="📥 Download Lattice Parameters (CSV)",
+                            label="📥 Download Lattice Parameters with Concentrations (CSV)",
                             data=lattice_csv,
-                            file_name="lattice_parameters_comparison.csv",
-                            mime="text/csv", type = 'primary'
+                            file_name="lattice_parameters_with_concentrations.csv",
+                            mime="text/csv",
+                            type='primary'
                         )
 
                     if len(lattice_data) >= 1:
@@ -6635,7 +6645,8 @@ with tab3:
                         st.write("Download individual optimized POSCAR files:")
 
                         for result in geometry_results:
-                            with st.expander(f"📁 {result['name']} - {result.get('convergence_status', 'Unknown')}", expanded=False):
+                            with st.expander(f"📁 {result['name']} - {result.get('convergence_status', 'Unknown')}",
+                                             expanded=False):
                                 convergence_status = result.get('convergence_status', '')
                                 convergence_icon = "✅" if convergence_status and "CONVERGED" in convergence_status else "⚠️"
 
@@ -6708,7 +6719,9 @@ with tab3:
                                             )
 
                                         # Generate button
-                                        if st.button(f"📥 Download {output_format}", key=f"download_btn_{result['name']}_{output_format}", type="primary"):
+                                        if st.button(f"📥 Download {output_format}",
+                                                     key=f"download_btn_{result['name']}_{output_format}",
+                                                     type="primary"):
                                             try:
                                                 base_name = result['name'].split('.')[0]
                                                 structure = result['structure']
@@ -6738,13 +6751,14 @@ with tab3:
 
                                                     out = StringIO()
                                                     write(out, ase_structure, format="vasp",
-                                                        direct=use_fractional, sort=True)
+                                                          direct=use_fractional, sort=True)
                                                     file_content = out.getvalue()
                                                     file_extension = ".vasp"
                                                     mime_type = "text/plain"
 
                                                 elif output_format == "CIF":
                                                     from pymatgen.io.cif import CifWriter
+
                                                     new_struct = Structure(structure.lattice, [], [])
                                                     for site in structure:
                                                         species_dict = {}
@@ -6756,7 +6770,8 @@ with tab3:
                                                             coords_are_cartesian=False,
                                                         )
                                                     file_content = CifWriter(
-                                                        new_struct, symprec=cif_symprec, write_site_properties=True).__str__()
+                                                        new_struct, symprec=cif_symprec,
+                                                        write_site_properties=True).__str__()
                                                     file_extension = ".cif"
                                                     mime_type = "chemical/x-cif"
 
@@ -6788,22 +6803,26 @@ with tab3:
                                                 elif output_format == "XYZ":
                                                     xyz_lines = []
                                                     xyz_lines.append(str(len(structure)))
-                                                    
+
                                                     lattice_matrix = structure.lattice.matrix
-                                                    lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
-                                                    
+                                                    lattice_string = " ".join(
+                                                        [f"{x:.6f}" for row in lattice_matrix for x in row])
+
                                                     comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
                                                     xyz_lines.append(comment_line)
-                                                    
+
                                                     for site in structure:
                                                         if site.is_ordered:
                                                             element = site.specie.symbol
                                                         else:
-                                                            element = max(site.species.items(), key=lambda x: x[1])[0].symbol
-                                                        
-                                                        cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
-                                                        xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
-                                                    
+                                                            element = max(site.species.items(), key=lambda x: x[1])[
+                                                                0].symbol
+
+                                                        cart_coords = structure.lattice.get_cartesian_coords(
+                                                            site.frac_coords)
+                                                        xyz_lines.append(
+                                                            f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+
                                                     file_content = "\n".join(xyz_lines)
                                                     file_extension = ".xyz"
                                                     mime_type = "chemical/x-xyz"
@@ -6830,16 +6849,20 @@ with tab3:
                                 default=["POSCAR"],
                                 key="bulk_format_selector"
                             )
-                            
+
                             if "POSCAR" in bulk_formats:
                                 st.write("**VASP POSCAR Options:**")
-                                bulk_vasp_fractional = st.checkbox("Fractional coordinates", value=True, key="bulk_vasp_frac")
-                                bulk_vasp_selective = st.checkbox("Selective dynamics (all free)", value=False, key="bulk_vasp_sel")
-                            
+                                bulk_vasp_fractional = st.checkbox("Fractional coordinates", value=True,
+                                                                   key="bulk_vasp_frac")
+                                bulk_vasp_selective = st.checkbox("Selective dynamics (all free)", value=False,
+                                                                  key="bulk_vasp_sel")
+
                             if "LAMMPS" in bulk_formats:
                                 st.write("**LAMMPS Options:**")
-                                bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0, key="bulk_lmp_style")
-                                bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0, key="bulk_lmp_units")
+                                bulk_lmp_style = st.selectbox("Atom style:", ["atomic", "charge", "full"], index=0,
+                                                              key="bulk_lmp_style")
+                                bulk_lmp_units = st.selectbox("Units:", ["metal", "real", "si"], index=0,
+                                                              key="bulk_lmp_units")
                                 bulk_lmp_masses = st.checkbox("Include masses", value=True, key="bulk_lmp_masses")
                                 bulk_lmp_skew = st.checkbox("Force triclinic", value=False, key="bulk_lmp_skew")
 
@@ -6851,7 +6874,7 @@ with tab3:
                                             if 'structure' in result and result['structure']:
                                                 base_name = result['name'].split('.')[0]
                                                 structure = result['structure']
-                                                
+
                                                 for fmt in bulk_formats:
                                                     try:
                                                         if fmt == "POSCAR":
@@ -6859,7 +6882,7 @@ with tab3:
                                                             from ase.io import write
                                                             from ase.constraints import FixAtoms
                                                             from io import StringIO
-                                                            
+
                                                             # Convert to ASE
                                                             new_struct = Structure(structure.lattice, [], [])
                                                             for site in structure:
@@ -6868,20 +6891,22 @@ with tab3:
                                                                     coords=site.frac_coords,
                                                                     coords_are_cartesian=False,
                                                                 )
-                                                            
+
                                                             ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
-                                                            
+
                                                             if bulk_vasp_selective:
                                                                 constraint = FixAtoms(indices=[])  # All atoms free
                                                                 ase_structure.set_constraint(constraint)
-                                                            
+
                                                             out = StringIO()
-                                                            write(out, ase_structure, format="vasp", direct=bulk_vasp_fractional, sort=True)
+                                                            write(out, ase_structure, format="vasp",
+                                                                  direct=bulk_vasp_fractional, sort=True)
                                                             file_content = out.getvalue()
                                                             filename = f"POSCAR/{base_name}_POSCAR.vasp"
-                                                            
+
                                                         elif fmt == "CIF":
                                                             from pymatgen.io.cif import CifWriter
+
                                                             new_struct = Structure(structure.lattice, [], [])
                                                             for site in structure:
                                                                 species_dict = {}
@@ -6892,14 +6917,15 @@ with tab3:
                                                                     coords=site.frac_coords,
                                                                     coords_are_cartesian=False,
                                                                 )
-                                                            file_content = CifWriter(new_struct, symprec=0.1, write_site_properties=True).__str__()
+                                                            file_content = CifWriter(new_struct, symprec=0.1,
+                                                                                     write_site_properties=True).__str__()
                                                             filename = f"CIF/{base_name}.cif"
-                                                            
+
                                                         elif fmt == "LAMMPS":
                                                             from pymatgen.io.ase import AseAtomsAdaptor
                                                             from ase.io import write
                                                             from io import StringIO
-                                                            
+
                                                             new_struct = Structure(structure.lattice, [], [])
                                                             for site in structure:
                                                                 new_struct.append(
@@ -6907,7 +6933,7 @@ with tab3:
                                                                     coords=site.frac_coords,
                                                                     coords_are_cartesian=False,
                                                                 )
-                                                            
+
                                                             ase_structure = AseAtomsAdaptor.get_atoms(new_struct)
                                                             out = StringIO()
                                                             write(
@@ -6917,35 +6943,40 @@ with tab3:
                                                             )
                                                             file_content = out.getvalue()
                                                             filename = f"LAMMPS/{base_name}.lmp"
-                                                    
+
                                                         elif fmt == "XYZ":
                                                             xyz_lines = []
                                                             xyz_lines.append(str(len(structure)))
-                                                            
+
                                                             lattice_matrix = structure.lattice.matrix
-                                                            lattice_string = " ".join([f"{x:.6f}" for row in lattice_matrix for x in row])
-                                                            
+                                                            lattice_string = " ".join(
+                                                                [f"{x:.6f}" for row in lattice_matrix for x in row])
+
                                                             comment_line = f'Lattice="{lattice_string}" Properties=species:S:1:pos:R:3'
                                                             xyz_lines.append(comment_line)
-                                                            
+
                                                             for site in structure:
                                                                 if site.is_ordered:
                                                                     element = site.specie.symbol
                                                                 else:
-                                                                    element = max(site.species.items(), key=lambda x: x[1])[0].symbol
-                                                                
-                                                                cart_coords = structure.lattice.get_cartesian_coords(site.frac_coords)
-                                                                xyz_lines.append(f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
-                                                            
+                                                                    element = \
+                                                                    max(site.species.items(), key=lambda x: x[1])[
+                                                                        0].symbol
+
+                                                                cart_coords = structure.lattice.get_cartesian_coords(
+                                                                    site.frac_coords)
+                                                                xyz_lines.append(
+                                                                    f"{element} {cart_coords[0]:.6f} {cart_coords[1]:.6f} {cart_coords[2]:.6f}")
+
                                                             file_content = "\n".join(xyz_lines)
                                                             filename = f"XYZ/{base_name}.xyz"
 
                                                         zip_file.writestr(filename, file_content)
-                                                        
+
                                                     except Exception as e:
                                                         st.warning(f"Failed to convert {base_name} to {fmt}: {str(e)}")
                                                         continue
-                                        
+
                                         # Add README
                                         readme_content = f"""Optimized Structures Package
                     =============================
@@ -6957,7 +6988,7 @@ with tab3:
                     """
                                         for result in geometry_results:
                                             readme_content += f"- {result['name']}: {result.get('convergence_status', 'Unknown status')}\n"
-                                        
+
                                         readme_content += f"""
                     Generation Settings:
                     - VASP POSCAR: {'Fractional' if bulk_vasp_fractional else 'Cartesian'} coordinates"""
@@ -6970,12 +7001,12 @@ with tab3:
                                                 readme_content += ", with masses"
                                             if bulk_lmp_skew:
                                                 readme_content += ", triclinic forced"
-                                        
+
                                         readme_content += f"""
 
                     Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
                     """
-                                        
+
                                         zip_file.writestr("README.txt", readme_content)
 
                                     st.download_button(
@@ -6986,13 +7017,11 @@ with tab3:
                                         type='primary',
                                         key="download_bulk_zip_final"
                                     )
-                                    
+
                                     st.success(f"✅ ZIP package created with {len(bulk_formats)} format(s)")
-                                    
+
                                 except Exception as e:
                                     st.error(f"Error creating ZIP package: {str(e)}")
-
-
 
                     st.subheader("📈 Optimization Summary")
 
@@ -7355,7 +7384,7 @@ with tab4:
                             file_name=filename,
                             mime="text/plain",
                             key=f"download_{structure_name}",
-                            help="Extended XYZ format with lattice parameters, energies, and forces", type = 'primary'
+                            help="Extended XYZ format with lattice parameters, energies, and forces", type='primary'
                         )
 
                     with col3:
@@ -7425,10 +7454,10 @@ with tab4:
                     data=zip_buffer.getvalue(),
                     file_name="optimization_trajectories.zip",
                     mime="application/zip",
-                    help="ZIP file containing all optimization trajectories in XYZ format", type = 'primary'
+                    help="ZIP file containing all optimization trajectories in XYZ format", type='primary'
                 )
 
-        #with st.expander("📖 XYZ File Format Information"):
+        # with st.expander("📖 XYZ File Format Information"):
         #    st.markdown("""
         #    **Extended XYZ Format with Lattice Parameters:**#
         #
