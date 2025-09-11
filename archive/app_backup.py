@@ -35,6 +35,14 @@ from helpers.mace_cards import *
 from helpers.generate_python_code import *
 
 
+from helpers.MD_settings import (
+    setup_md_parameters_ui,
+    run_md_simulation,
+    create_md_trajectory_xyz,
+    create_md_analysis_plots,
+    export_md_results
+)
+
 
 
 from helpers.ga_optimization_module import (
@@ -82,19 +90,73 @@ except ImportError:
 import torch
 
 
+# Add this after the existing THREAD_COUNT_FILE definition
+SETTINGS_FILE = "default_settings.json"
+
+
+
+
+DEFAULT_SETTINGS = {
+    'thread_count': 1,
+    'selected_model': "MACE-MP-0b3 (medium) - Latest",
+    'device': "cpu",
+    'dtype': "float64"
+}
+def load_default_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return DEFAULT_SETTINGS.copy()
+    return DEFAULT_SETTINGS.copy()
+
+def save_default_settings(settings):
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f)
+        return True
+    except:
+        return False
+
+
+if 'default_settings' not in st.session_state:
+    st.session_state.default_settings = load_default_settings()
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = st.session_state.default_settings['thread_count']
+
+os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+torch.set_num_threads(st.session_state.thread_count)
+
 
 #os.environ['OMP_NUM_THREADS'] = '8'
 #torch.set_num_threads(8)
+import json
+
+# Settings files
 THREAD_COUNT_FILE = "thread_count.txt"
-default_thread_count = 1
-if os.path.exists(THREAD_COUNT_FILE):
-    try:
-        with open(THREAD_COUNT_FILE, 'r') as f:
-            default_thread_count = int(f.read().strip())
-    except (ValueError, FileNotFoundError):
-        default_thread_count = 1
-os.environ['OMP_NUM_THREADS'] = str(default_thread_count)
-torch.set_num_threads(default_thread_count)
+SETTINGS_FILE = "default_settings.json"
+
+
+
+
+
+if 'default_settings' not in st.session_state:
+    st.session_state.default_settings = load_default_settings()
+
+if 'thread_count' not in st.session_state:
+    st.session_state.thread_count = st.session_state.default_settings['thread_count']
+
+os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+torch.set_num_threads(st.session_state.thread_count)
+
+
+if 'md_trajectories' not in st.session_state:
+    st.session_state.md_trajectories = {}
+if 'current_md_info' not in st.session_state:
+    st.session_state.current_md_info = {}
+
 
 if 'thread_count' not in st.session_state:
     st.session_state.thread_count = default_thread_count
@@ -480,7 +542,6 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
 
 
 def append_to_backup_file(result, backup_file_path):
-    """Append result information to backup file"""
     try:
         backup_dir = os.path.dirname(backup_file_path)
         os.makedirs(backup_dir, exist_ok=True)
@@ -513,7 +574,6 @@ def append_to_backup_file(result, backup_file_path):
 
 
 def save_optimized_structure_backup(result, backup_dir):
-    """Save optimized structure as POSCAR in backup directory"""
     try:
         # Only save if this is a geometry optimization with a structure
         if (result.get('calc_type') == 'Geometry Optimization' and 
@@ -1439,7 +1499,6 @@ class OptimizationLogger:
             })
 
     def _calculate_time_estimates(self, optimizer):
-        """Calculate time estimates based on recent step times"""
         if len(self.step_times) < 2:
             return 0, None, None
         
@@ -1458,7 +1517,6 @@ class OptimizationLogger:
         return avg_step_time, estimated_remaining_time, total_estimated_time
 
     def _format_time(self, seconds):
-        """Format time in human-readable format"""
         if seconds < 60:
             return f"{seconds:.0f}s"
         elif seconds < 3600:
@@ -1484,7 +1542,6 @@ def create_xyz_content(trajectory_data, structure_name):
         a, b, c = np.linalg.norm(cell, axis=1)
         
         def safe_angle(v1, v2):
-            """Calculate angle between vectors with numerical safety"""
             cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             cos_angle = np.clip(cos_angle, -1.0, 1.0)
             return np.degrees(np.arccos(cos_angle))
@@ -2005,7 +2062,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put(f"Device: {device}")
 
             try:
-                # Determine model path based on model_size
                 if model_size == "mattersim-1m":
                     model_path = "MatterSim-v1.0.0-1M.pth"
                 elif model_size == "mattersim-5m":
@@ -2039,13 +2095,20 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         elif is_chgnet:
             # CHGNet setup
             log_queue.put("Setting up CHGNet calculator...")
-            chgnet_version = model_size.split("-")[1]  # Extract version from "chgnet-0.3.0"
+            chgnet_version = model_size.split("-")[1]
             log_queue.put(f"CHGNet version: {chgnet_version}")
             log_queue.put(f"Device: {device}")
+            log_queue.put("Note: CHGNet requires float32 precision")
 
             try:
+                original_dtype = torch.get_default_dtype()
+                torch.set_default_dtype(torch.float32)
+
                 chgnet = CHGNet.load(model_name=chgnet_version, use_device=device, verbose=False)
                 calculator = CHGNetCalculator(model=chgnet, use_device=device)
+
+                torch.set_default_dtype(original_dtype)
+
                 log_queue.put(f"✅ CHGNet {chgnet_version} initialized successfully on {device}")
             except Exception as e:
                 log_queue.put(f"❌ CHGNet initialization failed on {device}: {str(e)}")
@@ -2062,13 +2125,15 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     return
 
         elif is_sevennet:
-            # SevenNet setup
             log_queue.put("Setting up SevenNet calculator...")
             log_queue.put(f"Selected model: {selected_model}")
             log_queue.put(f"Device: {device}")
+            log_queue.put("Note: SevenNet requires float32 precision")
 
             try:
-                # Parse model and modal from the model_size
+                original_dtype = torch.get_default_dtype()
+                torch.set_default_dtype(torch.float32)
+
                 if model_size == "7net-mf-ompa-mpa":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
@@ -2076,9 +2141,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
                 else:
-                    # Standard models without modal parameter
                     calculator = SevenNetCalculator(model=model_size, device=device)
                     log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
+
+                torch.set_default_dtype(original_dtype)
 
             except Exception as e:
                 log_queue.put(f"❌ SevenNet initialization failed on {device}: {str(e)}")
@@ -2556,6 +2622,21 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     elastic_results = calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, name)
                     if elastic_results['success']:
                         energy = atoms.get_potential_energy()
+                elif calc_type == "Molecular Dynamics":
+                    log_queue.put(f"Starting molecular dynamics simulation for {name}")
+
+                    # Run MD simulation
+                    md_results = run_md_simulation(atoms, calculator, md_params, log_queue, name)
+
+                    if md_results['success']:
+                        energy = md_results['final_energy']
+                        final_structure = md_results['final_structure']
+                        log_queue.put(f"✅ MD simulation completed for {name}")
+                    else:
+                        log_queue.put(f"❌ MD simulation failed for {name}")
+                        energy = None
+                        final_structure = structure  # Keep original structure
+                        md_results = None
 
                 formation_energy = None
                 if calc_formation_energy and energy is not None:
@@ -2575,7 +2656,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     'convergence_status': convergence_status,
                     'phonon_results': phonon_results,
                     'elastic_results': elastic_results,
-                    'ga_results': ga_results if calc_type == "GA Structure Optimization" else None
+                    'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
+                    'md_results': md_results if calc_type == "Molecular Dynamics" else None
                 })
 
                 structure_end_time = time.time()
@@ -2686,8 +2768,18 @@ with st.sidebar:
     else:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
+    defaults = st.session_state.default_settings
+    model_keys = list(MACE_MODELS.keys())
+
+    default_model_index = 0
+    if defaults['selected_model'] in model_keys:
+        default_model_index = model_keys.index(defaults['selected_model'])
+
     selected_model = st.selectbox(
-        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)", list(MACE_MODELS.keys()))
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)",
+        model_keys,
+        index=default_model_index
+    )
     model_size = MACE_MODELS[selected_model]
 
 
@@ -2730,45 +2822,58 @@ with st.sidebar:
                 st.error("❌ MACE models not available! Please install: 'pip install mace-torch'")
             st.info(f"🔬 **{model_type}**: {description}")
 
-    cols1, cols2 = st.columns([1,1])
+    cols1, cols2 = st.columns([1, 1])
     with cols1:
+        default_device_index = 0 if defaults['device'] == "cpu" else 1
         device_option = st.radio(
             "Compute Device",
             ["CPU", "GPU (CUDA)"],
+            index=default_device_index,
             help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
         )
         device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
 
     with cols2:
-        if not is_chgnet:  # Only show precision for MACE
+        if not selected_model.startswith("CHGNet"):
+            default_precision_index = 0 if defaults['dtype'] == "float32" else 1
             precision_option = st.radio(
                 "Precision",
                 ["Float32", "Float64"],
-                index=1,
+                index=default_precision_index,
                 help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
             )
             dtype = "float32" if precision_option == "Float32" else "float64"
         else:
             st.info("CHGNet uses fixed precision.")
             dtype = "float32"
-    col_c1, col_c2 = st.columns([1,1])
+
+    col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
-            "CPU Threads", 
-            min_value=1, 
-            max_value=32, 
+            "CPU Threads",
+            min_value=1,
+            max_value=32,
             value=st.session_state.thread_count,
             step=1,
             help="Number of CPU threads for calculations"
         )
-        
+
     with col_c2:
-        if st.button("💾 Save Thread"):
-            with open(THREAD_COUNT_FILE, 'w') as f:
-                f.write(str(st.session_state.thread_count))
-            os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
-            torch.set_num_threads(st.session_state.thread_count)
-            st.toast("✅ Thread count saved and applied.")
+        if st.button("💾 Save as Default"):
+            new_settings = {
+                'thread_count': st.session_state.thread_count,
+                'selected_model': selected_model,
+                'device': device,
+                'dtype': dtype
+            }
+
+            if save_default_settings(new_settings):
+                st.session_state.default_settings = new_settings
+                os.environ['OMP_NUM_THREADS'] = str(st.session_state.thread_count)
+                torch.set_num_threads(st.session_state.thread_count)
+                st.toast("✅ All settings saved as default!")
+            else:
+                st.toast("❌ Failed to save settings")
 css = '''
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
@@ -2803,10 +2908,204 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab_st, tab2, tab3, tab4, tab5 = st.tabs(
+tab1, tab_st, tab2, tab3, tab4, tab4_1, tab5 = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence", "🔬 MACE Models Info"])
+     "📈 Optimization Trajectories and Convergence","🧬 MD Trajectories and Analysis", "🔬 MACE Models Info"])
 
+with tab4_1:  # MD Trajectories and Analysis tab
+    st.header("MD Trajectories and Analysis")
+
+    md_results_list = [r for r in st.session_state.results if
+                       r['calc_type'] == 'Molecular Dynamics' and r.get('md_results')]
+
+    if md_results_list:
+        st.subheader("🧬 Molecular Dynamics Results")
+
+        # Structure selector for multiple MD results
+        if len(md_results_list) == 1:
+            selected_md = md_results_list[0]
+        else:
+            md_names = [r['name'] for r in md_results_list]
+            selected_name = st.selectbox("Select MD simulation:", md_names, key="md_selector")
+            selected_md = next(r for r in md_results_list if r['name'] == selected_name)
+
+        md_data = selected_md['md_results']
+
+        if md_data['success']:
+            st.subheader("📊 Simulation Summary")
+
+            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+
+            with col_sum1:
+                st.metric("Total Steps", f"{md_data['total_steps_run']}")
+
+            with col_sum2:
+                st.metric("Simulation Time", f"{md_data['simulation_time_ps']:.2f} ps")
+
+            with col_sum3:
+                st.metric("Final Temperature", f"{md_data['final_temperature']:.1f} K")
+
+            with col_sum4:
+                if md_data.get('final_pressure') is not None:
+                    st.metric("Final Pressure", f"{md_data['final_pressure']:.2f} GPa")
+                else:
+                    st.metric("Final Energy", f"{md_data['final_energy']:.6f} eV")
+
+            # MD parameters summary
+            with st.expander("MD Parameters Used", expanded=False):
+                params = md_data['md_params']
+                param_data = []
+                for key, value in params.items():
+                    if key not in ['log_interval', 'traj_interval']:
+                        param_data.append({
+                            'Parameter': key.replace('_', ' ').title(),
+                            'Value': str(value)
+                        })
+
+                df_params = pd.DataFrame(param_data)
+                st.dataframe(df_params, use_container_width=True, hide_index=True)
+
+            st.subheader("🔍 MD Debugging Information")
+
+            if md_data['trajectory_data']:
+                trajectory = md_data['trajectory_data']
+
+                max_forces = [data.get('max_force', 0) for data in trajectory]
+                if any(f > 0 for f in max_forces):
+                    avg_force = np.mean(max_forces)
+                    max_force = np.max(max_forces)
+
+                    col_debug1, col_debug2, col_debug3 = st.columns(3)
+
+                    with col_debug1:
+                        st.metric("Average Max Force", f"{avg_force:.4f} eV/Å")
+
+                    with col_debug2:
+                        st.metric("Maximum Force", f"{max_force:.4f} eV/Å")
+
+                    with col_debug3:
+                        if max_force < 0.01:
+                            st.metric("Force Status", "Very Low", delta="May indicate static atoms")
+                        elif max_force > 1.0:
+                            st.metric("Force Status", "Very High", delta="Check system stability")
+                        else:
+                            st.metric("Force Status", "Normal", delta="✅")
+
+                if len(trajectory) >= 2:
+                    first_pos = trajectory[0]['positions']
+                    last_pos = trajectory[-1]['positions']
+                    displacements = np.linalg.norm(last_pos - first_pos, axis=1)
+                    max_displacement = np.max(displacements)
+                    avg_displacement = np.mean(displacements)
+
+                    col_disp1, col_disp2 = st.columns(2)
+
+                    with col_disp1:
+                        st.metric("Max Displacement", f"{max_displacement:.6f} Å")
+
+                    with col_disp2:
+                        st.metric("Avg Displacement", f"{avg_displacement:.6f} Å")
+
+                    if max_displacement < 0.001:
+                        st.warning("⚠️ Very small displacements - atoms barely moved!")
+                    elif max_displacement > 10.0:
+                        st.warning("⚠️ Very large displacements - system may be unstable!")
+                    else:
+                        st.success(f"✅ Reasonable atomic motion observed")
+            if md_data['trajectory_data'] and len(md_data['trajectory_data']) > 1:
+                st.subheader("📈 Trajectory Analysis")
+
+                fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
+                    md_data['trajectory_data'],
+                    md_data['md_params']
+                )
+
+                if fig_main:
+                    st.plotly_chart(fig_main, use_container_width=True)
+
+                if fig_pressure:
+                    st.subheader("📊 Pressure Analysis (NPT)")
+                    st.plotly_chart(fig_pressure, use_container_width=True)
+
+                if fig_conservation:
+                    st.subheader("🔋 Energy Conservation Check")
+                    st.plotly_chart(fig_conservation, use_container_width=True)
+
+                    trajectory = md_data['trajectory_data']
+                    total_energies = [data['potential_energy'] + data['kinetic_energy'] for data in trajectory]
+                    energy_drift = abs(total_energies[-1] - total_energies[0])
+                    avg_energy = np.mean(total_energies)
+                    drift_percentage = (energy_drift / abs(avg_energy)) * 100 if avg_energy != 0 else 0
+
+                    if drift_percentage < 0.1:
+                        st.success(f"✅ Excellent energy conservation (drift: {drift_percentage:.3f}%)")
+                    elif drift_percentage < 1.0:
+                        st.warning(f"⚠️ Good energy conservation (drift: {drift_percentage:.3f}%)")
+                    else:
+                        st.error(f"❌ Poor energy conservation (drift: {drift_percentage:.3f}%) - check timestep")
+
+                st.subheader("📥 Download MD Data")
+
+                col_dl1, col_dl2, col_dl3 = st.columns(3)
+
+                with col_dl1:
+                    element_symbols = md_data.get('element_symbols')
+                    xyz_content = create_md_trajectory_xyz(
+                        md_data['trajectory_data'],
+                        selected_md['name'],
+                        md_data['md_params'],
+                        element_symbols=element_symbols
+                    )
+                    if xyz_content:
+                        st.download_button(
+                            label="📥 Download Trajectory (XYZ)",
+                            data=xyz_content,
+                            file_name=f"md_trajectory_{selected_md['name'].replace('.', '_')}.xyz",
+                            mime="text/plain",
+                            key=f"download_md_xyz_{selected_md['name']}"
+                        )
+
+                with col_dl2:
+                    json_data = export_md_results(md_data, selected_md['name'])
+                    if json_data:
+                        st.download_button(
+                            label="📊 Download Analysis (JSON)",
+                            data=json_data,
+                            file_name=f"md_analysis_{selected_md['name'].replace('.', '_')}.json",
+                            mime="application/json",
+                            key=f"download_md_json_{selected_md['name']}"
+                        )
+
+                with col_dl3:
+                    if 'final_structure' in md_data:
+                        final_poscar = create_wrapped_poscar_content(md_data['final_structure'])
+                        st.download_button(
+                            label="📁 Download Final Structure",
+                            data=final_poscar,
+                            file_name=f"md_final_{selected_md['name'].replace('.', '_')}.vasp",
+                            mime="text/plain",
+                            key=f"download_md_final_{selected_md['name']}"
+                        )
+        else:
+            st.error(f"MD simulation failed: {md_data.get('error', 'Unknown error')}")
+
+    else:
+        st.info("No MD simulation results found. Results will appear here after MD calculations complete.")
+
+        st.markdown("""
+        **What you'll see here after MD calculations:**
+
+        📊 **Simulation Summary**: Key metrics like total steps, simulation time, final temperature
+
+        📈 **Trajectory Plots**: Energy, temperature, pressure, and volume evolution over time
+
+        📥 **Download Options**: 
+        - XYZ trajectory files for visualization
+        - JSON analysis data for further processing
+        - Final equilibrated structure
+
+        🔍 **Analysis Tools**: Statistical analysis of MD properties and equilibration
+        """)
 with tab5:
     display_mace_models_info()    
     st.markdown("---")
@@ -2824,7 +3123,7 @@ with tab5:
     • **For fast screening**: Any small model - Lower computational cost
     • **For complex systems**: Large models - Higher accuracy for difficult cases
     """)
-    
+
 with tab1:
     st.sidebar.header("Upload Structure Files")
     if not st.session_state.structures_locked:
@@ -2973,7 +3272,7 @@ with tab1:
         with col_calc_setup:
             calc_type = st.radio(
                 "Calculation Type",
-                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties", "GA Structure Optimization"],
+                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties", "GA Structure Optimization", "Molecular Dynamics"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -3050,6 +3349,9 @@ with tab1:
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
+            elif calc_type == "Molecular Dynamics":
+                st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY**")
+                md_params = setup_md_parameters_ui()
 
         optimization_params = {
             'optimizer': "BFGS",
@@ -3112,7 +3414,7 @@ with tab1:
 
                         st.session_state.supercell_multipliers = [supercell_a, supercell_b, supercell_c]
 
-                        # Generate supercell preview
+
                         supercell_structure = first_structure.copy()
                         supercell_structure.make_supercell([supercell_a, supercell_b, supercell_c])
 
@@ -3136,10 +3438,10 @@ with tab1:
                                 f"• Lattice: {supercell_structure.lattice.a:.3f} × {supercell_structure.lattice.b:.3f} × {supercell_structure.lattice.c:.3f} Å")
                             st.write(f"• Multiplier: {supercell_a}×{supercell_b}×{supercell_c}")
 
-                        # Show concentration resolution improvement
+
                         st.subheader("📊 Concentration Resolution Analysis")
 
-                        # Get unique elements and show concentration options
+
                         unique_elements = list(set([site.specie.symbol for site in supercell_structure]))
 
                         for element in unique_elements:
@@ -3164,7 +3466,6 @@ with tab1:
                                 supercell_step = 100 / supercell_count
                                 st.write(f"• Supercell: {supercell_step:.1f}% steps ({supercell_count + 1} options)")
 
-                    # Confirmation button
                     col_confirm1, col_confirm2 = st.columns([1, 3])
 
                     with col_confirm1:
@@ -3179,10 +3480,7 @@ with tab1:
                             st.info("⚠️ Confirm the supercell configuration before proceeding to substitution setup")
 
                 else:
-                    # Show confirmed structure info (read-only)
                     confirmed_structure = st.session_state.confirmed_supercell_structure
-
-                    # Check if it's a supercell or original
                     is_supercell = len(confirmed_structure) > len(first_structure)
 
                     if is_supercell:
@@ -3192,7 +3490,6 @@ with tab1:
                         st.success(
                             f"✅ **Confirmed Original Structure:** {confirmed_structure.composition.reduced_formula} ({len(confirmed_structure)} atoms)")
 
-                    # Display confirmed structure details
                     col_confirmed1, col_confirmed2, col_confirmed3 = st.columns(3)
 
                     with col_confirmed1:
@@ -3204,7 +3501,6 @@ with tab1:
 
                     with col_confirmed2:
                         if is_supercell:
-                            # Calculate supercell multiplier
                             volume_ratio = confirmed_structure.lattice.volume / first_structure.lattice.volume
                             multiplier = round(volume_ratio ** (1 / 3))
                             st.write("**Supercell Info:**")
@@ -3215,7 +3511,7 @@ with tab1:
                                      ):
                             st.session_state.supercell_confirmed = False
                             st.session_state.confirmed_supercell_structure = None
-                            st.session_state.substitutions = {}  # Clear substitutions too
+                            st.session_state.substitutions = {}
                             st.session_state.ga_base_structure = None
                             st.info("🔄 Structure reset. You can now reconfigure the supercell.")
                             st.rerun()
@@ -3241,7 +3537,28 @@ with tab1:
                         st.subheader("✅ GA Configuration Summary")
 
                         total_atoms = len(working_structure)
-                        total_substitutions = sum(sub['n_substitute'] for sub in substitutions.values())
+                        # Calculate totals based on the new structure
+                        total_substitutions = 0
+                        total_vacancies = 0
+
+                        for element, sub_info in substitutions.items():
+                            if 'concentration_list' in sub_info:
+                                # New structure: use first concentration for display
+                                concentration = sub_info['concentration_list'][0]
+                                element_count = sub_info['element_count']
+                                n_substitute = int(element_count * concentration)
+
+                                if sub_info['new_element'] == 'VACANCY':
+                                    total_vacancies += n_substitute
+                                else:
+                                    total_substitutions += n_substitute
+                            else:
+                                # Fallback for old structure (shouldn't happen with new code)
+                                if 'n_substitute' in sub_info:
+                                    if sub_info['new_element'] == 'VACANCY':
+                                        total_vacancies += sub_info['n_substitute']
+                                    else:
+                                        total_substitutions += sub_info['n_substitute']
 
                         col_val1, col_val2, col_val3, col_val4 = st.columns(4)
 
@@ -3503,7 +3820,7 @@ with tab1:
 
     else:
         st.info("Upload structure files to begin")
-with tab_st:           
+with tab_st:
     if st.session_state.structures_locked:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
@@ -3697,10 +4014,10 @@ with tab_st:
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
-    
+
             if f"copied_{script_key}" not in st.session_state:
                 st.session_state[f"copied_{script_key}"] = False
-            
+
 
             st.download_button(
                     label="💾 Download Script",
@@ -3712,7 +4029,7 @@ with tab_st:
 
             with st.expander("📋 Generated Python Script", expanded=True):
                 st.code(script_content, language='python')
-                
+
 
                 st.info("""
                         **Usage Instructions:**
@@ -3826,8 +4143,29 @@ with tab2:
                     'stress_threshold': message.get('stress_threshold', 0.1),
                     'is_optimizing': True
                 }
-
-
+            elif message.get('type') == 'ga_combination_start':
+                st.session_state.current_ga_combination = {
+                    'combination_idx': message['combination_idx'],
+                    'total_combinations': message['total_combinations'],
+                    'combination_name': message['combination_name'],
+                    'combination_substitutions': message['combination_substitutions']
+                }
+            elif message.get('type') == 'md_step':
+                structure_name = message['structure']
+                st.session_state.current_md_info = {
+                    'structure': structure_name,
+                    'step': message['step'],
+                    'total_steps': message['total_steps'],
+                    'progress': message['progress'],
+                    'potential_energy': message['potential_energy'],
+                    'kinetic_energy': message['kinetic_energy'],
+                    'total_energy': message['total_energy'],
+                    'temperature': message['temperature'],
+                    'pressure': message.get('pressure'),
+                    'avg_time_per_step': message.get('avg_time_per_step', 0),
+                    'estimated_remaining_time': message.get('estimated_remaining_time'),
+                    'elapsed_time': message.get('elapsed_time', 0)
+                }
             elif message.get('type') == 'ga_progress':
                 current_time = time.time()
                 if current_time - st.session_state.last_ga_progress_update > 0.1:
@@ -3839,7 +4177,10 @@ with tab2:
                         'phase': message['phase']
                     }
                     st.session_state.last_ga_progress_update = current_time
-
+            elif message.get('type') == 'reset_ga_progress':
+                st.session_state.ga_progress_info = {}
+                st.session_state.ga_structure_timings = []
+                st.session_state.last_ga_progress_update = 0
             elif message.get('type') == 'ga_structure_timing':
                 st.session_state.ga_structure_timings.append({
                     'run_id': message['run_id'],
@@ -3885,11 +4226,16 @@ with tab2:
             elif message.get('type') == 'complete_trajectory':
                 st.session_state.optimization_trajectories[message['structure']] = message['trajectory']
             elif message.get('type') == 'result':
+                if message.get('md_results'):
+                    md_data = message['md_results']
+                    if md_data['success'] and md_data.get('trajectory_data'):
+                        st.session_state.md_trajectories[message['name']] = md_data['trajectory_data']
                 st.session_state.results.append(message)
                 if st.session_state.results_backup_file:
                     append_to_backup_file(message, st.session_state.results_backup_file)
                     backup_dir = os.path.dirname(st.session_state.results_backup_file)
                     save_optimized_structure_backup(message, backup_dir)
+
         elif message == "CALCULATION_FINISHED":
             st.session_state.calculation_running = False
             st.session_state.current_structure_progress = {}
@@ -3899,7 +4245,6 @@ with tab2:
             st.rerun()
         else:
             st.session_state.log_messages.append(str(message))
-
 
     if st.session_state.calculation_running and calc_type == "GA Structure Optimization":
         if st.session_state.ga_progress_info:
@@ -3913,10 +4258,18 @@ with tab2:
             current_structure = ga_info['current_structure']
             total_structures = ga_info['total_structures']
 
+            # Show current combination info if available
+            combination_info = ""
+            if 'current_ga_combination' in st.session_state:
+                combo_info = st.session_state.current_ga_combination
+                combo_idx = combo_info['combination_idx']
+                total_combos = combo_info['total_combinations']
+                combo_name = combo_info['combination_name']
+                combination_info = f" | Combination: {combo_name} ({combo_idx + 1}/{total_combos})"
+
             if len(st.session_state.ga_structure_timings) >= 5:
                 recent_timings = st.session_state.ga_structure_timings[-5:]
                 avg_time_per_structure = np.mean([t['duration'] for t in recent_timings])
-
 
                 remaining_structures_this_gen = max(0, total_structures - current_structure)
                 remaining_generations = max(0, max_generations - current_generation)
@@ -3927,7 +4280,6 @@ with tab2:
                 remaining_time_other_runs = remaining_runs * max_generations * total_structures * avg_time_per_structure
 
                 total_remaining_time = remaining_time_this_gen + remaining_time_this_run + remaining_time_other_runs
-
 
                 def format_time(seconds):
                     if seconds < 60:
@@ -3943,7 +4295,7 @@ with tab2:
             st.markdown("### 🧬 Genetic Algorithm Progress")
 
             phase_text = "Initialization" if ga_info['phase'] == 'initialization' else "Evolution"
-            progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}"
+            progress_text = f"Run {current_run}/{total_runs} | Gen {current_generation}/{max_generations} | Structure {current_structure}/{total_structures}{combination_info}"
 
             if total_runs > 0 and max_generations > 0 and total_structures > 0:
                 total_structures_overall = total_runs * max_generations * total_structures
@@ -3954,7 +4306,6 @@ with tab2:
                 overall_progress = 0.0
 
             st.progress(overall_progress, text=progress_text)
-
 
             col_ga1, col_ga2, col_ga3 = st.columns(3)
 
@@ -3969,6 +4320,24 @@ with tab2:
                     st.metric("Est. Remaining", format_time(total_remaining_time))
                 else:
                     st.metric("Est. Remaining", "Calculating...")
+
+            # Show current combination details if in sweep mode
+            if 'current_ga_combination' in st.session_state:
+                combo_info = st.session_state.current_ga_combination
+                st.info(f"🎯 Current concentration: {combo_info['combination_name']}")
+
+                # Show substitution details
+                substitution_details = []
+                for elem, sub_info in combo_info['combination_substitutions'].items():
+                    conc_pct = sub_info['concentration'] * 100
+                    new_elem = sub_info['new_element']
+                    if new_elem == 'VACANCY':
+                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {conc_pct:.1f}% vacant")
+                    else:
+                        substitution_details.append(f"{elem}: {100-conc_pct:.1f}% → {new_elem}: {conc_pct:.1f}%")
+
+                if substitution_details:
+                    st.caption(" | ".join(substitution_details))
 
     elif st.session_state.calculation_running:
         if st.session_state.current_structure_progress:
@@ -4084,7 +4453,42 @@ with tab2:
                             st.metric("ΔE (eV)", f"{opt_info['current_energy_change']:.2e}",
                                     delta="✅ Converged" if energy_converged else "❌ Not converged")
 
+        elif calc_type == "Molecular Dynamics" and st.session_state.get('current_md_info'):
+            md_info = st.session_state.current_md_info
 
+            progress = md_info.get('progress', 0)
+            progress_text = f"MD Simulation {md_info['structure']}: Step {md_info['step']}/{md_info['total_steps']}"
+
+            st.progress(progress, text=progress_text)
+
+            # Display MD metrics
+            col_md1, col_md2, col_md3, col_md4 = st.columns(4)
+
+            with col_md1:
+                st.metric("Current Step", f"{md_info['step']}/{md_info['total_steps']}")
+
+            with col_md2:
+                st.metric("Temperature (K)", f"{md_info['temperature']:.1f}")
+
+            with col_md3:
+                st.metric("Total Energy (eV)", f"{md_info['total_energy']:.6f}")
+
+            with col_md4:
+                if md_info.get('pressure') is not None:
+                    st.metric("Pressure (GPa)", f"{md_info['pressure']:.2f}")
+                else:
+                    st.metric("Kinetic Energy (eV)", f"{md_info['kinetic_energy']:.6f}")
+
+            # Time estimates
+            if md_info.get('estimated_remaining_time'):
+                remaining_time = md_info['estimated_remaining_time']
+                if remaining_time < 60:
+                    time_str = f"{remaining_time:.0f}s"
+                elif remaining_time < 3600:
+                    time_str = f"{remaining_time / 60:.1f}m"
+                else:
+                    time_str = f"{remaining_time / 3600:.1f}h"
+                st.info(f"Estimated remaining time: {time_str}")
     if st.session_state.log_messages:
         recent_messages = st.session_state.log_messages[-20:]
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
