@@ -35,6 +35,8 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 
 ### **Compile the app**  
 
+If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo)  
+
 For calculations on **GPU, compile CUDA**:  
 https://developer.nvidia.com/cuda-toolkit  
 Do not forget to **add it to the PATH**, e.g.:  
