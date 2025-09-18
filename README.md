@@ -60,6 +60,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
 
   1) Download updates and prerequisites:  
      **sudo apt update**  
+     **sudo apt install build-essential**  
      **sudo apt install -y python3-venv**  
      Download the app code from GitHub (or download it manually without Git on the following link by clicking on 'Code' and 'Download ZIP', then extract the ZIP. With Git, it is automatically   extracted):  
       **git clone https://github.com/bracerino/mace-md-gui.git**
