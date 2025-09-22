@@ -1,4 +1,4 @@
-# MLIP-Interactive: GUI interface for running simulations with universal machine learning interatomic potentials (U-MLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim 
+# MLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (U-MLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim 
 
 Run basic molecular dynamics/static simulations:
 - **single-point energy**
