@@ -2868,15 +2868,41 @@ with st.sidebar:
                 st.toast("❌ Failed to save settings")
 css = '''
 <style>
-    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
-        font-size: 1.1rem !important;
-        color: #1e3a8a !important;
-        font-weight: bold !important;
-    }
+.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+    font-size: 1.15rem !important;
+    color: #1e3a8a !important;
+    font-weight: 600 !important;
+    margin: 0 !important;
+}
 
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 25px !important;
-    }
+.stTabs [data-baseweb="tab-list"] {
+    gap: 20px !important;
+}
+
+.stTabs [data-baseweb="tab-list"] button {
+    background-color: #f0f4ff !important;
+    border-radius: 12px !important;
+    padding: 8px 16px !important;
+    transition: all 0.3s ease !important;
+    border: none !important;
+    color: #1e3a8a !important;
+}
+
+.stTabs [data-baseweb="tab-list"] button:hover {
+    background-color: #dbe5ff !important;
+    cursor: pointer;
+}
+
+.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+    background-color: #e0e7ff !important;
+    color: #1e3a8a !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 6px rgba(30, 58, 138, 0.3) !important;
+}
+
+.stTabs [data-baseweb="tab-list"] button:focus {
+    outline: none !important;
+}
 </style>
 '''
 
