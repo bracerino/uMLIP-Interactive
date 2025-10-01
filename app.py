@@ -53,6 +53,13 @@ from helpers.initial_settings import (
     DEFAULT_GEOMETRY_SETTINGS
 )
 
+from helpers.tensile_test import (
+    setup_tensile_test_ui,
+    run_tensile_test,
+    create_stress_strain_plot,
+    export_tensile_results
+)
+
 import py3Dmol
 import streamlit.components.v1 as components
 from pymatgen.core import Structure
@@ -96,8 +103,23 @@ DEFAULT_SETTINGS = {
     'selected_model': "MACE-MP-0b3 (medium) - Latest",
     'device': "cpu",
     'dtype': "float64",
-    'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS
+    'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS,
+'tensile_test': {  # Add this
+        'strain_direction': 0,  # x-axis
+        'strain_rate': 0.1,
+        'max_strain': 10.0,
+        'temperature': 300,
+        'timestep': 1.0,
+        'friction': 0.01,
+        'equilibration_steps': 200,
+        'sample_interval': 10,
+        'relax_between_strain': False,
+        'relax_steps': 100,
+        'use_npt_transverse': False,
+        'bulk_modulus': 110.0
+    }
 }
+
 
 
 def load_default_settings():
@@ -175,6 +197,9 @@ if 'ga_structure_timings' not in st.session_state:
 
 if 'last_ga_progress_update' not in st.session_state:
     st.session_state.last_ga_progress_update = 0
+
+if 'current_tensile_info' not in st.session_state:
+    st.session_state.current_tensile_info = {}
 
 st.markdown("""
     <style>
@@ -2631,6 +2656,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         energy = None
                         final_structure = structure  # Keep original structure
                         md_results = None
+                elif calc_type == "Virtual Tensile Test":
+                    log_queue.put(f"Starting virtual tensile test for {name}")
+
+                    tensile_results = run_tensile_test(atoms, calculator, tensile_params, log_queue, name, stop_event)
+
+                    if tensile_results['success']:
+                        energy = atoms.get_potential_energy()
+                        final_structure = structure
+                        log_queue.put(f"✅ Tensile test completed for {name}")
+                    else:
+                        log_queue.put(f"❌ Tensile test failed for {name}")
+                        energy = None
+                        tensile_results = None
 
                 formation_energy = None
                 if calc_formation_energy and energy is not None:
@@ -2651,7 +2689,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     'phonon_results': phonon_results,
                     'elastic_results': elastic_results,
                     'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
-                    'md_results': md_results if calc_type == "Molecular Dynamics" else None
+                    'md_results': md_results if calc_type == "Molecular Dynamics" else None,
+                    'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None
                 })
 
                 structure_end_time = time.time()
@@ -2926,9 +2965,107 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab_st, tab2, tab3, tab4, tab4_1, tab5 = st.tabs(
+tab1, tab_st, tab2, tab3, tab4, tab4_1,tab_vir, tab5,  = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔬 MACE Models Info"])
+     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔧 Virtual Tensile Tests", "🔬 MACE Models Info"])
+
+with tab_vir:
+    st.header("Virtual Tensile Test Results")
+
+    tensile_results_list = [r for r in st.session_state.results if
+                            r['calc_type'] == 'Virtual Tensile Test' and r.get('tensile_results')]
+
+    if tensile_results_list:
+        st.subheader("🔧 Mechanical Properties from Tensile Testing")
+
+        if len(tensile_results_list) == 1:
+            selected_tensile = tensile_results_list[0]
+        else:
+            tensile_names = [r['name'] for r in tensile_results_list]
+            selected_name = st.selectbox("Select structure:", tensile_names, key="tensile_selector")
+            selected_tensile = next(r for r in tensile_results_list if r['name'] == selected_name)
+
+        tensile_data = selected_tensile['tensile_results']
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+        with col_m1:
+            st.metric("Ultimate Stress", f"{tensile_data['ultimate_stress']:.2f} GPa")
+
+        with col_m2:
+            if tensile_data['youngs_modulus']:
+                st.metric("Young's Modulus", f"{tensile_data['youngs_modulus']:.2f} GPa")
+            else:
+                st.metric("Young's Modulus", "N/A")
+
+        with col_m3:
+            if tensile_data['yield_strain']:
+                st.metric("Yield Strain", f"{tensile_data['yield_strain']:.2f}%")
+            else:
+                st.metric("Yield Strain", "N/A")
+
+        with col_m4:
+            st.metric("Max Strain", f"{tensile_data['max_strain_reached']:.2f}%")
+
+        st.subheader("📊 Stress-Strain Analysis")
+        fig_tensile = create_stress_strain_plot(tensile_data)
+        st.plotly_chart(fig_tensile, use_container_width=True)
+
+        with st.expander("Test Parameters"):
+            params_data = {
+                'Parameter': [
+                    'Strain Direction',
+                    'Temperature',
+                    'Strain Rate',
+                    'Max Strain',
+                    'Timestep',
+                    'Equilibration Steps'
+                ],
+                'Value': [
+                    tensile_data['strain_direction'],
+                    f"{tensile_data['tensile_params']['temperature']} K",
+                    f"{tensile_data['tensile_params']['strain_rate']}%/ps",
+                    f"{tensile_data['tensile_params']['max_strain']}%",
+                    f"{tensile_data['tensile_params']['timestep']} fs",
+                    f"{tensile_data['tensile_params']['equilibration_steps']}"
+                ]
+            }
+            st.dataframe(params_data, use_container_width=True, hide_index=True)
+
+        st.subheader("📥 Download Data")
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
+
+        with col_dl1:
+            tensile_json = export_tensile_results(tensile_data, selected_tensile['name'])
+            st.download_button(
+                label="📊 Download Results (JSON)",
+                data=tensile_json,
+                file_name=f"tensile_test_{selected_tensile['name'].replace('.', '_')}.json",
+                mime="application/json",
+                type='primary'
+            )
+
+        with col_dl2:
+            if tensile_data.get('trajectory_data'):
+                from helpers.tensile_test import create_tensile_trajectory_xyz
+
+                xyz_content = create_tensile_trajectory_xyz(
+                    tensile_data['trajectory_data'],
+                    selected_tensile['name'],
+                    tensile_data['tensile_params']
+                )
+
+                if xyz_content:
+                    st.download_button(
+                        label="📥 Download Trajectory (XYZ)",
+                        data=xyz_content,
+                        file_name=f"tensile_trajectory_{selected_tensile['name'].replace('.', '_')}.xyz",
+                        mime="text/plain",
+                        type='primary'
+                    )
+            else:
+                st.info("No trajectory data available")
+
 
 with tab4_1:  # MD Trajectories and Analysis tab
     st.header("MD Trajectories and Analysis")
@@ -3290,7 +3427,7 @@ with tab1:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
-                 "GA Structure Optimization", "Molecular Dynamics"],
+                 "GA Structure Optimization", "Molecular Dynamics", "Virtual Tensile Test"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -3367,10 +3504,15 @@ with tab1:
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
-            elif calc_type == "Molecular Dynamics":
-                st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY**")
-                md_params = setup_md_parameters_ui()
-
+        if calc_type == "Molecular Dynamics":
+            st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
+            md_params = setup_md_parameters_ui()
+        if calc_type == "Virtual Tensile Test":
+            st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
+            tensile_params = setup_tensile_test_ui(
+                default_settings=st.session_state.default_settings,
+                save_settings_function=save_default_settings
+            )
         optimization_params = {
             'optimizer': "BFGS",
             'fmax': 0.05,
@@ -4038,6 +4180,20 @@ with tab2:
                     'estimated_remaining_time': message.get('estimated_remaining_time'),
                     'elapsed_time': message.get('elapsed_time', 0)
                 }
+            elif message.get('type') == 'tensile_step':
+                structure_name = message['structure']
+                st.session_state.current_tensile_info = {
+                    'structure': structure_name,
+                    'step': message['step'],
+                    'total_steps': message.get('total_steps', 0),
+                    'strain_percent': message['strain_percent'],
+                    'stress_GPa': message['stress_GPa'],
+                    'temperature': message['temperature'],
+                    'energy': message['energy'],
+                    'avg_step_time': message.get('avg_step_time', 0),
+                    'estimated_remaining_time': message.get('estimated_remaining_time'),
+                    'elapsed_time': message.get('elapsed_time', 0)
+                }
             elif message.get('type') == 'ga_progress':
                 current_time = time.time()
                 if current_time - st.session_state.last_ga_progress_update > 0.1:
@@ -4364,6 +4520,56 @@ with tab2:
                 else:
                     time_str = f"{remaining_time / 3600:.1f}h"
                 st.info(f"Estimated remaining time: {time_str}")
+        elif calc_type == "Virtual Tensile Test" and st.session_state.get('current_tensile_info'):
+            tensile_info = st.session_state.current_tensile_info
+
+            strain_percent = tensile_info['strain_percent']
+            stress = tensile_info['stress_GPa']
+            current_step = tensile_info['step']
+            total_steps = tensile_info.get('total_steps', 0)
+
+            if total_steps > 0:
+                progress_value = min(1.0, current_step / total_steps)
+                progress_text = (f"Tensile Test {tensile_info['structure']}: "
+                                 f"Step {current_step:,}/{total_steps:,} | "
+                                 f"Strain {strain_percent:.2f}%, Stress {stress:.2f} GPa")
+            else:
+                progress_value = min(1.0, strain_percent / 10.0)
+                progress_text = f"Tensile Test {tensile_info['structure']}: Strain {strain_percent:.2f}%, Stress {stress:.2f} GPa"
+
+            st.progress(progress_value, text=progress_text)
+
+            col_t1, col_t2, col_t3, col_t4, col_t5, col_t6 = st.columns(6)
+
+            with col_t1:
+                if total_steps > 0:
+                    st.metric("Step", f"{current_step:,}/{total_steps:,}")
+                else:
+                    st.metric("Strain", f"{strain_percent:.2f}%")
+
+            with col_t2:
+                st.metric("Strain", f"{strain_percent:.2f}%")
+
+            with col_t3:
+                st.metric("Stress", f"{stress:.2f} GPa")
+
+            with col_t4:
+                st.metric("Temperature", f"{tensile_info['temperature']:.1f} K")
+
+            with col_t5:
+                if tensile_info.get('avg_step_time', 0) > 0:
+                    st.metric("Avg Time/Step", f"{tensile_info['avg_step_time']:.2f}s")
+
+            with col_t6:
+                if tensile_info.get('estimated_remaining_time'):
+                    remaining = tensile_info['estimated_remaining_time']
+                    if remaining < 60:
+                        time_display = f"{remaining:.0f}s"
+                    elif remaining < 3600:
+                        time_display = f"{remaining / 60:.1f}m"
+                    else:
+                        time_display = f"{remaining / 3600:.1f}h"
+                    st.metric("Est. Remaining", time_display)
     if st.session_state.log_messages:
         recent_messages = st.session_state.log_messages[-20:]
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
