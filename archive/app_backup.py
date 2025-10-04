@@ -53,6 +53,13 @@ from helpers.initial_settings import (
     DEFAULT_GEOMETRY_SETTINGS
 )
 
+from helpers.tensile_test import (
+    setup_tensile_test_ui,
+    run_tensile_test,
+    create_stress_strain_plot,
+    export_tensile_results
+)
+
 import py3Dmol
 import streamlit.components.v1 as components
 from pymatgen.core import Structure
@@ -96,9 +103,76 @@ DEFAULT_SETTINGS = {
     'selected_model': "MACE-MP-0b3 (medium) - Latest",
     'device': "cpu",
     'dtype': "float64",
-    'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS
+    'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS,
+'tensile_test': {  # Add this
+        'strain_direction': 0,  # x-axis
+        'strain_rate': 0.1,
+        'max_strain': 10.0,
+        'temperature': 300,
+        'timestep': 1.0,
+        'friction': 0.01,
+        'equilibration_steps': 200,
+        'sample_interval': 10,
+        'relax_between_strain': False,
+        'relax_steps': 100,
+        'use_npt_transverse': False,
+        'bulk_modulus': 110.0
+    }
 }
 
+
+def extract_orb_confidence(atoms, calculator, log_queue, structure_name):
+    """
+    Extract ORB-v3 confidence that was already calculated.
+    The confidence is automatically computed when forces are calculated.
+    """
+    try:
+        log_queue.put(f"Extracting ORB-v3 confidence for {structure_name}...")
+
+        # Check if confidence is available in calculator results
+        if 'confidence' not in calculator.results:
+            log_queue.put(f"  ⚠️ No confidence data - not an ORB-v3 model or forces not yet calculated")
+            return {'success': False, 'error': 'Confidence not available'}
+
+        # Get confidence from calculator results (already computed!)
+        confidences = calculator.results["confidence"]  # Shape: (num_atoms, 50)
+
+        # Find the predicted bin for each atom (highest probability bin)
+        predicted_bin_per_atom = np.argmax(confidences, axis=-1)
+
+        # Convert bins to predicted MAE values (0 to 0.4 Å in 50 bins)
+        bin_width = 0.4 / 50  # 0.008 Å per bin
+        per_atom_predicted_mae = predicted_bin_per_atom * bin_width
+
+        mean_predicted_mae = float(np.mean(per_atom_predicted_mae))
+        max_predicted_mae = float(np.max(per_atom_predicted_mae))
+
+
+        confidence_score = 1.0 / (1.0 + mean_predicted_mae / 0.1)
+
+        high_uncertainty_threshold = 0.1
+        high_uncertainty_atoms = np.where(per_atom_predicted_mae > high_uncertainty_threshold)[0].tolist()
+
+        log_queue.put(f"  Mean predicted MAE: {mean_predicted_mae:.4f} Å")
+        log_queue.put(f"  Max predicted MAE: {max_predicted_mae:.4f} Å")
+        log_queue.put(f"  Confidence score: {confidence_score:.4f}")
+        log_queue.put(f"  High uncertainty atoms: {len(high_uncertainty_atoms)}/{len(atoms)}")
+
+        return {
+            'success': True,
+            'per_atom_confidence_bins': predicted_bin_per_atom.tolist(),
+            'per_atom_predicted_mae': per_atom_predicted_mae.tolist(),
+            'confidence_distribution': confidences.tolist(),  # Full distribution
+            'mean_predicted_mae': mean_predicted_mae,
+            'max_predicted_mae': max_predicted_mae,
+            'confidence_score': float(confidence_score),
+            'high_uncertainty_atoms': high_uncertainty_atoms,
+            'method': 'ORB-v3 built-in confidence head'
+        }
+
+    except Exception as e:
+        log_queue.put(f"❌ Failed to extract ORB confidence for {structure_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
 
 def load_default_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -175,6 +249,9 @@ if 'ga_structure_timings' not in st.session_state:
 
 if 'last_ga_progress_update' not in st.session_state:
     st.session_state.last_ga_progress_update = 0
+
+if 'current_tensile_info' not in st.session_state:
+    st.session_state.current_tensile_info = {}
 
 st.markdown("""
     <style>
@@ -2336,7 +2413,9 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 convergence_status = None
                 phonon_results = None
                 elastic_results = None
-
+                orb_confidence = None
+                if is_orb:
+                    orb_confidence = extract_orb_confidence(atoms, calculator, log_queue, name)
                 if calc_type == "Energy Only":
                     try:
                         energy = atoms.get_potential_energy()
@@ -2631,6 +2710,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         energy = None
                         final_structure = structure  # Keep original structure
                         md_results = None
+                elif calc_type == "Virtual Tensile Test":
+                    log_queue.put(f"Starting virtual tensile test for {name}")
+
+                    tensile_results = run_tensile_test(atoms, calculator, tensile_params, log_queue, name, stop_event)
+
+                    if tensile_results['success']:
+                        energy = atoms.get_potential_energy()
+                        final_structure = structure
+                        log_queue.put(f"✅ Tensile test completed for {name}")
+                    else:
+                        log_queue.put(f"❌ Tensile test failed for {name}")
+                        energy = None
+                        tensile_results = None
 
                 formation_energy = None
                 if calc_formation_energy and energy is not None:
@@ -2651,7 +2743,9 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     'phonon_results': phonon_results,
                     'elastic_results': elastic_results,
                     'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
-                    'md_results': md_results if calc_type == "Molecular Dynamics" else None
+                    'md_results': md_results if calc_type == "Molecular Dynamics" else None,
+                    'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None,
+                    'orb_confidence': orb_confidence
                 })
 
                 structure_end_time = time.time()
@@ -2926,9 +3020,108 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
-tab1, tab_st, tab2, tab3, tab4, tab4_1, tab5 = st.tabs(
+
+tab1, tab_st, tab2, tab3, tab4, tab4_1,tab_vir, tab5,  = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔬 MACE Models Info"])
+     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔧 Virtual Tensile Tests", "🔬 MACE Models Info"])
+
+with tab_vir:
+    st.header("Virtual Tensile Test Results")
+
+    tensile_results_list = [r for r in st.session_state.results if
+                            r['calc_type'] == 'Virtual Tensile Test' and r.get('tensile_results')]
+
+    if tensile_results_list:
+        st.subheader("🔧 Mechanical Properties from Tensile Testing")
+
+        if len(tensile_results_list) == 1:
+            selected_tensile = tensile_results_list[0]
+        else:
+            tensile_names = [r['name'] for r in tensile_results_list]
+            selected_name = st.selectbox("Select structure:", tensile_names, key="tensile_selector")
+            selected_tensile = next(r for r in tensile_results_list if r['name'] == selected_name)
+
+        tensile_data = selected_tensile['tensile_results']
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+        with col_m1:
+            st.metric("Ultimate Stress", f"{tensile_data['ultimate_stress']:.2f} GPa")
+
+        with col_m2:
+            if tensile_data['youngs_modulus']:
+                st.metric("Young's Modulus", f"{tensile_data['youngs_modulus']:.2f} GPa")
+            else:
+                st.metric("Young's Modulus", "N/A")
+
+        with col_m3:
+            if tensile_data['yield_strain']:
+                st.metric("Yield Strain", f"{tensile_data['yield_strain']:.2f}%")
+            else:
+                st.metric("Yield Strain", "N/A")
+
+        with col_m4:
+            st.metric("Max Strain", f"{tensile_data['max_strain_reached']:.2f}%")
+
+        st.subheader("📊 Stress-Strain Analysis")
+        fig_tensile = create_stress_strain_plot(tensile_data)
+        st.plotly_chart(fig_tensile, use_container_width=True)
+
+        with st.expander("Test Parameters"):
+            params_data = {
+                'Parameter': [
+                    'Strain Direction',
+                    'Temperature',
+                    'Strain Rate',
+                    'Max Strain',
+                    'Timestep',
+                    'Equilibration Steps'
+                ],
+                'Value': [
+                    tensile_data['strain_direction'],
+                    f"{tensile_data['tensile_params']['temperature']} K",
+                    f"{tensile_data['tensile_params']['strain_rate']}%/ps",
+                    f"{tensile_data['tensile_params']['max_strain']}%",
+                    f"{tensile_data['tensile_params']['timestep']} fs",
+                    f"{tensile_data['tensile_params']['equilibration_steps']}"
+                ]
+            }
+            st.dataframe(params_data, use_container_width=True, hide_index=True)
+
+        st.subheader("📥 Download Data")
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
+
+        with col_dl1:
+            tensile_json = export_tensile_results(tensile_data, selected_tensile['name'])
+            st.download_button(
+                label="📊 Download Results (JSON)",
+                data=tensile_json,
+                file_name=f"tensile_test_{selected_tensile['name'].replace('.', '_')}.json",
+                mime="application/json",
+                type='primary'
+            )
+
+        with col_dl2:
+            if tensile_data.get('trajectory_data'):
+                from helpers.tensile_test import create_tensile_trajectory_xyz
+
+                xyz_content = create_tensile_trajectory_xyz(
+                    tensile_data['trajectory_data'],
+                    selected_tensile['name'],
+                    tensile_data['tensile_params']
+                )
+
+                if xyz_content:
+                    st.download_button(
+                        label="📥 Download Trajectory (XYZ)",
+                        data=xyz_content,
+                        file_name=f"tensile_trajectory_{selected_tensile['name'].replace('.', '_')}.xyz",
+                        mime="text/plain",
+                        type='primary'
+                    )
+            else:
+                st.info("No trajectory data available")
+
 
 with tab4_1:  # MD Trajectories and Analysis tab
     st.header("MD Trajectories and Analysis")
@@ -3290,7 +3483,7 @@ with tab1:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
-                 "GA Structure Optimization", "Molecular Dynamics"],
+                 "GA Structure Optimization", "Molecular Dynamics", "Virtual Tensile Test"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -3367,10 +3560,15 @@ with tab1:
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
-            elif calc_type == "Molecular Dynamics":
-                st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY**")
-                md_params = setup_md_parameters_ui()
-
+        if calc_type == "Molecular Dynamics":
+            st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
+            md_params = setup_md_parameters_ui()
+        if calc_type == "Virtual Tensile Test":
+            st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
+            tensile_params = setup_tensile_test_ui(
+                default_settings=st.session_state.default_settings,
+                save_settings_function=save_default_settings
+            )
         optimization_params = {
             'optimizer': "BFGS",
             'fmax': 0.05,
@@ -4038,6 +4236,20 @@ with tab2:
                     'estimated_remaining_time': message.get('estimated_remaining_time'),
                     'elapsed_time': message.get('elapsed_time', 0)
                 }
+            elif message.get('type') == 'tensile_step':
+                structure_name = message['structure']
+                st.session_state.current_tensile_info = {
+                    'structure': structure_name,
+                    'step': message['step'],
+                    'total_steps': message.get('total_steps', 0),
+                    'strain_percent': message['strain_percent'],
+                    'stress_GPa': message['stress_GPa'],
+                    'temperature': message['temperature'],
+                    'energy': message['energy'],
+                    'avg_step_time': message.get('avg_step_time', 0),
+                    'estimated_remaining_time': message.get('estimated_remaining_time'),
+                    'elapsed_time': message.get('elapsed_time', 0)
+                }
             elif message.get('type') == 'ga_progress':
                 current_time = time.time()
                 if current_time - st.session_state.last_ga_progress_update > 0.1:
@@ -4364,6 +4576,56 @@ with tab2:
                 else:
                     time_str = f"{remaining_time / 3600:.1f}h"
                 st.info(f"Estimated remaining time: {time_str}")
+        elif calc_type == "Virtual Tensile Test" and st.session_state.get('current_tensile_info'):
+            tensile_info = st.session_state.current_tensile_info
+
+            strain_percent = tensile_info['strain_percent']
+            stress = tensile_info['stress_GPa']
+            current_step = tensile_info['step']
+            total_steps = tensile_info.get('total_steps', 0)
+
+            if total_steps > 0:
+                progress_value = min(1.0, current_step / total_steps)
+                progress_text = (f"Tensile Test {tensile_info['structure']}: "
+                                 f"Step {current_step:,}/{total_steps:,} | "
+                                 f"Strain {strain_percent:.2f}%, Stress {stress:.2f} GPa")
+            else:
+                progress_value = min(1.0, strain_percent / 10.0)
+                progress_text = f"Tensile Test {tensile_info['structure']}: Strain {strain_percent:.2f}%, Stress {stress:.2f} GPa"
+
+            st.progress(progress_value, text=progress_text)
+
+            col_t1, col_t2, col_t3, col_t4, col_t5, col_t6 = st.columns(6)
+
+            with col_t1:
+                if total_steps > 0:
+                    st.metric("Step", f"{current_step:,}/{total_steps:,}")
+                else:
+                    st.metric("Strain", f"{strain_percent:.2f}%")
+
+            with col_t2:
+                st.metric("Strain", f"{strain_percent:.2f}%")
+
+            with col_t3:
+                st.metric("Stress", f"{stress:.2f} GPa")
+
+            with col_t4:
+                st.metric("Temperature", f"{tensile_info['temperature']:.1f} K")
+
+            with col_t5:
+                if tensile_info.get('avg_step_time', 0) > 0:
+                    st.metric("Avg Time/Step", f"{tensile_info['avg_step_time']:.2f}s")
+
+            with col_t6:
+                if tensile_info.get('estimated_remaining_time'):
+                    remaining = tensile_info['estimated_remaining_time']
+                    if remaining < 60:
+                        time_display = f"{remaining:.0f}s"
+                    elif remaining < 3600:
+                        time_display = f"{remaining / 60:.1f}m"
+                    else:
+                        time_display = f"{remaining / 3600:.1f}h"
+                    st.metric("Est. Remaining", time_display)
     if st.session_state.log_messages:
         recent_messages = st.session_state.log_messages[-20:]
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
@@ -4950,7 +5212,165 @@ with tab3:
                 )
 
                 optimized_structures = [r for r in successful_results if r['calc_type'] == 'Geometry Optimization']
+            orb_confidence_results = [r for r in st.session_state.results if
+                                      r.get('orb_confidence') and r['orb_confidence'].get('success')]
 
+            if orb_confidence_results:
+                st.subheader("🎯 ORB-v3 Confidence Analysis")
+
+                if len(orb_confidence_results) == 1:
+                    selected_conf = orb_confidence_results[0]
+                else:
+                    conf_names = [r['name'] for r in orb_confidence_results]
+                    selected_name = st.selectbox("Select structure for confidence analysis:",
+                                                 conf_names, key="conf_selector")
+                    selected_conf = next(r for r in orb_confidence_results if r['name'] == selected_name)
+
+                conf_data = selected_conf['orb_confidence']
+
+                col_conf1, col_conf2, col_conf3, col_conf4 = st.columns(4)
+
+                with col_conf1:
+                    st.metric("Confidence Score", f"{conf_data['confidence_score']:.4f}")
+                with col_conf2:
+                    st.metric("Mean Predicted MAE", f"{conf_data['mean_predicted_mae']:.4f} Å")
+                with col_conf3:
+                    st.metric("Max Predicted MAE", f"{conf_data['max_predicted_mae']:.4f} Å")
+                with col_conf4:
+                    n_uncertain = len(conf_data['high_uncertainty_atoms'])
+                    total_atoms = len(conf_data['per_atom_predicted_mae'])
+                    st.metric("High Uncertainty Atoms", f"{n_uncertain}/{total_atoms}")
+
+
+                fig_uncertainty = go.Figure()
+                fig_uncertainty.add_trace(go.Bar(
+                    y=conf_data['per_atom_predicted_mae'],
+                    marker_color=['red' if mae > 0.1 else 'orange' if mae > 0.05 else 'green'
+                                  for mae in conf_data['per_atom_predicted_mae']],
+                    marker_line_color='black',
+                    marker_line_width=1.5,
+                    name='Predicted Force MAE',
+                    hovertemplate='<b>Atom %{x}</b><br>Predicted MAE: %{y:.4f} Å<extra></extra>'
+                ))
+
+                fig_uncertainty.add_hline(
+                    y=0.1,
+                    line_dash="dash",
+                    line_color="red",
+                    line_width=2,
+                    annotation_text="High Uncertainty Threshold (0.1 Å)",
+                    annotation_font_size=16
+                )
+
+                fig_uncertainty.update_layout(
+                    title=dict(text="Per-Atom Predicted Force Error (MAE)", font=dict(size=26)),  # INCREASED from 24
+                    xaxis_title="Atom Index",
+                    yaxis_title="Predicted MAE (Å)",
+                    height=600,
+                    font=dict(size=20),
+                    xaxis=dict(
+                        tickfont=dict(size=18),
+                        title_font=dict(size=22)
+                    ),
+                    yaxis=dict(
+                        tickfont=dict(size=18),
+                        title_font=dict(size=22)
+                    ),
+                    hoverlabel=dict(
+                        bgcolor="white",
+                        font_size=20,
+                        font_family="Arial",
+                        bordercolor="black"
+                    )
+                )
+                st.plotly_chart(fig_uncertainty, use_container_width=True)
+
+                confidence = conf_data['confidence_score']
+                if confidence > 0.9:
+                    st.success("✅ High confidence - predictions are very reliable")
+                elif confidence > 0.7:
+                    st.info("ℹ️ Good confidence - predictions generally reliable")
+                elif confidence > 0.5:
+                    st.warning("⚠️ Moderate confidence - use with caution")
+                else:
+                    st.error("❌ Low confidence - predictions may be unreliable")
+
+                if conf_data['high_uncertainty_atoms']:
+                    with st.expander(f"⚠️ High Uncertainty Atoms ({len(conf_data['high_uncertainty_atoms'])} atoms)"):
+                        uncertain_data = []
+                        for idx in conf_data['high_uncertainty_atoms']:
+                            uncertain_data.append({
+                                'Atom Index': idx,
+                                'Predicted MAE (Å)': f"{conf_data['per_atom_predicted_mae'][idx]:.4f}"
+                            })
+                        df_uncertain = pd.DataFrame(uncertain_data)
+                        st.dataframe(df_uncertain, use_container_width=True, hide_index=True)
+                st.markdown("---")
+
+                with st.expander("📚 Understanding ORB-v3 Confidence Predictions", expanded=False):
+                    st.markdown("""
+                            ### What is the Confidence Head?
+
+                            ORB-v3 models include a **trained confidence classifier** that predicts how accurate the force 
+                            predictions are likely to be. This classifier was trained to predict the **Mean Absolute Error (MAE)** 
+                            between predicted and true forces on the training data.
+
+                            ### How It Works
+
+                            - The confidence head outputs **50 bins** representing force error magnitudes from **0 to 0.4 Å**
+                            - Each atom gets a predicted MAE bin based on how uncertain the model is about that atom's forces
+                            - The classifier learned these patterns during training by comparing its force predictions to DFT reference data
+
+                            ### What is MAE?
+
+                            **Mean Absolute Error (MAE)** measures the average magnitude of errors in predictions:
+                            - It calculates the absolute difference between predicted and actual force values
+                            - Lower MAE = more accurate predictions
+                            - MAE is expressed in the same units as forces (eV/Å)
+
+                            **Example:** If the predicted force on an atom is 0.15 eV/Å but the true force is 0.20 eV/Å, 
+                            the absolute error is 0.05 eV/Å.
+
+                            ### Interpretation Guidelines
+
+                            The **Predicted MAE per atom** tells you how much error to expect in the force predictions:
+
+                            | Predicted MAE | Confidence Level | Interpretation |
+                            |---------------|------------------|----------------|
+                            | **< 0.05 Å** | Very High (Green) | Forces are highly reliable, suitable for all applications |
+                            | **0.05 - 0.1 Å** | Good (Yellow) | Forces are generally reliable for most calculations |
+                            | **0.1 - 0.2 Å** | Moderate (Orange) | Use with caution, verify important results |
+                            | **> 0.2 Å** | Low (Red) | High uncertainty, predictions may be unreliable |
+
+                            ### Confidence Score
+
+                            The **overall confidence score (0-1)** is derived from the mean predicted MAE:
+                            - **> 0.9**: Very high confidence - predictions are trustworthy
+                            - **0.7 - 0.9**: Good confidence - predictions generally reliable
+                            - **0.5 - 0.7**: Moderate confidence - consider validation
+                            - **< 0.5**: Low confidence - results should be verified
+
+                            ### When to Pay Attention
+
+                            High uncertainty (high predicted MAE) often occurs when:
+                            - Atoms are in unusual chemical environments
+                            - The structure is outside the model's training distribution
+                            - There are strong electronic effects or complex bonding
+                            - The system has defects, surfaces, or interfaces
+
+                            ### Practical Use
+
+                            Use confidence predictions to:
+                            - **Identify problematic atoms** that may need special attention
+                            - **Validate results** by checking high-uncertainty regions with higher-level calculations
+                            - **Guide active learning** by selecting uncertain structures for additional DFT calculations
+                            - **Filter predictions** by rejecting low-confidence results in high-stakes applications
+
+                            ### Reference
+
+                            For more details, see the [ORB models documentation](https://github.com/orbital-materials/orb-models) 
+                            and the paper: *"Orb-v3: atomistic simulation at scale"* (arXiv:2504.06231)
+                            """)
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
         elastic_results = [r for r in st.session_state.results if
@@ -6345,6 +6765,10 @@ with tab3:
             else:
                 st.info(
                     "No completed calculations of elastic properties found. Results will appear here after this type of calculation is finish.")
+
+
+
+
         with results_tab2:
             with results_tab2:
                 st.subheader("Geometry Optimization Details")
@@ -7393,6 +7817,7 @@ with tab4:
         - Bulk download option for multiple structures
         - Compatible with visualization software (OVITO, VMD, ASE)
         """)
+
 
 if st.session_state.calculation_running:
     time.sleep(2)
