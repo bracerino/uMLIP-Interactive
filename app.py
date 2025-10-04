@@ -3443,6 +3443,27 @@ with tab1:
     st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
                            type="primary")
     if st.session_state.structures:
+        pass
+    else:
+        st.markdown(
+            """
+            <div style="
+              background-color: #e8f4fd;
+              border-left: 6px solid #2196f3;
+              padding: 15px;
+              border-radius: 8px;
+              font-family: Arial, sans-serif;
+              color: #0d47a1;
+              max-width: 800px;
+              margin: 10px 0;
+            ">
+              <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+              (<code>.cif</code>, <code>.poscar/.vasp</code>, <code>.xyz</code>, <code>.lmp</code>)
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    if True:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
 
         if show_preview:
@@ -3904,11 +3925,31 @@ with tab1:
 
 
 
-
     else:
         st.info("Upload structure files to begin")
 with tab_st:
     if st.session_state.structures_locked:
+        pass
+    else:
+        st.markdown(
+                    """
+                    <div style="
+                      background-color: #e8f4fd;
+                      border-left: 6px solid #2196f3;
+                      padding: 15px;
+                      border-radius: 8px;
+                      font-family: Arial, sans-serif;
+                      color: #0d47a1;
+                      max-width: 800px;
+                      margin: 10px 0;
+                    ">
+                      <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+                      (<code>.cif</code>, <code>.poscar/.vasp</code>, <code>.xyz</code>, <code>.lmp</code>)
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+    if True:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
         st.info(
@@ -3968,7 +4009,7 @@ with tab_st:
 
         with col3:
             but_local_script = st.button(
-                "📂 Generate Python Script (Will use local POSCAR files in the same folder where the script will be placed)",
+                "📂 Generate Python Script (Will use POSCAR files in the same folder where the script will be placed)",
                 type="secondary",
                 disabled=False,
             )
