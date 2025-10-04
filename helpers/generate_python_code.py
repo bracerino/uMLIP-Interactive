@@ -148,7 +148,7 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS
+from ase.optimize import BFGS, LBFGS, FIRE
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -263,7 +263,7 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS
+from ase.optimize import BFGS, LBFGS, FIRE
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -3223,7 +3223,13 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
-    else:
+    elif cell_constraint == "Tetragonal (a=b, optimize a and c)":
+        from ase.constraints import FixSymmetry
+        existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
+        symmetry_constraint = FixSymmetry(atoms)
+        atoms.set_constraint(existing_constraints + [symmetry_constraint])
+        return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+    else:  # "Lattice parameters only (fix angles)"
         if hydrostatic_strain:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
@@ -3400,17 +3406,20 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 opt_mode = "atoms_only"
                 print(f"  🔒 Optimizing atoms only (fixed cell)")
             elif optimization_type == "Cell only (fixed atoms)":
-                # Add constraint to fix all atoms for cell-only optimization
                 existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
                 all_fixed_constraint = FixAtoms(mask=[True] * len(atoms))
                 atoms.set_constraint([all_fixed_constraint] + existing_constraints)
                 optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
                 opt_mode = "cell_only"
                 print(f"  🔒 Optimizing cell only (fixed atoms)")
+                if cell_constraint == "Tetragonal (a=b, optimize a and c)":
+                    print(f"  📐 Using tetragonal constraint (a=b)")
             else:
                 optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
                 opt_mode = "both"
                 print(f"  🔄 Optimizing both atoms and cell")
+                if cell_constraint == "Tetragonal (a=b, optimize a and c)":
+                    print(f"  📐 Using tetragonal constraint (a=b)")
 
             logger = OptimizationLogger(filename, max_steps, "optimized_structures")
             
