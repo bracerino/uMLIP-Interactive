@@ -7,12 +7,92 @@ This module generates standalone Python scripts for MACE molecular dynamics calc
 import json
 from datetime import datetime
 
+
+
+
+def _generate_mlip_imports():
+    """Generate imports for all supported MLIP models."""
+    return """# MACE imports
+try:
+    from mace.calculators import mace_mp, mace_off
+    MACE_AVAILABLE = True
+except ImportError:
+    try:
+        from mace.calculators import MACECalculator
+        MACE_AVAILABLE = True
+    except ImportError:
+        MACE_AVAILABLE = False
+
+# CHGNet imports
+try:
+    from chgnet.model.model import CHGNet
+    from chgnet.model.dynamics import CHGNetCalculator
+    CHGNET_AVAILABLE = True
+except ImportError:
+    CHGNET_AVAILABLE = False
+
+# SevenNet imports (requires torch 2.6 compatibility)
+try:
+    torch.serialization.add_safe_globals([slice])  # Required for torch 2.6
+    from sevenn.calculator import SevenNetCalculator
+    SEVENNET_AVAILABLE = True
+except ImportError:
+    SEVENNET_AVAILABLE = False
+
+# MatterSim imports
+try:
+    from mattersim.forcefield import MatterSimCalculator
+    MATTERSIM_AVAILABLE = True
+except ImportError:
+    MATTERSIM_AVAILABLE = False
+
+# ORB imports
+try:
+    from orb_models.forcefield import pretrained
+    from orb_models.forcefield.calculator import ORBCalculator
+    ORB_AVAILABLE = True
+except ImportError:
+    ORB_AVAILABLE = False
+
+# Nequix imports
+try:
+    from nequix.calculator import NequixCalculator
+    NEQUIX_AVAILABLE = True
+except ImportError:
+    NEQUIX_AVAILABLE = False
+
+# Check if any calculator is available
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE):
+    print("❌ No MLIP calculators available!")
+    print("Please install at least one:")
+    print("  - MACE: pip install mace-torch")
+    print("  - CHGNet: pip install chgnet") 
+    print("  - SevenNet: pip install sevenn")
+    print("  - MatterSim: pip install mattersim")
+    print("  - ORB: pip install orb-models")
+    print("  - Nequix: pip install nequix")
+    exit(1)
+else:
+    available_models = []
+    if MACE_AVAILABLE:
+        available_models.append("MACE")
+    if CHGNET_AVAILABLE:
+        available_models.append("CHGNet")
+    if SEVENNET_AVAILABLE:
+        available_models.append("SevenNet")
+    if MATTERSIM_AVAILABLE:
+        available_models.append("MatterSim")
+    if ORB_AVAILABLE:
+        available_models.append("ORB")
+    if NEQUIX_AVAILABLE:
+        available_models.append("Nequix")
+    print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
+
+
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
-    """
-    Generate a complete Python script for MACE calculations with all parameters properly configured.
-    """
+
 
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
@@ -35,15 +115,12 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
 
-    is_chgnet = model_size.startswith("chgnet")
-
-
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
-Model: {model_size}
+Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}
 \"\"\"
@@ -78,24 +155,7 @@ from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-# MACE imports
-try:
-    from mace.calculators import mace_mp, mace_off
-    MACE_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import MACECalculator
-        MACE_AVAILABLE = True
-    except ImportError:
-        MACE_AVAILABLE = False
-        print("❌ MACE not available. Please install with: pip install mace-torch")
-        exit(1)
-#CHGNet imports
-try:
-    from chgnet.model.model import CHGNet
-    from chgnet.model.dynamics import CHGNetCalculator
-except ImportError:
-    print("❌ CHGNet not available. Please install with: pip install chgnet")
+{_generate_mlip_imports()}
 
 {_generate_utility_functions()}
 
@@ -106,7 +166,7 @@ def main():
     print("🚀 Starting MACE calculation script...")
     print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
     print(f"🔬 Calculation type: {calc_type}")
-    print(f"🤖 Model: {model_size}")
+    print(f"🤖 Model: {selected_model_key or model_size}")
     print(f"💻 Device: {device}")
     print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
 
@@ -133,7 +193,6 @@ def main():
     print(f"\\n✅ All calculations completed!")
     print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
     print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
-    #print("📊 Check the results/ directory for output files")
 
 if __name__ == "__main__":
     main()
@@ -141,19 +200,16 @@ if __name__ == "__main__":
 
     return script
 
-
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
-    This is identical to generate_python_script() but replaces structure creation with local file reading.
     """
 
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype)
 
-    # Use the same calculation code as the original function
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
     elif calc_type == "Geometry Optimization":
@@ -171,13 +227,12 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
 
-    # The script template is identical to the original, just without structure creation
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
-Model: {model_size}
+Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}
 
@@ -215,18 +270,7 @@ from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-# MACE imports
-try:
-    from mace.calculators import mace_mp, mace_off
-    MACE_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import MACECalculator
-        MACE_AVAILABLE = True
-    except ImportError:
-        MACE_AVAILABLE = False
-        print("❌ MACE not available. Please install with: pip install mace-torch")
-        exit(1)
+{_generate_mlip_imports()}
 
 {_generate_utility_functions()}
 
@@ -237,7 +281,7 @@ def main():
     print("🚀 Starting MACE calculation script...")
     print(f"📅 Timestamp: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}")
     print(f"🔬 Calculation type: {calc_type}")
-    print(f"🤖 Model: {model_size}")
+    print(f"🤖 Model: {selected_model_key or model_size}")
     print(f"💻 Device: {device}")
     print(f"🧵 CPU threads: {{os.environ.get('OMP_NUM_THREADS', 'default')}}")
 
@@ -266,7 +310,7 @@ def main():
             print(f"  {{i}}. {{filename}} - ❌ Error: {{str(e)}}")
 
     # Setup calculator
-    print("\\n🔧 Setting up MACE calculator...")
+    print("\\n🔧 Setting up MLIP calculator...")
 {calculator_setup_code}
 
     # Run calculations
@@ -858,7 +902,7 @@ class GeneticAlgorithmOptimizer:
 
 
 def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell_info=None):
-    """Generate code for GA structure optimization with supercell support and final generation saving."""
+    """Generate code for GA structure optimization with supercell support, final generation saving, and concentration sweep support."""
 
     # Convert parameters to proper Python format instead of JSON
     def format_python_dict(d, indent=4):
@@ -913,7 +957,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
     print(f"📊 Using original structure: {base_structure.composition.reduced_formula} ({len(base_structure)} atoms)")
 '''
 
-    # Main GA code
+    # Main GA code with concentration sweep support
     code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
 
     if len(structure_files) == 0:
@@ -945,6 +989,17 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
     print(f"🎯 Substitutions configured: {{len(substitutions)}} element types")
     print(f"🧬 GA parameters: {{ga_params['population_size']}} individuals, {{ga_params['max_generations']}} generations, {{ga_params['num_runs']}} runs")
 
+    # Generate concentration combinations for analysis
+    concentration_combinations = generate_concentration_combinations(substitutions)
+    concentration_combinations = sort_concentration_combinations(concentration_combinations)
+
+    runs_per_concentration = ga_params.get('num_runs', 1)
+
+    if len(concentration_combinations) > 1:
+        print(f"🧬 Starting GA concentration sweep: {{len(concentration_combinations)}} combinations × {{runs_per_concentration}} runs each")
+    else:
+        print(f"🧬 Starting {{runs_per_concentration}} GA runs")
+
     # Validate substitutions against the final structure (after supercell creation)
     for element, sub_info in substitutions.items():
         element_sites = [i for i, site in enumerate(base_structure) if site.specie.symbol == element]
@@ -952,8 +1007,12 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
             print(f"❌ Element {{element}} not found in structure!")
             continue
 
-        expected_substitutions = int(len(element_sites) * sub_info['concentration'])
-        print(f"  🔄 {{element}}: {{len(element_sites)}} sites → {{sub_info['new_element']}} ({{sub_info['concentration']*100:.1f}}% = {{expected_substitutions}} atoms)")
+        if 'concentration_list' in sub_info:
+            conc_range = f"{{min(sub_info['concentration_list']) * 100:.1f}}-{{max(sub_info['concentration_list']) * 100:.1f}}%"
+            print(f"  🔄 {{element}}: {{len(element_sites)}} sites → {{sub_info['new_element']}} ({{conc_range}})")
+        else:
+            expected_substitutions = int(len(element_sites) * sub_info['concentration'])
+            print(f"  🔄 {{element}}: {{len(element_sites)}} sites → {{sub_info['new_element']}} ({{sub_info['concentration']*100:.1f}}% = {{expected_substitutions}} atoms)")
 
     # Calculate reference energies if needed
     reference_energies = {{}}'''
@@ -981,117 +1040,183 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 
     code += '''
 
-    # Run GA optimization
+    # Run GA optimization with concentration sweep support
     all_results = []
-    num_runs = ga_params.get('num_runs', 1)
+    combination_results = {}
 
-    print(f"\\n🧬 Starting {num_runs} GA runs...")
+    for combo_idx, combo_substitutions in enumerate(concentration_combinations):
+        if len(concentration_combinations) > 1:
+            combo_name = create_combination_name(combo_substitutions)
+            print(f"\\n🔄 Starting combination {combo_idx + 1}/{len(concentration_combinations)}: {combo_name}")
+            print("="*80)
+        else:
+            combo_name = "single_combination"
 
-    for run_id in range(num_runs):
-        print(f"\\n" + "="*80)
-        print(f"🔄 Starting GA run {run_id + 1}/{num_runs}")
-        print("="*80)
+        combo_results = []
 
-        try:
-            optimizer = GeneticAlgorithmOptimizer(
-                base_structure, calculator, substitutions, ga_params, run_id
-            )
-
-            results = optimizer.optimize()
-
-            if results:
-                all_results.append(results)
-                print(f"\\n✅ GA run {run_id + 1} completed: Best energy = {results['best_energy']:.6f} eV")
-
-                # Save individual run results
-                run_result = {
-                    "run_id": run_id,
-                    "best_energy_eV": results['best_energy'],
-                    "final_generation": len(results['fitness_history']),
-                    "converged": len(results['fitness_history']) < ga_params['max_generations'],
-                    "final_population_size": len(results['final_population']),
-                    "total_time_seconds": results.get('total_time', 0),
-                    "calculation_type": "ga_structure_optimization"
-                }
-
-                # Save best structure for this run
-                best_structure = results['best_structure']
-                if best_structure:
-                    # Convert to ASE and save
-                    best_atoms = AseAtomsAdaptor().get_atoms(best_structure)
-
-                    # Save as POSCAR
-                    output_filename = f"ga_results/best_structure_run_{run_id + 1:02d}.vasp"
-                    write(output_filename, best_atoms, format='vasp', direct=True, sort=True)
-                    print(f"  💾 Saved best structure: {output_filename}")
-
-                    run_result["output_structure"] = output_filename
-                    run_result["best_formula"] = best_structure.composition.reduced_formula
-                    run_result["best_num_atoms"] = len(best_structure)
-
-                    # Calculate formation energy if needed
-                    if calc_formation_energy:
-                        formation_energy = calculate_formation_energy(
-                            results['best_energy'], best_atoms, reference_energies
-                        )
-                        if formation_energy is not None:
-                            run_result["formation_energy_eV_per_atom"] = formation_energy
-                            print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
-
-                # Save fitness history
-                fitness_df = pd.DataFrame(results['fitness_history'])
-                fitness_df.to_csv(f"ga_results/fitness_history_run_{run_id + 1:02d}.csv", index=False)
-
-                # Save detailed history if available
-                if 'detailed_history' in results:
-                    detailed_df = pd.DataFrame(results['detailed_history'])
-                    detailed_df.to_csv(f"ga_results/detailed_history_run_{run_id + 1:02d}.csv", index=False)
-
-
-                # Save top 20% of final generation structures
-                if results['final_population'] and results['final_fitness']:
-                    final_population = results['final_population']
-                    final_fitness = results['final_fitness']
-
-                    # Sort by fitness (energy) and get top 20%
-                    sorted_indices = np.argsort(final_fitness)
-                    top_20_percent = max(1, int(len(sorted_indices) * 0.2))
-                    best_indices = sorted_indices[:top_20_percent]
-
-                    print(f"  💾 Saving top {top_20_percent} structures ({len(best_indices)}) from final generation")
-
-                    # Create directory for this run's final generation
-                    final_gen_dir = f"ga_results/run_{run_id + 1:02d}_final_generation_top20"
-                    os.makedirs(final_gen_dir, exist_ok=True)
-
-                    for rank, idx in enumerate(best_indices):
-                        structure = final_population[idx]
-                        energy = final_fitness[idx]
-
-                        # Convert to ASE and save as POSCAR
-                        best_atoms = AseAtomsAdaptor().get_atoms(structure)
-
-                        # Generate filename with rank and energy
-                        poscar_filename = f"final_gen_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
-                        poscar_path = os.path.join(final_gen_dir, poscar_filename)
-
-                        write(poscar_path, best_atoms, format='vasp', direct=True, sort=True)
-
-                    print(f"  ✅ Saved {len(best_indices)} final generation structures to {final_gen_dir}")
-
+        for run_id in range(runs_per_concentration):
+            if len(concentration_combinations) > 1:
+                print(f"\\n🔄 Starting GA run {run_id + 1}/{runs_per_concentration} for {combo_name}")
+                print(f"   └─ Combination {combo_idx + 1}/{len(concentration_combinations)} | Overall progress: {((combo_idx * runs_per_concentration + run_id) / (len(concentration_combinations) * runs_per_concentration)) * 100:.1f}%")
             else:
-                print(f"❌ GA run {run_id + 1} failed")
+                print(f"\\n" + "="*80)
+                print(f"🔄 Starting GA run {run_id + 1}/{runs_per_concentration}")
+                print("="*80)
 
-        except Exception as run_error:
-            print(f"❌ GA run {run_id + 1} failed with error: {str(run_error)}")
-            continue
+            try:
+                optimizer = GeneticAlgorithmOptimizer(
+                    base_structure, calculator, combo_substitutions, ga_params, run_id
+                )
+
+                results = optimizer.optimize()
+
+                if results:
+                    # Add combination info if multiple combinations
+                    if len(concentration_combinations) > 1:
+                        results['concentration_combination'] = combo_substitutions
+                        results['combination_name'] = combo_name
+                        results['combination_idx'] = combo_idx
+                        results['run_within_combination'] = run_id + 1
+
+                    combo_results.append(results)
+                    all_results.append(results)
+
+                    if len(concentration_combinations) > 1:
+                        print(f"\\n✅ GA run {run_id + 1}/{runs_per_concentration} for {combo_name} completed: Best energy = {results['best_energy']:.6f} eV")
+                    else:
+                        print(f"\\n✅ GA run {run_id + 1}/{runs_per_concentration} completed: Best energy = {results['best_energy']:.6f} eV")
+
+                    # Save individual run results
+                    run_result = {
+                        "run_id": run_id,
+                        "combination_idx": combo_idx if len(concentration_combinations) > 1 else 0,
+                        "combination_name": combo_name,
+                        "best_energy_eV": results['best_energy'],
+                        "final_generation": len(results['fitness_history']),
+                        "converged": len(results['fitness_history']) < ga_params['max_generations'],
+                        "final_population_size": len(results['final_population']),
+                        "total_time_seconds": results.get('total_time', 0),
+                        "calculation_type": "ga_structure_optimization"
+                    }
+
+                    # Save best structure for this run
+                    best_structure = results['best_structure']
+                    if best_structure:
+                        # Convert to ASE and save
+                        best_atoms = AseAtomsAdaptor().get_atoms(best_structure)
+
+                        # Create combination-specific directory
+                        if len(concentration_combinations) > 1:
+                            combo_dir = f"ga_results/{combo_name}"
+                            os.makedirs(combo_dir, exist_ok=True)
+                            output_filename = f"{combo_dir}/best_structure_run_{run_id + 1:02d}.vasp"
+                        else:
+                            output_filename = f"ga_results/best_structure_run_{run_id + 1:02d}.vasp"
+
+                        # Save as POSCAR
+                        write(output_filename, best_atoms, format='vasp', direct=True, sort=True)
+                        print(f"  💾 Saved best structure: {output_filename}")
+
+                        run_result["output_structure"] = output_filename
+                        run_result["best_formula"] = best_structure.composition.reduced_formula
+                        run_result["best_num_atoms"] = len(best_structure)
+
+                        # Calculate formation energy if needed
+                        if calc_formation_energy:
+                            formation_energy = calculate_formation_energy(
+                                results['best_energy'], best_atoms, reference_energies
+                            )
+                            if formation_energy is not None:
+                                run_result["formation_energy_eV_per_atom"] = formation_energy
+                                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
+
+                    # Save fitness history
+                    if len(concentration_combinations) > 1:
+                        fitness_file = f"ga_results/{combo_name}/fitness_history_run_{run_id + 1:02d}.csv"
+                    else:
+                        fitness_file = f"ga_results/fitness_history_run_{run_id + 1:02d}.csv"
+
+                    fitness_df = pd.DataFrame(results['fitness_history'])
+                    fitness_df.to_csv(fitness_file, index=False)
+
+                    # Save detailed history if available
+                    if 'detailed_history' in results:
+                        if len(concentration_combinations) > 1:
+                            detailed_file = f"ga_results/{combo_name}/detailed_history_run_{run_id + 1:02d}.csv"
+                        else:
+                            detailed_file = f"ga_results/detailed_history_run_{run_id + 1:02d}.csv"
+
+                        detailed_df = pd.DataFrame(results['detailed_history'])
+                        detailed_df.to_csv(detailed_file, index=False)
+
+                    # Save top 20% of final generation structures
+                    if results['final_population'] and results['final_fitness']:
+                        final_population = results['final_population']
+                        final_fitness = results['final_fitness']
+
+                        # Sort by fitness (energy) and get top 20%
+                        sorted_indices = np.argsort(final_fitness)
+                        top_20_percent = max(1, int(len(sorted_indices) * 0.2))
+                        best_indices = sorted_indices[:top_20_percent]
+
+                        print(f"  💾 Saving top {top_20_percent} structures ({len(best_indices)}) from final generation")
+
+                        # Create directory for this run's final generation
+                        if len(concentration_combinations) > 1:
+                            final_gen_dir = f"ga_results/{combo_name}/run_{run_id + 1:02d}_final_generation_top20"
+                        else:
+                            final_gen_dir = f"ga_results/run_{run_id + 1:02d}_final_generation_top20"
+
+                        os.makedirs(final_gen_dir, exist_ok=True)
+
+                        for rank, idx in enumerate(best_indices):
+                            structure = final_population[idx]
+                            energy = final_fitness[idx]
+
+                            # Convert to ASE and save as POSCAR
+                            best_atoms = AseAtomsAdaptor().get_atoms(structure)
+
+                            # Generate filename with rank and energy
+                            poscar_filename = f"final_gen_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+                            poscar_path = os.path.join(final_gen_dir, poscar_filename)
+
+                            write(poscar_path, best_atoms, format='vasp', direct=True, sort=True)
+
+                        print(f"  ✅ Saved {len(best_indices)} final generation structures to {final_gen_dir}")
+
+                else:
+                    if len(concentration_combinations) > 1:
+                        print(f"❌ GA run {run_id + 1}/{runs_per_concentration} for {combo_name} failed")
+                    else:
+                        print(f"❌ GA run {run_id + 1}/{runs_per_concentration} failed")
+
+            except Exception as run_error:
+                if len(concentration_combinations) > 1:
+                    print(f"❌ GA run {run_id + 1}/{runs_per_concentration} for {combo_name} failed with error: {str(run_error)}")
+                else:
+                    print(f"❌ GA run {run_id + 1}/{runs_per_concentration} failed with error: {str(run_error)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                continue
+
+        if combo_results:
+            combination_results[combo_name] = combo_results
+            if len(concentration_combinations) > 1:
+                best_for_combination = min(combo_results, key=lambda x: x['best_energy'])
+                print(f"\\n✅ Combination {combo_name} completed. Best energy: {best_for_combination['best_energy']:.6f} eV from {len(combo_results)} runs")
+                print(f"   └─ Combination {combo_idx + 1}/{len(concentration_combinations)} finished")
 
     # Process overall results
     if all_results:
         best_overall = min(all_results, key=lambda x: x['best_energy'])
-        print(f"\\n" + "="*80)
-        print(f"★ FINAL RESULTS - Best energy from {len(all_results)} runs: {best_overall['best_energy']:.6f} eV")
-        print("="*80)
+
+        if len(concentration_combinations) > 1:
+            print(f"\\n🏆 Overall best energy from {len(all_results)} total runs: {best_overall['best_energy']:.6f} eV")
+            print(f"🏆 Best combination: {best_overall.get('combination_name', 'Unknown')}")
+        else:
+            print(f"\\n" + "="*80)
+            print(f"★ FINAL RESULTS - Best energy from {len(all_results)} runs: {best_overall['best_energy']:.6f} eV")
+            print("="*80)
 
         # Save overall best structure
         overall_best_structure = best_overall['best_structure']
@@ -1100,6 +1225,8 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 
             # Save as multiple formats
             base_name = "overall_best_structure"
+            if len(concentration_combinations) > 1:
+                base_name += f"_{best_overall.get('combination_name', 'unknown')}"
 
             # POSCAR format
             write(f"ga_results/{base_name}.vasp", best_atoms, format='vasp', direct=True, sort=True)
@@ -1127,6 +1254,12 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                 'Total_Time_s': result.get('total_time', 0)
             }
 
+            # Add combination info if available
+            if len(concentration_combinations) > 1:
+                row['Combination_Name'] = result.get('combination_name', 'Unknown')
+                row['Combination_Idx'] = result.get('combination_idx', 0)
+                row['Run_Within_Combination'] = result.get('run_within_combination', 1)
+
             if result['best_structure']:
                 row['Best_Formula'] = result['best_structure'].composition.reduced_formula
                 row['Best_Num_Atoms'] = len(result['best_structure'])
@@ -1146,6 +1279,24 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
         df_comparison = pd.DataFrame(comparison_data)
         df_comparison.to_csv("ga_results/ga_runs_comparison.csv", index=False)
         print(f"💾 Saved comparison: ga_results/ga_runs_comparison.csv")
+
+        # Save concentration sweep summary if multiple combinations
+        if len(concentration_combinations) > 1:
+            sweep_data = []
+            for combo_name, combo_runs in combination_results.items():
+                best_run = min(combo_runs, key=lambda x: x['best_energy'])
+                sweep_data.append({
+                    'Combination_Name': combo_name,
+                    'Best_Energy_eV': best_run['best_energy'],
+                    'Runs_Completed': len(combo_runs),
+                    'Avg_Generations': np.mean([len(run['fitness_history']) for run in combo_runs]),
+                    'Energy_Range_meV': (max(run['best_energy'] for run in combo_runs) - min(run['best_energy'] for run in combo_runs)) * 1000,
+                    'Best_Formula': best_run['best_structure'].composition.reduced_formula if best_run['best_structure'] else 'Unknown'
+                })
+
+            df_sweep = pd.DataFrame(sweep_data)
+            df_sweep.to_csv("ga_results/concentration_sweep_summary.csv", index=False)
+            print(f"💾 Saved concentration sweep summary: ga_results/concentration_sweep_summary.csv")
 
         # Generate plots if matplotlib is available
         try:
@@ -1167,12 +1318,26 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
             run_ids = [r['run_id'] + 1 for r in all_results]
             best_energies = [r['best_energy'] for r in all_results]
 
-            colors = ['green' if e == min(best_energies) else 'steelblue' for e in best_energies]
+            # Color by combination if multiple combinations
+            if len(concentration_combinations) > 1:
+                colors = []
+                color_map = plt.cm.tab10
+                for r in all_results:
+                    combo_idx = r.get('combination_idx', 0)
+                    colors.append(color_map(combo_idx % 10))
+            else:
+                colors = ['green' if e == min(best_energies) else 'steelblue' for e in best_energies]
+
             bars = plt.bar(run_ids, best_energies, color=colors, alpha=0.7)
 
             plt.xlabel('GA Run', fontsize=22, fontweight='bold')
             plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
-            plt.title('Best Energy Comparison Across GA Runs', fontsize=26, fontweight='bold', pad=20)
+
+            if len(concentration_combinations) > 1:
+                plt.title('Best Energy Comparison Across GA Runs (Concentration Sweep)', fontsize=26, fontweight='bold', pad=20)
+            else:
+                plt.title('Best Energy Comparison Across GA Runs', fontsize=26, fontweight='bold', pad=20)
+
             plt.xticks(run_ids, fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
 
@@ -1187,30 +1352,42 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
             plt.close()
             print("✅ Saved energy comparison plot: ga_results/ga_best_energies_comparison.png")
 
-            # 2. Convergence plot for best run
-            best_run = best_overall
-            if best_run['fitness_history']:
+            # 2. Concentration sweep plot if multiple combinations
+            if len(concentration_combinations) > 1 and combination_results:
                 plt.figure(figsize=(16, 10))
 
-                generations = [h['generation'] for h in best_run['fitness_history']]
-                best_fitness = [h['best'] for h in best_run['fitness_history']]
-                avg_fitness = [h['average'] for h in best_run['fitness_history']]
+                combinations = list(combination_results.keys())
+                combo_best_energies = []
+                for combo_name in combinations:
+                    combo_runs = combination_results[combo_name]
+                    best_energy = min(run['best_energy'] for run in combo_runs)
+                    combo_best_energies.append(best_energy)
 
-                plt.plot(generations, best_fitness, 'b-', linewidth=3, marker='o', markersize=6, label='Best Energy')
-                plt.plot(generations, avg_fitness, 'r--', linewidth=2, marker='s', markersize=4, label='Average Energy')
+                # Find the best energy combination
+                best_idx = combo_best_energies.index(min(combo_best_energies))
+                colors = ['#28A745' if i == best_idx else '#667eea' for i in range(len(combo_best_energies))]
 
-                plt.xlabel('Generation', fontsize=22, fontweight='bold')
-                plt.ylabel('Energy (eV)', fontsize=22, fontweight='bold')
-                plt.title(f'GA Convergence - Best Run (Run {best_run["run_id"] + 1})', fontsize=26, fontweight='bold', pad=20)
-                plt.legend(fontsize=20)
-                plt.grid(True, alpha=0.3)
-                plt.xticks(fontsize=18, fontweight='bold')
+                bars = plt.bar(range(len(combinations)), combo_best_energies, color=colors, alpha=0.7)
+
+                plt.xlabel('Concentration Combination', fontsize=22, fontweight='bold')
+                plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
+                plt.title('Energy vs Concentration Combination', fontsize=26, fontweight='bold', pad=20)
+
+                # Clean up combination names for display
+                clean_names = [name.replace('_', ' ').replace('pct', '%') for name in combinations]
+                plt.xticks(range(len(combinations)), clean_names, rotation=45, ha='right', fontsize=16, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
 
+                # Add value labels
+                for bar, energy in zip(bars, combo_best_energies):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(combo_best_energies)-min(combo_best_energies))*0.01,
+                            f'{energy:.4f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
+
+                plt.grid(True, alpha=0.3, axis='y')
                 plt.tight_layout()
-                plt.savefig('ga_results/ga_convergence_best_run.png', dpi=300, bbox_inches='tight')
+                plt.savefig('ga_results/concentration_sweep_energies.png', dpi=300, bbox_inches='tight')
                 plt.close()
-                print("✅ Saved convergence plot: ga_results/ga_convergence_best_run.png")'''
+                print("✅ Saved concentration sweep plot: ga_results/concentration_sweep_energies.png")'''
 
     if calc_formation_energy:
         code += '''
@@ -1254,11 +1431,29 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 
     code += '''
 
-                # 4. Multi-Run Convergence Plot
-                if len(all_results) > 1:
-                    plt.figure(figsize=(16, 10))
+            # 4. Multi-Run Convergence Plot
+            if len(all_results) > 1:
+                plt.figure(figsize=(16, 10))
 
-                    # Color palette for different runs
+                # Color palette for different runs/combinations
+                if len(concentration_combinations) > 1:
+                    # Use different colors for different combinations
+                    color_map = plt.cm.tab10
+                    for i, result in enumerate(all_results):
+                        if result['fitness_history']:
+                            generations = [f['generation'] for f in result['fitness_history']]
+                            best_energies = [f['best'] for f in result['fitness_history']]
+
+                            combo_idx = result.get('combination_idx', 0)
+                            combo_name = result.get('combination_name', 'Unknown')
+                            color = color_map(combo_idx % 10)
+
+                            plt.plot(generations, best_energies, 
+                                    marker='o', markersize=4, linewidth=2.5, 
+                                    color=color, alpha=0.8,
+                                    label=f'{combo_name.replace("_", " ").replace("pct", "%")} - Run {result["run_id"] + 1}')
+                else:
+                    # Original single-combination coloring
                     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
                              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
@@ -1274,46 +1469,52 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                                     color=color, alpha=0.8,
                                     label=f'Run {result["run_id"] + 1} (Final: {result["best_energy"]:.6f} eV)')
 
-                    # Find and highlight the overall best
-                    best_run = min(all_results, key=lambda x: x['best_energy'])
-                    if best_run['fitness_history']:
-                        generations = [f['generation'] for f in best_run['fitness_history']]
-                        best_energies = [f['best'] for f in best_run['fitness_history']]
+                # Find and highlight the overall best
+                best_run = min(all_results, key=lambda x: x['best_energy'])
+                if best_run['fitness_history']:
+                    generations = [f['generation'] for f in best_run['fitness_history']]
+                    best_energies = [f['best'] for f in best_run['fitness_history']]
 
-                        plt.plot(generations, best_energies, 
-                                marker='s', markersize=6, linewidth=4, 
-                                color='red', alpha=0.9,
-                                label=f'★ BEST Run {best_run["run_id"] + 1}', zorder=10)
+                    plt.plot(generations, best_energies, 
+                            marker='s', markersize=6, linewidth=4, 
+                            color='red', alpha=0.9,
+                            label=f'★ BEST Run {best_run["run_id"] + 1}', zorder=10)
 
-                    plt.xlabel('Generation', fontsize=22, fontweight='bold')
-                    plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
+                plt.xlabel('Generation', fontsize=22, fontweight='bold')
+                plt.ylabel('Best Energy (eV)', fontsize=22, fontweight='bold')
+
+                if len(concentration_combinations) > 1:
+                    plt.title('GA Convergence Comparison - Concentration Sweep', fontsize=26, fontweight='bold', pad=20)
+                else:
                     plt.title('GA Convergence Comparison - All Runs', fontsize=26, fontweight='bold', pad=20)
-                    plt.legend(fontsize=16, loc='upper right')
-                    plt.grid(True, alpha=0.3)
-                    plt.xticks(fontsize=18, fontweight='bold')
-                    plt.yticks(fontsize=18, fontweight='bold')
 
-                    # Add statistics box
-                    best_energy = min(r['best_energy'] for r in all_results)
-                    worst_energy = max(r['best_energy'] for r in all_results)
-                    energy_range = (worst_energy - best_energy) * 1000  # Convert to meV
-                    avg_generations = np.mean([len(r['fitness_history']) for r in all_results])
+                plt.legend(fontsize=16, loc='upper right')
+                plt.grid(True, alpha=0.3)
+                plt.xticks(fontsize=18, fontweight='bold')
+                plt.yticks(fontsize=18, fontweight='bold')
 
-                    stats_text = f'Runs: {len(all_results)}\\n'
-                    stats_text += f'Best: {best_energy:.6f} eV\\n'
-                    stats_text += f'Range: {energy_range:.1f} meV\\n'
-                    stats_text += f'Avg Gen: {avg_generations:.0f}'
+                # Add statistics box
+                best_energy = min(r['best_energy'] for r in all_results)
+                worst_energy = max(r['best_energy'] for r in all_results)
+                energy_range = (worst_energy - best_energy) * 1000  # Convert to meV
+                avg_generations = np.mean([len(r['fitness_history']) for r in all_results])
 
-                    plt.text(0.02, 0.02, stats_text, transform=plt.gca().transAxes,
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-                            fontsize=14, fontweight='bold', verticalalignment='bottom')
+                stats_text = f'Runs: {len(all_results)}\\n'
+                stats_text += f'Best: {best_energy:.6f} eV\\n'
+                stats_text += f'Range: {energy_range:.1f} meV\\n'
+                stats_text += f'Avg Gen: {avg_generations:.0f}'
 
-                    plt.tight_layout()
-                    plt.savefig('ga_results/multi_run_convergence_comparison.png', dpi=300, bbox_inches='tight')
-                    plt.close()
-                    print("✅ Saved multi-run convergence plot: ga_results/multi_run_convergence_comparison.png")'''
+                if len(concentration_combinations) > 1:
+                    stats_text += f'\\nCombinations: {len(concentration_combinations)}'
 
-    code += '''
+                plt.text(0.02, 0.02, stats_text, transform=plt.gca().transAxes,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                        fontsize=14, fontweight='bold', verticalalignment='bottom')
+
+                plt.tight_layout()
+                plt.savefig('ga_results/multi_run_convergence_comparison.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("✅ Saved multi-run convergence plot: ga_results/multi_run_convergence_comparison.png")
 
                 # Reset matplotlib settings
                 plt.rcParams.update(plt.rcParamsDefault)
@@ -1331,6 +1532,10 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
             f.write(f"Overall best energy: {best_overall['best_energy']:.6f} eV\\n")
             f.write(f"Best run ID: {best_overall['run_id'] + 1}\\n")
 
+            if len(concentration_combinations) > 1:
+                f.write(f"Total concentration combinations: {len(concentration_combinations)}\\n")
+                f.write(f"Best combination: {best_overall.get('combination_name', 'Unknown')}\\n")
+
             if 'total_time' in best_overall:
                 f.write(f"Best run time: {best_overall['total_time']:.1f} seconds\\n")
 
@@ -1342,8 +1547,17 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                 f.write(f"Best structure atoms: {len(best_overall['best_structure'])}\\n\\n")
 
             f.write("Substitution Configuration:\\n")
-            for element, sub_info in substitutions.items():
-                f.write(f"  {element} → {sub_info['new_element']} ({sub_info['concentration']*100:.1f}%)\\n")
+            if len(concentration_combinations) > 1:
+                best_combo = best_overall.get('concentration_combination', {})
+                for element, sub_info in best_combo.items():
+                    f.write(f"  {element} → {sub_info['new_element']} ({sub_info['concentration']*100:.1f}%)\\n")
+            else:
+                for element, sub_info in substitutions.items():
+                    if 'concentration_list' in sub_info:
+                        conc_str = f"{sub_info['concentration_list'][0]*100:.1f}%"
+                    else:
+                        conc_str = f"{sub_info['concentration']*100:.1f}%"
+                    f.write(f"  {element} → {sub_info['new_element']} ({conc_str})\\n")
             f.write("\\n")
 
             f.write("GA Parameters:\\n")
@@ -1351,10 +1565,20 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                 f.write(f"  {param}: {value}\\n")
             f.write("\\n")
 
+            if len(concentration_combinations) > 1:
+                f.write("Concentration Sweep Results:\\n")
+                for combo_name, combo_runs in combination_results.items():
+                    best_combo_run = min(combo_runs, key=lambda x: x['best_energy'])
+                    f.write(f"  {combo_name}: {best_combo_run['best_energy']:.6f} eV ({len(combo_runs)} runs)\\n")
+                f.write("\\n")
+
             f.write("Run-by-run Results:\\n")
             for result in all_results:
                 runtime = result.get('total_time', 0)
-                f.write(f"Run {result['run_id'] + 1}: {result['best_energy']:.6f} eV ({len(result['fitness_history'])} generations, {runtime:.1f}s)\\n")
+                combo_info = ""
+                if len(concentration_combinations) > 1:
+                    combo_info = f" ({result.get('combination_name', 'Unknown')})"
+                f.write(f"Run {result['run_id'] + 1}{combo_info}: {result['best_energy']:.6f} eV ({len(result['fitness_history'])} generations, {runtime:.1f}s)\\n")
 
                 # Calculate formation energy if possible
                 if calc_formation_energy and result['best_structure'] and reference_energies:
@@ -1381,7 +1605,12 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                         write(poscar_buffer, best_atoms, format='vasp', direct=True, sort=True)
                         poscar_content = poscar_buffer.getvalue()
 
-                        filename = f"best_structure_run_{i+1:02d}_energy_{result['best_energy']:.6f}eV.vasp"
+                        combo_suffix = ""
+                        if len(concentration_combinations) > 1:
+                            combo_name = result.get('combination_name', 'unknown')
+                            combo_suffix = f"_{combo_name}"
+
+                        filename = f"best_structure_run_{i+1:02d}{combo_suffix}_energy_{result['best_energy']:.6f}eV.vasp"
                         zip_file.writestr(filename, poscar_content)
 
                 # Add summary to ZIP
@@ -1401,6 +1630,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 
             for result in all_results:
                 run_id = result['run_id']
+                combo_name = result.get('combination_name', 'single')
 
                 if result['final_population'] and result['final_fitness']:
                     final_population = result['final_population']
@@ -1424,7 +1654,11 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                         write(poscar_buffer, best_atoms, format='vasp', direct=True, sort=True)
                         poscar_content = poscar_buffer.getvalue()
 
-                        filename = f"run_{run_id+1:02d}/final_generation_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+                        if len(concentration_combinations) > 1:
+                            filename = f"{combo_name}/run_{run_id+1:02d}/final_generation_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+                        else:
+                            filename = f"run_{run_id+1:02d}/final_generation_rank_{rank+1:02d}_energy_{energy:.6f}eV.vasp"
+
                         zip_file.writestr(filename, poscar_content)
 
             # Add summary for final generation structures
@@ -1433,13 +1667,24 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
             final_gen_summary += f"Selection criteria: Top 20% by energy from final generation\\n"
             final_gen_summary += f"Format: VASP POSCAR files\\n\\n"
 
-
-            final_gen_summary += "Run-by-run breakdown:\\n"
-            for result in all_results:
-                if result['final_population'] and result['final_fitness']:
-                    final_population_size = len(result['final_population'])
-                    top_20_count = max(1, int(final_population_size * 0.2))
-                    final_gen_summary += f"Run {result['run_id'] + 1}: {top_20_count} structures from {final_population_size} final population\\n"
+            if len(concentration_combinations) > 1:
+                final_gen_summary += f"Concentration combinations tested: {len(concentration_combinations)}\\n"
+                final_gen_summary += "\\nCombination breakdown:\\n"
+                for combo_name, combo_runs in combination_results.items():
+                    combo_structures = 0
+                    for result in combo_runs:
+                        if result['final_population']:
+                            final_population_size = len(result['final_population'])
+                            top_20_count = max(1, int(final_population_size * 0.2))
+                            combo_structures += top_20_count
+                    final_gen_summary += f"  {combo_name}: {combo_structures} structures from {len(combo_runs)} runs\\n"
+            else:
+                final_gen_summary += "\\nRun-by-run breakdown:\\n"
+                for result in all_results:
+                    if result['final_population'] and result['final_fitness']:
+                        final_population_size = len(result['final_population'])
+                        top_20_count = max(1, int(final_population_size * 0.2))
+                        final_gen_summary += f"Run {result['run_id'] + 1}: {top_20_count} structures from {final_population_size} final population\\n"
 
             zip_file.writestr("FINAL_GENERATION_README.txt", final_gen_summary)
 
@@ -1455,9 +1700,9 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 
     print(f"\\n🏁 GA optimization completed!")
     print(f"📁 Results saved in ga_results/ directory")
-'''
-
+    '''
     return code
+
 
 
 
@@ -1517,12 +1762,154 @@ def _generate_structure_creation_code(structures):
 
 
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
-    """Generate calculator setup code."""
-    # Check if this is a MACE-OFF model by looking at the selected model key
+    """Generate calculator setup code with support for all MLIP models."""
+
+    # Determine model type from selected model key
     is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
+    is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
+    is_nequix = selected_model_key is not None and selected_model_key.startswith("Nequix")
+    is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
+    is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
 
-    if is_chgnet:
+    if is_nequix:
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing Nequix calculator...")
+    try:
+        from nequix.calculator import NequixCalculator
+
+        print(f"🎯 Using Nequix model: {model_size}")
+
+        calculator = NequixCalculator("{model_size}")
+        print(f"✅ Nequix {model_size} initialized successfully")
+
+    except Exception as e:
+        print(f"❌ Nequix initialization failed: {{e}}")
+        raise e'''
+    elif is_orb:
+        # ORB setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing ORB calculator on {{device}}...")
+    try:
+        from orb_models.forcefield import pretrained
+        from orb_models.forcefield.calculator import ORBCalculator
+
+        # Convert dtype to ORB precision format
+        if "{dtype}" == "float32":
+            precision = "float32-high"  # Recommended for GPU acceleration
+        else:
+            precision = "float32-highest"  # Higher precision option
+
+        print(f"🎯 Using precision: {{precision}}")
+
+        # Get the pretrained model function by name
+        model_function = getattr(pretrained, "{model_size}")
+        orbff = model_function(
+            device=device,
+            precision=precision
+        )
+        calculator = ORBCalculator(orbff, device=device)
+        print(f"✅ ORB {model_size} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ ORB initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                model_function = getattr(pretrained, "{model_size}")
+                orbff = model_function(
+                    device="cpu",
+                    precision=precision
+                )
+                calculator = ORBCalculator(orbff, device="cpu")
+                print("✅ ORB initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_mattersim:
+        # MatterSim setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing MatterSim calculator on {{device}}...")
+    try:
+        from mattersim.forcefield import MatterSimCalculator
+
+        # Determine model path based on model_size
+        if "{model_size}" == "mattersim-1m":
+            model_path = "MatterSim-v1.0.0-1M.pth"
+        elif "{model_size}" == "mattersim-5m":
+            model_path = "MatterSim-v1.0.0-5M.pth"
+        else:
+            model_path = "{model_size}"
+
+        print(f"📁 Model path: {{model_path}}")
+
+        calculator = MatterSimCalculator(
+            model_path=model_path,
+            device=device
+        )
+        print(f"✅ MatterSim {{model_path}} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ MatterSim initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = MatterSimCalculator(
+                    model_path=model_path,
+                    device="cpu"
+                )
+                print("✅ MatterSim initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_sevennet:
+        # SevenNet setup
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing SevenNet calculator on {{device}}...")
+    try:
+        from sevenn.calculator import SevenNetCalculator
+
+        print(f"🎯 Selected model: {selected_model_key}")
+        print(f"🎯 Model function: {model_size}")
+
+        # Parse model and modal from the model_size
+        if "{model_size}" == "7net-mf-ompa-mpa":
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+            print("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
+        elif "{model_size}" == "7net-mf-ompa-omat24":
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+            print("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+        else:
+            # Standard models without modal parameter
+            calculator = SevenNetCalculator(model="{model_size}", device=device)
+            print(f"✅ SevenNet {model_size} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ SevenNet initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                if "{model_size}" == "7net-mf-ompa-mpa":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
+                elif "{model_size}" == "7net-mf-ompa-omat24":
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                else:
+                    calculator = SevenNetCalculator(model="{model_size}", device="cpu")
+                print("✅ SevenNet initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    elif is_chgnet:
+        # CHGNet setup
         chgnet_version = model_size.split("-")[1] if "-" in model_size else "0.3.0"
 
         calc_code = f'''    device = "{device}"
@@ -1530,9 +1917,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     try:
         from chgnet.model.model import CHGNet
         from chgnet.model.dynamics import CHGNetCalculator
+
         chgnet = CHGNet.load(model_name="{chgnet_version}", use_device=device, verbose=False)
         calculator = CHGNetCalculator(model=chgnet, use_device=device)
         print(f"✅ CHGNet {chgnet_version} initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ CHGNet initialization failed on {{device}}: {{e}}")
         if device == "cuda":
@@ -1546,13 +1935,18 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
+
     elif is_mace_off:
+        # MACE-OFF setup
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
     try:
+        from mace.calculators import mace_off
+
         calculator = mace_off(
             model="{model_size}", default_dtype="{dtype}", device=device)
         print(f"✅ MACE-OFF calculator initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ MACE-OFF initialization failed on {{device}}: {{e}}")
         if device == "cuda":
@@ -1566,13 +1960,18 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
+
     else:
+        # MACE-MP setup (default)
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
     try:
+        from mace.calculators import mace_mp
+
         calculator = mace_mp(
             model="{model_size}", dispersion=False, default_dtype="{dtype}", device=device)
         print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
+
     except Exception as e:
         print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
         if device == "cuda":
@@ -1592,7 +1991,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
 def _generate_energy_only_code(calc_formation_energy):
     """Generate code for energy-only calculations."""
-    code = '''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    code = '''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
     results = []
     print(f"📊 Found {len(structure_files)} structure files")
 
@@ -1859,7 +2258,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     """Generate code for elastic property calculations."""
     strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
@@ -2697,6 +3096,106 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
     return atoms
 
 
+
+def generate_concentration_combinations(substitutions):
+    """Generate all possible combinations of concentrations."""
+    import itertools
+
+    # Check if any element has multiple concentrations
+    has_multiple = any('concentration_list' in sub_info and len(sub_info['concentration_list']) > 1
+                       for sub_info in substitutions.values())
+
+    if not has_multiple:
+        # Convert single concentrations to the original format
+        single_combo = {}
+        for element, sub_info in substitutions.items():
+            if 'concentration_list' in sub_info:
+                concentration = sub_info['concentration_list'][0]
+            else:
+                concentration = sub_info.get('concentration', 0.5)
+
+            element_count = sub_info.get('element_count', 0)
+            n_substitute = int(element_count * concentration)
+
+            single_combo[element] = {
+                'new_element': sub_info['new_element'],
+                'concentration': concentration,
+                'n_substitute': n_substitute,
+                'n_remaining': element_count - n_substitute
+            }
+        return [single_combo]
+
+    # Generate all combinations for multiple concentrations
+    elements = []
+    concentration_lists = []
+
+    for element, sub_info in substitutions.items():
+        elements.append(element)
+        if 'concentration_list' in sub_info:
+            concentration_lists.append(sub_info['concentration_list'])
+        else:
+            concentration_lists.append([sub_info.get('concentration', 0.5)])
+
+    combinations = []
+    for conc_combo in itertools.product(*concentration_lists):
+        combo_substitutions = {}
+        for i, element in enumerate(elements):
+            concentration = conc_combo[i]
+            element_count = substitutions[element].get('element_count', 0)
+            n_substitute = int(element_count * concentration)
+
+            combo_substitutions[element] = {
+                'new_element': substitutions[element]['new_element'],
+                'concentration': concentration,
+                'n_substitute': n_substitute,
+                'n_remaining': element_count - n_substitute
+            }
+
+        combinations.append(combo_substitutions)
+
+    return combinations
+
+def create_combination_name(combo_substitutions):
+    """Create a descriptive name for a concentration combination."""
+    name_parts = []
+
+    for original_element, sub_info in combo_substitutions.items():
+        new_element = sub_info['new_element']
+        concentration = sub_info['concentration']
+        remaining_concentration = 1 - concentration
+
+        if concentration == 0:
+            # No substitution, pure original element
+            name_parts.append(f"{original_element}100pct")
+        elif concentration == 1:
+            # Complete substitution
+            if new_element == 'VACANCY':
+                name_parts.append(f"{original_element}0pct_100pct_vacant")
+            else:
+                name_parts.append(f"{new_element}100pct")
+        else:
+            # Partial substitution
+            remaining_pct = int(remaining_concentration * 100)
+            substitute_pct = int(concentration * 100)
+
+            if new_element == 'VACANCY':
+                name_parts.append(f"{original_element}{remaining_pct}pct_{substitute_pct}pct_vacant")
+            else:
+                name_parts.append(f"{original_element}{remaining_pct}pct_{new_element}{substitute_pct}pct")
+
+    return "_".join(name_parts)
+
+def sort_concentration_combinations(concentration_combinations):
+    """Sort concentration combinations for consistent ordering."""
+    def get_sort_key(combo_substitutions):
+        sort_values = []
+        for element in sorted(combo_substitutions.keys()):
+            concentration = combo_substitutions[element]['concentration']
+            sort_values.append(concentration)
+        return tuple(sort_values)
+
+    return sorted(concentration_combinations, key=get_sort_key)
+
 def calculate_formation_energy(structure_energy, atoms, reference_energies):
     if structure_energy is None:
         return None
@@ -2832,7 +3331,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimize_lattice = optimization_params.get(
         'optimize_lattice', {'a': True, 'b': True, 'c': True})
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
@@ -3348,7 +3847,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     temperature = phonon_params.get('temperature', 300)
     npoints = phonon_params.get('npoints', 100)
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
     results = []
     print(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
 
