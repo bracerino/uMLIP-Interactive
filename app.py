@@ -1491,7 +1491,8 @@ class OptimizationLogger:
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
-        self.trajectory = []
+        self.trajectory = [] if save_trajectory else None
+        self.save_trajectory = save_trajectory
         self.previous_energy = None
 
         self.step_start_time = None
@@ -1528,7 +1529,8 @@ class OptimizationLogger:
                 'forces': forces.copy(),
                 'timestamp': current_time
             }
-            self.trajectory.append(trajectory_step)
+            if self.save_trajectory:
+                self.trajectory.append(trajectory_step)
 
             avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
 
@@ -1561,12 +1563,13 @@ class OptimizationLogger:
                 'elapsed_time': elapsed_time
             })
 
-            self.log_queue.put({
-                'type': 'trajectory_step',
-                'structure': self.structure_name,
-                'step': self.step_count,
-                'trajectory_data': trajectory_step
-            })
+            if self.save_trajectory:
+                self.log_queue.put({
+                    'type': 'trajectory_step',
+                    'structure': self.structure_name,
+                    'step': self.step_count,
+                    'trajectory_data': trajectory_step
+                })
 
     def _calculate_time_estimates(self, optimizer):
         if len(self.step_times) < 2:
@@ -1920,11 +1923,12 @@ def setup_optimization_constraints(atoms, optimization_params):
 
 
 class CellOptimizationLogger:
-    def __init__(self, log_queue, structure_name, opt_mode="both"):
+    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
-        self.trajectory = []
+        self.trajectory = [] if save_trajectory else None
+        self.save_trajectory = save_trajectory
         self.previous_energy = None
         self.opt_mode = opt_mode
 
@@ -1980,7 +1984,8 @@ class CellOptimizationLogger:
                     'stress': stress.copy() if stress is not None else None,
                     'timestamp': current_time
                 }
-                self.trajectory.append(trajectory_step)
+                if self.save_trajectory:
+                    self.trajectory.append(trajectory_step)
 
                 avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(
                     optimizer)
@@ -2023,12 +2028,13 @@ class CellOptimizationLogger:
                     'elapsed_time': elapsed_time
                 })
 
-                self.log_queue.put({
-                    'type': 'trajectory_step',
-                    'structure': self.structure_name,
-                    'step': self.step_count,
-                    'trajectory_data': trajectory_step
-                })
+                if self.save_trajectory:
+                    self.log_queue.put({
+                        'type': 'trajectory_step',
+                        'structure': self.structure_name,
+                        'step': self.step_count,
+                        'trajectory_data': trajectory_step
+                    })
 
             except Exception as e:
                 self.log_queue.put(f"  Error in optimization step {self.step_count}: {str(e)}")
@@ -2482,10 +2488,11 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                     try:
                         optimization_object, opt_mode = setup_optimization_constraints(atoms, optimization_params)
+                        save_traj = optimization_params.get('save_trajectory', True)
                         if opt_mode:
-                            logger = CellOptimizationLogger(log_queue, name, opt_mode)
+                            logger = CellOptimizationLogger(log_queue, name, opt_mode, save_trajectory=save_traj)
                         else:
-                            logger = OptimizationLogger(log_queue, name)
+                            logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj)
                         if optimization_params['optimizer'] == "LBFGS":
                             optimizer = LBFGS(optimization_object, logfile=None)
                         elif optimization_params['optimizer'] == "FIRE":
@@ -2551,6 +2558,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 convergence_status = "MAX STEPS REACHED"
                         optimized_structure = ase_to_pymatgen_wrapped(final_atoms)
                         final_structure = optimized_structure
+
 
                         if opt_mode == "cell_only":
                             log_queue.put(
@@ -2812,7 +2820,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-st.title("MLIP-Interactive: Compute properties with universal MLIPs")
+#st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
+st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
@@ -3414,8 +3423,8 @@ with tab1:
                 st.rerun()
 
     else:
-        st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
-        st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
+        st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures). "
+                   f"📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
 
         with st.expander("📋 Locked Structures", expanded=False):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
@@ -3458,7 +3467,7 @@ with tab1:
               margin: 10px 0;
             ">
               <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>.xyz</code>, <code>.lmp</code>)
+              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
             </div>
             """,
             unsafe_allow_html=True
@@ -3606,7 +3615,8 @@ with tab1:
             'optimizer': "BFGS",
             'fmax': 0.05,
             'ediff': 1e-4,
-            'max_steps': 200
+            'max_steps': 200,
+
         }
         phonon_params = {
             'supercell_size': (2, 2, 2),
@@ -3922,6 +3932,7 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
+            save_trajectory= True
 
 
 
@@ -3944,7 +3955,7 @@ with tab_st:
                       margin: 10px 0;
                     ">
                       <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>.xyz</code>, <code>.lmp</code>)
+                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
                     </div>
                     """,
                     unsafe_allow_html=True
