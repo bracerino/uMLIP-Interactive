@@ -3458,7 +3458,7 @@ with tab1:
               margin: 10px 0;
             ">
               <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-              (<code>.cif</code>, <code>.poscar/.vasp</code>, <code>.xyz</code>, <code>.lmp</code>)
+              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>.xyz</code>, <code>.lmp</code>)
             </div>
             """,
             unsafe_allow_html=True
@@ -3944,7 +3944,7 @@ with tab_st:
                       margin: 10px 0;
                     ">
                       <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-                      (<code>.cif</code>, <code>.poscar/.vasp</code>, <code>.xyz</code>, <code>.lmp</code>)
+                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>.xyz</code>, <code>.lmp</code>)
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -4680,7 +4680,36 @@ with tab2:
                         time_display = f"{remaining / 3600:.1f}h"
                     st.metric("Est. Remaining", time_display)
     if st.session_state.log_messages:
-        recent_messages = st.session_state.log_messages[-20:]
+        recent_messages = st.session_state.log_messages[-40:]
+        st.markdown("""
+            <style>
+            /* Make text area scrollbar more visible */
+            textarea {
+                scrollbar-width: auto !important;  /* Firefox */
+                scrollbar-color: #888 #f1f1f1 !important;  /* Firefox */
+            }
+
+            /* Webkit browsers (Chrome, Safari, Edge) */
+            textarea::-webkit-scrollbar {
+                width: 12px !important;
+                height: 12px !important;
+            }
+
+            textarea::-webkit-scrollbar-track {
+                background: #f1f1f1 !important;
+                border-radius: 10px !important;
+            }
+
+            textarea::-webkit-scrollbar-thumb {
+                background: #888 !important;
+                border-radius: 10px !important;
+            }
+
+            textarea::-webkit-scrollbar-thumb:hover {
+                background: #555 !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
 
     if has_new_messages and st.session_state.calculation_running:
