@@ -104,8 +104,19 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         col_cell1, col_cell2 = st.columns(2)
 
         with col_cell1:
-            constraint_options = ["Lattice parameters only (fix angles)", "Full cell (lattice + angles)"]
-            constraint_index = 0 if geom_defaults['cell_constraint'] == constraint_options[0] else 1
+            constraint_options = [
+                "Lattice parameters only (fix angles)",
+                "Full cell (lattice + angles)",
+                "Fix a=b, optimize a and c"
+            ]
+            if geom_defaults['cell_constraint'] == constraint_options[0]:
+                constraint_index = 0
+            elif geom_defaults['cell_constraint'] == constraint_options[1]:
+                constraint_index = 1
+            elif geom_defaults['cell_constraint'] == "Fix a=b, optimize a and c":
+                constraint_index = 2
+            else:
+                constraint_index = 0
 
             cell_constraint = st.radio(
                 "Cell optimization mode:",
@@ -129,6 +140,10 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
 
                 if not any([optimize_a, optimize_b, optimize_c]):
                     st.warning("⚠️ At least one lattice direction must be optimized!")
+            elif cell_constraint == "Fix a=b, optimize a and c":
+                st.info(
+                    "ℹ️ Constraint: a=b will be maintained during optimization. Both a(=b) and c will be optimized. Angles remain fixed.")
+                optimize_lattice = {'a': True, 'b': True, 'c': True}
             else:
                 optimize_lattice = {'a': True, 'b': True, 'c': True}
 
@@ -159,6 +174,12 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
                 format="%.3f",
                 help="Maximum stress for convergence"
             )
+    save_trajectory = st.checkbox(
+        "Save optimization trajectory (.xyz) (⚠️ Currently, do not turn it off for calculations within GUI)",
+        value=True,
+        help="Save step-by-step trajectory in XYZ format. Disable for large batches to save disk space."
+    )
+
 
     optimization_params = {
         'optimizer': optimizer,
@@ -170,7 +191,8 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'optimize_lattice': optimize_lattice,
         'pressure': pressure,
         'hydrostatic_strain': hydrostatic_strain,
-        'stress_threshold': stress_threshold
+        'stress_threshold': stress_threshold,
+        'save_trajectory': save_trajectory
     }
 
     if st.button("💾 Save Geometry Optimization Defaults", key="save_geom_defaults"):
