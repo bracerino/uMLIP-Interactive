@@ -6,11 +6,12 @@ Run basic molecular dynamics/static simulations:
 - **elastic properties**
 - **phonons**
 - **genetic algorithm for finding the energetically most favorible atomic site configurations of substitutes/vacancies**
+- *Currently working on: **General MD simulations**, **MD Stress-Strain calculations**, and **Nudge elastic band (NEB) calculations**.*  
 
 In an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
-*Currently working on to add option to also run MD simulations.*
+
 
 
 - **Video tutorial for the calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
