@@ -3472,7 +3472,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             # Save optimized structure with selective dynamics preserved
             base_name = filename.replace('.vasp', '').replace('POSCAR', '')
             
-            output_filename = f"optimized_structures/optimized_{base_name}.vasp"
+            output_filename = f"optimized_structures/optimized-{base_name}.vasp"
             
             print(f"  💾 Saving optimized structure to {output_filename}")
             write_poscar_with_selective_dynamics(
@@ -3521,6 +3521,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 "has_selective_dynamics": selective_dynamics is not None,
                 "num_fixed_atoms": len([flags for flags in (selective_dynamics or []) if not any(flags)]),
                 "output_structure": output_filename,
+                "optimized_structure_filename": f"optimized-{base_name}.vasp",
                 # Convert dict to individual fields for CSV compatibility
                 "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,
