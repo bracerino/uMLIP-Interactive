@@ -104,6 +104,18 @@ try:
 except ImportError:
     ELASTIC_AVAILABLE = False
 
+try:
+    from alignn.ff.ff import AlignnAtomwiseCalculator, default_path
+    ALIGNN_AVAILABLE = True
+except ImportError:
+    ALIGNN_AVAILABLE = False
+
+try:
+    from deepmd.calculator import DP
+    DEEPMD_AVAILABLE = True
+except ImportError:
+    DEEPMD_AVAILABLE = False
+
 import torch
 
 # Add this after the existing THREAD_COUNT_FILE definition
@@ -1498,7 +1510,7 @@ except ImportError:
 
 
 class OptimizationLogger:
-    def __init__(self, log_queue, structure_name):
+    def __init__(self, log_queue, structure_name,tetragonal_callback=None):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
@@ -1696,6 +1708,16 @@ MACE_MODELS = {
 
     # ========== NEQUIX MODELS ==========
     "Nequix-MP-1 (Universal Materials)": "nequix-mp-1",
+
+    # ========== DeepMD-kit MODELS ==========
+    #"DeePMD DPA-2 (Small)": "dpa2-small",
+    #"DeePMD DPA-2 (Medium)": "dpa2-medium",
+    #"DeePMD DPA-2 (Large)": "dpa2-large",
+    #"DeePMD DPA-3 (Universal)": "dpa3-universal",
+
+    #"AlignN-FF (JARVIS-DFT)": "alignn-ff-jarvis",
+    #"AlignN-FF (Custom)": "alignn-ff-custom",
+
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1910,31 +1932,92 @@ def setup_optimization_constraints(atoms, optimization_params):
 
     has_constraints, total_constrained, total_atoms = check_selective_dynamics(atoms)
 
+    # Preserve existing constraints
     existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
 
     if opt_type == "Atoms only (fixed cell)":
-        return atoms, None
+        # Keep existing constraints (selective dynamics)
+        return atoms, None, None
+
     elif opt_type == "Cell only (fixed atoms)":
-        atoms.set_constraint(FixAtoms(mask=[True] * len(atoms)))
-        cell_filter = create_cell_filter(atoms, optimization_params)
-        return cell_filter, "cell_only"
-    else:  # Both atoms and cell
+        # For cell-only optimization, we want to keep atoms fixed
+        # If there are already selective dynamics, they're redundant (all atoms will be fixed anyway)
+        # But we should preserve them for consistency
+        atoms.set_constraint(FixAtoms(indices=list(range(len(atoms)))))
+
         cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
 
+        # Handle tetragonal for cell-only optimization
+        if cell_constraint == "Tetragonal (a=b, optimize a and c)":
+            mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
+            pressure = optimization_params.get('pressure', 0.0)
+            pressure_eV_A3 = pressure * 0.00624150913
+
+            cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+            # Create callback to enforce a=b after each step
+            def enforce_tetragonal():
+                cell = atoms.get_cell()
+                cellpar = cell.cellpar()
+
+                # Average a and b
+                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                old_a = cellpar[0]
+                old_b = cellpar[1]
+
+                cellpar[0] = avg_ab
+                cellpar[1] = avg_ab
+                cellpar[3:] = 90.0  # Ensure angles stay at 90
+
+                atoms.set_cell(cellpar, scale_atoms=True)
+
+                return old_a, old_b, avg_ab
+
+            return cell_filter, "cell_only", enforce_tetragonal
+        else:
+            cell_filter = create_cell_filter(atoms, optimization_params)
+            return cell_filter, "cell_only", None
+
+    else:  # Both atoms and cell
+        # Keep existing selective dynamics constraints
+        # They will restrict which atoms can move during optimization
+
+        cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
 
         if cell_constraint == "Tetragonal (a=b, optimize a and c)":
-            from ase.constraints import FixSymmetry
+            mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
 
+            pressure = optimization_params.get('pressure', 0.0)
+            pressure_eV_A3 = pressure * 0.00624150913
 
-            constraints = existing_constraints + [FixSymmetry(atoms)]
-            atoms.set_constraint(constraints)
+            cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+            # Create callback to enforce a=b after each step
+            def enforce_tetragonal():
+                cell = atoms.get_cell()
+                cellpar = cell.cellpar()
+
+                # Average a and b
+                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                old_a = cellpar[0]
+                old_b = cellpar[1]
+
+                cellpar[0] = avg_ab
+                cellpar[1] = avg_ab
+                cellpar[3:] = 90.0  # Ensure angles stay at 90
+
+                atoms.set_cell(cellpar, scale_atoms=True)
+
+                return old_a, old_b, avg_ab
+
+            return cell_filter, "both", enforce_tetragonal
 
         cell_filter = create_cell_filter(atoms, optimization_params)
-        return cell_filter, "both"
+        return cell_filter, "both", None
 
 
 class CellOptimizationLogger:
-    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True):
+    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True, tetragonal_callback=None):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
@@ -1942,6 +2025,7 @@ class CellOptimizationLogger:
         self.save_trajectory = save_trajectory
         self.previous_energy = None
         self.opt_mode = opt_mode
+        self.tetragonal_callback = tetragonal_callback
 
         self.step_start_time = None
         self.step_times = deque(maxlen=10)
@@ -2046,7 +2130,11 @@ class CellOptimizationLogger:
                         'step': self.step_count,
                         'trajectory_data': trajectory_step
                     })
-
+                if self.tetragonal_callback is not None:
+                    old_a, old_b, new_ab = self.tetragonal_callback()
+                    if abs(old_a - old_b) > 1e-6:  # Only log if there was a change
+                        self.log_queue.put(
+                            f"  🔷 Tetragonal constraint enforced: a={old_a:.6f} Å, b={old_b:.6f} Å → a=b={new_ab:.6f} Å")
             except Exception as e:
                 self.log_queue.put(f"  Error in optimization step {self.step_count}: {str(e)}")
 
@@ -2105,6 +2193,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_mattersim = selected_model.startswith("MatterSim")
         is_orb = selected_model.startswith("ORB")
         is_nequix = selected_model.startswith("Nequix")
+        is_deepmd = selected_model.startswith("DeePMD")
+        is_alignn = selected_model.startswith("AlignN")
 
         if is_nequix:
             # Nequix setup
@@ -2118,6 +2208,31 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
             except Exception as e:
                 log_queue.put(f"❌ Nequix initialization failed: {str(e)}")
+                return
+        elif is_deepmd:
+            log_queue.put("Setting up DeePMD calculator...")
+            try:
+                # DeepMD uses frozen model files (.pb for TensorFlow, .pth for PyTorch)
+                model_path = model_size  # This should be path to your frozen model
+                calculator = DP(model=model_path)
+                log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ DeePMD initialization failed: {str(e)}")
+                return
+        elif is_alignn:
+            log_queue.put("Setting up AlignN calculator...")
+            try:
+                # AlignN provides ASE calculator interface
+                if model_size == "alignn-ff-jarvis":
+                    # Use pretrained JARVIS-DFT model
+                    calculator = AlignnAtomwiseCalculator(path=default_path())
+                else:
+                    # Custom model path
+                    calculator = AlignnAtomwiseCalculator(path=model_size)
+
+                log_queue.put(f"✅ AlignN {model_size} initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ AlignN initialization failed: {str(e)}")
                 return
         elif is_orb:
             # ORB setup
@@ -2570,10 +2685,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         atoms = pymatgen_to_ase(structure)
                         atoms.calc = calculator
 
-                        has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(
-                            atoms)
+                        has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
 
-                        print("HER?")
                         if has_constraints:
                             log_queue.put(
                                 f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
@@ -2592,7 +2705,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         if optimization_params.get('hydrostatic_strain'):
                             log_queue.put("Using hydrostatic strain constraint")
 
-                        print("NOTH ERE?")
                         log_queue.put({
                             'type': 'opt_start',
                             'structure': name,
@@ -2604,30 +2716,108 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         })
 
                         try:
-                            optimization_object, opt_mode = setup_optimization_constraints(atoms, optimization_params)
+                            optimization_object, opt_mode, tetragonal_callback = setup_optimization_constraints(atoms,
+                                                                                                                optimization_params)
                             save_traj = optimization_params.get('save_trajectory', True)
+
+                            # Check if this is tetragonal mode
+                            is_tetragonal = (tetragonal_callback is not None)
+
                             if opt_mode:
-                                logger = CellOptimizationLogger(log_queue, name, opt_mode, save_trajectory=save_traj)
+                                logger = CellOptimizationLogger(log_queue, name, opt_mode, save_trajectory=save_traj,
+                                                                tetragonal_callback=tetragonal_callback)
                             else:
                                 logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj)
+
                             if optimization_params['optimizer'] == "LBFGS":
                                 optimizer = LBFGS(optimization_object, logfile=None)
                             elif optimization_params['optimizer'] == "FIRE":
                                 optimizer = FIRE(optimization_object, logfile=None)
                             else:
                                 optimizer = BFGS(optimization_object, logfile=None)
+
                             optimizer.max_steps = optimization_params['max_steps']
                             optimizer.attach(lambda: logger(optimizer), interval=1)
+
+                            # Set convergence criteria based on optimization type
                             if opt_type == "Cell only (fixed atoms)":
                                 fmax_criterion = 0.1
-                            else:
-                                fmax_criterion = optimization_params['fmax']
-                            optimizer.run(fmax=fmax_criterion, steps=optimization_params['max_steps'])
+                            if is_tetragonal or (opt_type == "Cell only (fixed atoms)" and tetragonal_callback):
+                                # Use manual convergence loop for tetragonal mode
+                                log_queue.put(f"  🔷 Tetragonal mode: will check convergence manually")
 
+                                fmax_criterion = optimization_params['fmax']
+
+                                for step in range(optimization_params['max_steps']):
+                                    optimizer.run(fmax=fmax_criterion, steps=1)
+
+                                    if hasattr(optimization_object, 'atoms'):
+                                        current_atoms = optimization_object.atoms
+                                    else:
+                                        current_atoms = optimization_object
+
+                                    # Check convergence
+                                    forces = current_atoms.get_forces()
+                                    max_force = np.max(np.linalg.norm(forces, axis=1))
+                                    energy = current_atoms.get_potential_energy()
+
+                                    # Check stress for cell optimization
+                                    try:
+                                        stress_voigt = current_atoms.get_stress(voigt=True)
+                                        max_stress = np.max(np.abs(stress_voigt))
+                                    except:
+                                        max_stress = 0.0
+
+                                    # Check energy convergence
+                                    energy_converged = False
+                                    if logger.trajectory and len(logger.trajectory) > 1:
+                                        energy_change = abs(
+                                            logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
+                                        energy_converged = energy_change < optimization_params['ediff']
+
+
+                                    if opt_type == "Atoms only (fixed cell)":
+                                        force_converged = max_force < optimization_params['fmax']
+                                        stress_converged = True
+                                        converged = force_converged and energy_converged
+                                    elif opt_type == "Cell only (fixed atoms)":
+                                        force_converged = True
+                                        stress_converged = max_stress < optimization_params.get('stress_threshold', 0.1)
+                                        converged = stress_converged and energy_converged
+                                    else:  # Both
+                                        force_converged = max_force < optimization_params['fmax']
+                                        stress_converged = max_stress < optimization_params.get('stress_threshold', 0.1)
+                                        converged = force_converged and stress_converged and energy_converged
+
+                                    if converged:
+                                        log_queue.put(f"  ✅ Tetragonal optimization converged at step {step + 1}!")
+                                        if opt_type == "Cell only (fixed atoms)":
+                                            log_queue.put(
+                                                f"     Stress: {max_stress:.4f} < {optimization_params.get('stress_threshold', 0.1)} GPa ✓")
+                                        else:
+                                            log_queue.put(
+                                                f"     Force: {max_force:.4f} < {optimization_params['fmax']} eV/Å ✓")
+                                            log_queue.put(
+                                                f"     Stress: {max_stress:.4f} < {optimization_params.get('stress_threshold', 0.1)} GPa ✓")
+                                        log_queue.put(
+                                            f"     Energy change: {energy_change:.2e} < {optimization_params['ediff']} eV ✓")
+                                        break
+
+                                    if step >= optimization_params['max_steps'] - 1:
+                                        log_queue.put(
+                                            f"  ⚠️ Reached maximum steps ({optimization_params['max_steps']})")
+                                        break
+                            else:
+                                # For non-tetragonal modes, use standard ASE convergence
+                                fmax_criterion = optimization_params['fmax']
+                                optimizer.run(fmax=fmax_criterion, steps=optimization_params['max_steps'])
+
+                            # Get final structure
                             if hasattr(optimization_object, 'atoms'):
                                 final_atoms = optimization_object.atoms
                             else:
                                 final_atoms = optimization_object
+
                             energy = final_atoms.get_potential_energy()
                             final_forces = final_atoms.get_forces()
                             max_final_force = np.max(np.linalg.norm(final_forces, axis=1))
@@ -2638,7 +2828,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                             if len(logger.trajectory) > 1:
                                 final_energy_change = logger.trajectory[-1]['energy_change']
-
                                 energy_converged = final_energy_change < optimization_params['ediff']
 
                             if opt_mode in ["cell_only", "both"]:
@@ -2650,6 +2839,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 except:
                                     stress_converged = True
 
+                            # Determine convergence status
                             if opt_type == "Atoms only (fixed cell)":
                                 if force_converged and energy_converged:
                                     convergence_status = "CONVERGED (Force & Energy)"
@@ -2673,10 +2863,11 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                     convergence_status = "CONVERGED (Force only)"
                                 else:
                                     convergence_status = "MAX STEPS REACHED"
+
                             optimized_structure = ase_to_pymatgen_wrapped(final_atoms)
                             final_structure = optimized_structure
 
-
+                            # Log final results
                             if opt_mode == "cell_only":
                                 log_queue.put(
                                     f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
@@ -2686,6 +2877,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             else:
                                 log_queue.put(
                                     f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å ({optimizer.nsteps} steps)")
+
                             log_queue.put({
                                 'type': 'complete_trajectory',
                                 'structure': name,
@@ -2694,7 +2886,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             log_queue.put({
                                 'type': 'opt_complete',
                                 'structure': name,
-                                'final_steps': optimizer.nsteps,
+                                'final_steps': optimizer.nsteps if not is_tetragonal else len(logger.trajectory),
                                 'converged': force_converged and stress_converged and energy_converged,
                                 'force_converged': force_converged,
                                 'energy_converged': energy_converged,
