@@ -1510,7 +1510,7 @@ except ImportError:
 
 
 class OptimizationLogger:
-    def __init__(self, log_queue, structure_name,tetragonal_callback=None):
+    def __init__(self, log_queue, structure_name,save_trajectory=True,tetragonal_callback=None):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
@@ -2716,9 +2716,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         })
 
                         try:
+                            save_traj = optimization_params.get('save_trajectory', True)
                             optimization_object, opt_mode, tetragonal_callback = setup_optimization_constraints(atoms,
                                                                                                                 optimization_params)
-                            save_traj = optimization_params.get('save_trajectory', True)
+
 
                             # Check if this is tetragonal mode
                             is_tetragonal = (tetragonal_callback is not None)
