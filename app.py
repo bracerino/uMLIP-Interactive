@@ -48,7 +48,8 @@ from helpers.MD_settings import (
     run_md_simulation,
     create_md_trajectory_xyz,
     create_md_analysis_plots,
-    export_md_results
+    export_md_results,
+    create_npt_analysis_plots
 )
 
 from helpers.ga_optimization_module import (
@@ -70,6 +71,8 @@ from helpers.tensile_test import (
     create_stress_strain_plot,
     export_tensile_results
 )
+
+from helpers.generate_md_script import generate_md_python_script
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -2213,7 +2216,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put("Setting up DeePMD calculator...")
             try:
                 # DeepMD uses frozen model files (.pb for TensorFlow, .pth for PyTorch)
-                model_path = model_size  # This should be path to your frozen model
+                model_path = model_size  #
                 calculator = DP(model=model_path)
                 log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
             except Exception as e:
@@ -2244,13 +2247,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 # Convert dtype to ORB precision format
                 if dtype == "float32":
-                    precision = "float32-high"  # Recommended for GPU acceleration
+                    precision = "float32-high"  
                 else:
                     precision = "float32-highest"  # Higher precision option
 
                 log_queue.put(f"Precision: {precision}")
 
-                # Get the pretrained model function by name
                 model_function = getattr(pretrained, model_size)
                 orbff = model_function(
                     device=device,
@@ -3033,7 +3035,14 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                         if md_results['success']:
                             energy = md_results['final_energy']
-                            final_structure = md_results['final_structure']
+
+                            # --- THIS IS THE FIX ---
+                            # 1. Get the final ASE 'atoms' object from the results
+                            final_atoms_object = md_results['final_atoms']
+                            # 2. Convert it back to a Pymatgen structure
+                            final_structure = ase_to_pymatgen_wrapped(final_atoms_object)
+                            # --- END FIX ---
+
                             log_queue.put(f"✅ MD simulation completed for {name}")
                         else:
                             log_queue.put(f"❌ MD simulation failed for {name}")
@@ -3544,202 +3553,129 @@ with tab_vir:
                     )
             else:
                 st.info("No trajectory data available")
-
-
-with tab4_1:  # MD Trajectories and Analysis tab
+with tab4_1:
     st.header("MD Trajectories and Analysis")
 
-    md_results_list = [r for r in st.session_state.results if
-                       r['calc_type'] == 'Molecular Dynamics' and r.get('md_results')]
+    st.write("DEBUG INFO:")
+    st.write(f"'md_trajectories' in session_state: {'md_trajectories' in st.session_state}")
+    if 'md_trajectories' in st.session_state:
+        st.write(f"md_trajectories keys: {list(st.session_state.md_trajectories.keys())}")
+        for key, value in st.session_state.md_trajectories.items():
+            st.write(
+                f"  {key}: success={value.get('success', 'N/A')}, has_trajectory={len(value.get('trajectory_data', [])) > 0}")
+    st.write("---")
 
-    if md_results_list:
-        st.subheader("🧬 Molecular Dynamics Results")
+    if 'md_trajectories' in st.session_state and st.session_state.md_trajectories:
+        for structure_name, result in st.session_state.md_trajectories.items():
+            if result['success']:
+                st.subheader(f"Results for: {structure_name}")
 
-        # Structure selector for multiple MD results
-        if len(md_results_list) == 1:
-            selected_md = md_results_list[0]
-        else:
-            md_names = [r['name'] for r in md_results_list]
-            selected_name = st.selectbox("Select MD simulation:", md_names, key="md_selector")
-            selected_md = next(r for r in md_results_list if r['name'] == selected_name)
+                trajectory_data = result.get('trajectory_data', [])
+                md_params = result.get('md_params', {})
 
-        md_data = selected_md['md_results']
-
-        if md_data['success']:
-            st.subheader("📊 Simulation Summary")
-
-            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
-
-            with col_sum1:
-                st.metric("Total Steps", f"{md_data['total_steps_run']}")
-
-            with col_sum2:
-                st.metric("Simulation Time", f"{md_data['simulation_time_ps']:.2f} ps")
-
-            with col_sum3:
-                st.metric("Final Temperature", f"{md_data['final_temperature']:.1f} K")
-
-            with col_sum4:
-                if md_data.get('final_pressure') is not None:
-                    st.metric("Final Pressure", f"{md_data['final_pressure']:.2f} GPa")
-                else:
-                    st.metric("Final Energy", f"{md_data['final_energy']:.6f} eV")
-
-            # MD parameters summary
-            with st.expander("MD Parameters Used", expanded=False):
-                params = md_data['md_params']
-                param_data = []
-                for key, value in params.items():
-                    if key not in ['log_interval', 'traj_interval']:
-                        param_data.append({
-                            'Parameter': key.replace('_', ' ').title(),
-                            'Value': str(value)
-                        })
-
-                df_params = pd.DataFrame(param_data)
-                st.dataframe(df_params, use_container_width=True, hide_index=True)
-
-            st.subheader("🔍 MD Debugging Information")
-
-            if md_data['trajectory_data']:
-                trajectory = md_data['trajectory_data']
-
-                max_forces = [data.get('max_force', 0) for data in trajectory]
-                if any(f > 0 for f in max_forces):
-                    avg_force = np.mean(max_forces)
-                    max_force = np.max(max_forces)
-
-                    col_debug1, col_debug2, col_debug3 = st.columns(3)
-
-                    with col_debug1:
-                        st.metric("Average Max Force", f"{avg_force:.4f} eV/Å")
-
-                    with col_debug2:
-                        st.metric("Maximum Force", f"{max_force:.4f} eV/Å")
-
-                    with col_debug3:
-                        if max_force < 0.01:
-                            st.metric("Force Status", "Very Low", delta="May indicate static atoms")
-                        elif max_force > 1.0:
-                            st.metric("Force Status", "Very High", delta="Check system stability")
-                        else:
-                            st.metric("Force Status", "Normal", delta="✅")
-
-                if len(trajectory) >= 2:
-                    first_pos = trajectory[0]['positions']
-                    last_pos = trajectory[-1]['positions']
-                    displacements = np.linalg.norm(last_pos - first_pos, axis=1)
-                    max_displacement = np.max(displacements)
-                    avg_displacement = np.mean(displacements)
-
-                    col_disp1, col_disp2 = st.columns(2)
-
-                    with col_disp1:
-                        st.metric("Max Displacement", f"{max_displacement:.6f} Å")
-
-                    with col_disp2:
-                        st.metric("Avg Displacement", f"{avg_displacement:.6f} Å")
-
-                    if max_displacement < 0.001:
-                        st.warning("⚠️ Very small displacements - atoms barely moved!")
-                    elif max_displacement > 10.0:
-                        st.warning("⚠️ Very large displacements - system may be unstable!")
-                    else:
-                        st.success(f"✅ Reasonable atomic motion observed")
-            if md_data['trajectory_data'] and len(md_data['trajectory_data']) > 1:
-                st.subheader("📈 Trajectory Analysis")
-
-                fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
-                    md_data['trajectory_data'],
-                    md_data['md_params']
-                )
-
-                if fig_main:
-                    st.plotly_chart(fig_main, use_container_width=True)
-
-                if fig_pressure:
-                    st.subheader("📊 Pressure Analysis (NPT)")
-                    st.plotly_chart(fig_pressure, use_container_width=True)
-
-                if fig_conservation:
-                    st.subheader("🔋 Energy Conservation Check")
-                    st.plotly_chart(fig_conservation, use_container_width=True)
-
-                    trajectory = md_data['trajectory_data']
-                    total_energies = [data['potential_energy'] + data['kinetic_energy'] for data in trajectory]
-                    energy_drift = abs(total_energies[-1] - total_energies[0])
-                    avg_energy = np.mean(total_energies)
-                    drift_percentage = (energy_drift / abs(avg_energy)) * 100 if avg_energy != 0 else 0
-
-                    if drift_percentage < 0.1:
-                        st.success(f"✅ Excellent energy conservation (drift: {drift_percentage:.3f}%)")
-                    elif drift_percentage < 1.0:
-                        st.warning(f"⚠️ Good energy conservation (drift: {drift_percentage:.3f}%)")
-                    else:
-                        st.error(f"❌ Poor energy conservation (drift: {drift_percentage:.3f}%) - check timestep")
-
-                st.subheader("📥 Download MD Data")
-
-                col_dl1, col_dl2, col_dl3 = st.columns(3)
-
-                with col_dl1:
-                    element_symbols = md_data.get('element_symbols')
-                    xyz_content = create_md_trajectory_xyz(
-                        md_data['trajectory_data'],
-                        selected_md['name'],
-                        md_data['md_params'],
-                        element_symbols=element_symbols
+                if trajectory_data:
+                    fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
+                        trajectory_data,
+                        md_params
                     )
-                    if xyz_content:
-                        st.download_button(
-                            label="📥 Download Trajectory (XYZ)",
-                            data=xyz_content,
-                            file_name=f"md_trajectory_{selected_md['name'].replace('.', '_')}.xyz",
-                            mime="text/plain",
-                            key=f"download_md_xyz_{selected_md['name']}"
-                        )
 
-                with col_dl2:
-                    json_data = export_md_results(md_data, selected_md['name'])
-                    if json_data:
+                    if fig_main:
+                        st.plotly_chart(fig_main, use_container_width=True)
+
+                    if fig_pressure:
+                        st.subheader("Pressure Evolution")
+                        st.plotly_chart(fig_pressure, use_container_width=True)
+
+                    if fig_conservation:
+                        st.subheader("Energy Conservation")
+                        st.plotly_chart(fig_conservation, use_container_width=True)
+
+                    if md_params.get('ensemble') == 'NPT':
+                        st.subheader("NPT Cell Evolution Analysis")
+                        st.info(
+                            "📊 Tracking lattice parameters, volume, angles, and density changes during NPT simulation")
+
+                        npt_fig = create_npt_analysis_plots(trajectory_data, md_params)
+                        if npt_fig:
+                            st.plotly_chart(npt_fig, use_container_width=True)
+
+                        # NPT metrics
+                        final_data = trajectory_data[-1]
+                        initial_data = trajectory_data[0]
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric(
+                                "Volume Change",
+                                f"{final_data['volume']:.2f} Å³",
+                                f"{((final_data['volume'] - initial_data['volume']) / initial_data['volume'] * 100):.2f}%"
+                            )
+                        with col2:
+                            if 'mass' in final_data and final_data['volume'] > 0:
+                                final_density = (final_data['mass'] / final_data['volume']) * 1.66054
+                                st.metric("Final Density", f"{final_density:.3f} g/cm³")
+                        with col3:
+                            if final_data.get('pressure') is not None:
+                                st.metric("Final Pressure", f"{final_data['pressure']:.2f} GPa")
+
+                    st.markdown("---")
+
+                    st.subheader("Download Trajectory")
+
+                    element_symbols_list = None
+                    if structure_name in st.session_state.structures:
+                        try:
+                            element_symbols_list = [site.specie.symbol for site in
+                                                    st.session_state.structures[structure_name]]
+                        except AttributeError:
+                            try:
+                                element_symbols_list = st.session_state.structures[
+                                    structure_name].get_chemical_symbols()
+                            except:
+                                pass
+
+                    xyz_content = create_md_trajectory_xyz(
+                        trajectory_data,
+                        structure_name,
+                        md_params,
+                        element_symbols=element_symbols_list
+                    )
+
+                    st.download_button(
+                        label="📥 Download MD Trajectory (XYZ)",
+                        data=xyz_content,
+                        file_name=f"md_trajectory_{structure_name.replace('.', '_')}.xyz",
+                        mime="text/plain",
+                        help="Extended XYZ format with cell parameters, velocities, and energies",
+                        type='primary'
+                    )
+
+                    json_export = export_md_results(result, structure_name)
+                    if json_export:
                         st.download_button(
-                            label="📊 Download Analysis (JSON)",
-                            data=json_data,
-                            file_name=f"md_analysis_{selected_md['name'].replace('.', '_')}.json",
+                            label="📊 Download MD Summary (JSON)",
+                            data=json_export,
+                            file_name=f"md_summary_{structure_name.replace('.', '_')}.json",
                             mime="application/json",
-                            key=f"download_md_json_{selected_md['name']}"
+                            help="JSON file with MD parameters and statistics"
                         )
 
-                with col_dl3:
-                    if 'final_structure' in md_data:
-                        final_poscar = create_wrapped_poscar_content(md_data['final_structure'])
-                        st.download_button(
-                            label="📁 Download Final Structure",
-                            data=final_poscar,
-                            file_name=f"md_final_{selected_md['name'].replace('.', '_')}.vasp",
-                            mime="text/plain",
-                            key=f"download_md_final_{selected_md['name']}"
-                        )
-        else:
-            st.error(f"MD simulation failed: {md_data.get('error', 'Unknown error')}")
+                else:
+                    st.warning(f"No trajectory data available for {structure_name}")
+
+    elif st.session_state.calculation_running:
+        st.info("🔄 MD simulation in progress... Results will appear here when complete.")
 
     else:
-        st.info("No MD simulation results found. Results will appear here after MD calculations complete.")
-
+        st.info("Run an MD simulation to see trajectory analysis and results here.")
         st.markdown("""
-        **What you'll see here after MD calculations:**
-
-        📊 **Simulation Summary**: Key metrics like total steps, simulation time, final temperature
-
-        📈 **Trajectory Plots**: Energy, temperature, pressure, and volume evolution over time
-
-        📥 **Download Options**: 
-        - XYZ trajectory files for visualization
-        - JSON analysis data for further processing
-        - Final equilibrated structure
-
-        🔍 **Analysis Tools**: Statistical analysis of MD properties and equilibration
+        **Available MD Features:**
+        - Energy, temperature, and pressure evolution plots
+        - **NPT-specific:** Cell parameter evolution, volume changes, density tracking
+        - Trajectory download in extended XYZ format
+        - Summary statistics export
         """)
+
 with tab5:
     display_mace_models_info()
     st.markdown("---")
@@ -4007,6 +3943,56 @@ with tab1:
         if calc_type == "Molecular Dynamics":
             st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
             md_params = setup_md_parameters_ui()
+            st.divider()
+            st.subheader("Generate Standalone MD Script")
+
+            if 'generated_md_script' not in st.session_state:
+                st.session_state.generated_md_script = None
+
+            if st.button("📝 Generate MD Python Script (using current settings)", key="generate_md_script_button",
+                         type="secondary"):
+                try:
+                    current_selected_model = selected_model
+                    current_model_size = model_size
+                    current_device = device
+                    current_dtype = dtype
+                    current_thread_count = st.session_state.thread_count
+
+                    generated_script = generate_md_python_script(
+                        md_params,
+                        current_selected_model,
+                        current_model_size,
+                        current_device,
+                        current_dtype,
+                        current_thread_count
+                    )
+                    st.session_state.generated_md_script = generated_script
+                    st.success("✅ MD script generated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate script: {str(e)}")
+                    st.session_state.generated_md_script = None
+
+            if st.session_state.generated_md_script:
+                with st.expander("🐍 View Generated MD Script", expanded=True):
+                    st.code(st.session_state.generated_md_script, language='python')
+
+                    st.download_button(
+                        label="💾 Download MD Script (.py)",
+                        data=st.session_state.generated_md_script,
+                        file_name="run_md_simulation.py",
+                        mime="text/x-python",
+                        key="download_generated_md_script",
+                        type='primary'
+                    )
+                st.info("""
+                        **Instructions:**
+                        1. Save the script (e.g., `run_md_simulation.py`).
+                        2. Place your structure files (`.cif`, `.vasp`, `POSCAR`) in the same directory.
+                        3. Create a subdirectory named `md_results`.
+                        4. Ensure necessary libraries are installed (`pip install ase mace-torch ...`).
+                        5. Run the script from your terminal: `python run_md_simulation.py`
+                        """)
+
         if calc_type == "Virtual Tensile Test":
             st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
             tensile_params = setup_tensile_test_ui(
@@ -4649,7 +4635,6 @@ with tab_st:
                         - `phonon_data_*.json` - Phonon results (if applicable)
                         - `elastic_data_*.json` - Elastic properties (if applicable)
                         """)
-
         if start_calc:
             st.session_state.calculation_running = True
             st.session_state.log_messages = []
@@ -4859,7 +4844,7 @@ with tab2:
                 if message.get('md_results'):
                     md_data = message['md_results']
                     if md_data['success'] and md_data.get('trajectory_data'):
-                        st.session_state.md_trajectories[message['name']] = md_data['trajectory_data']
+                        st.session_state.md_trajectories[message['name']] = md_data
                 st.session_state.results.append(message)
                 if st.session_state.results_backup_file:
                     append_to_backup_file(message, st.session_state.results_backup_file)
