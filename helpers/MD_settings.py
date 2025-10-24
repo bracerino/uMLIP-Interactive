@@ -1,5 +1,3 @@
-
-
 import numpy as np
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
@@ -14,7 +12,6 @@ import os
 
 NPT_AVAILABLE = False
 NPT_TYPE = None
-
 try:
     from ase.md.nptberendsen import NPTBerendsen
 
@@ -35,7 +32,6 @@ print(f"MD Status: NPT Available = {NPT_AVAILABLE}, Type = {NPT_TYPE}")
 
 
 class MDTrajectoryLogger:
-
     def __init__(self, log_queue, structure_name, md_params):
         self.log_queue = log_queue
         self.structure_name = structure_name
@@ -47,7 +43,6 @@ class MDTrajectoryLogger:
         self.log_interval = md_params.get('log_interval', 10)
 
     def __call__(self):
-        """Called at each MD step"""
         current_time = time.time()
         self.step_count += 1
 
@@ -83,6 +78,7 @@ class MDTrajectoryLogger:
                     'velocities': atoms.get_velocities().copy(),
                     'cell': atoms.cell.array.copy(),
                     'volume': atoms.get_volume(),
+                    'mass': atoms.get_masses().sum(),
                     'timestamp': current_time
                 }
 
@@ -106,7 +102,7 @@ class MDTrajectoryLogger:
                     estimated_remaining = 0
 
                 if current_time - self.last_log_time > 2.0:
-                    progress = self.step_count / self.md_params['n_steps']
+                    progress = min(1.0, max(0.0, self.step_count / self.md_params['n_steps']))
 
                     self.log_queue.put({
                         'type': 'md_step',
@@ -120,6 +116,7 @@ class MDTrajectoryLogger:
                         'temperature': temperature,
                         'pressure': pressure,
                         'avg_time_per_step': avg_time_per_step,
+
                         'estimated_remaining_time': estimated_remaining,
                         'elapsed_time': elapsed_time
                     })
@@ -141,7 +138,6 @@ class MDTrajectoryLogger:
                 self.log_queue.put(f"  Warning: MD logging error at step {self.step_count}: {str(e)}")
 
     def set_md_object(self, md_object):
-        """Set reference to MD object after creation"""
         self.md_object = md_object
 
 
@@ -178,7 +174,59 @@ def setup_md_parameters_ui():
             index=1,
             help="NVE: Constant energy, NVT: Constant temperature, NPT: Constant pressure & temperature"
         )
+        if md_params['ensemble'] == "NPT":
+            st.markdown("---")
+            st.subheader("NPT Pressure Control")
 
+            col_npt1, col_npt2, col_npt3 = st.columns(3)
+
+            with col_npt1:
+                md_params['pressure_coupling_type'] = st.selectbox(
+                    "Pressure Coupling Type",
+                    ["isotropic", "anisotropic", "semi-isotropic", "directional"],
+                    help="Isotropic: uniform in all directions | Anisotropic: independent xyz | Semi-isotropic: xy coupled, z independent | Directional: specific axes only"
+                )
+
+            with col_npt2:
+                md_params['target_pressure_gpa'] = st.number_input(
+                    "Target Pressure (GPa)",
+                    min_value=-10.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    help="Target pressure for NPT simulation"
+                )
+
+            with col_npt3:
+                md_params['pressure_damping_time'] = st.number_input(
+                    "Pressure Damping Time (fs)",
+                    min_value=10.0,
+                    max_value=10000.0,
+                    value=1000.0,
+                    step=100.0,
+                    help="Pressure coupling timescale"
+                )
+
+            if md_params['pressure_coupling_type'] == "directional":
+                st.markdown("**Select Active Pressure Coupling Directions:**")
+                col_dx, col_dy, col_dz = st.columns(3)
+                with col_dx:
+                    md_params['couple_x'] = st.checkbox("Couple X direction", value=True)
+                with col_dy:
+                    md_params['couple_y'] = st.checkbox("Couple Y direction", value=True)
+                with col_dz:
+                    md_params['couple_z'] = st.checkbox("Couple Z direction", value=False)
+
+            if md_params['pressure_coupling_type'] == "anisotropic":
+                st.markdown("**Individual Axis Pressures (GPa):**")
+                col_px, col_py, col_pz = st.columns(3)
+                with col_px:
+                    md_params['pressure_x'] = st.number_input("P_x", value=md_params['target_pressure_gpa'], step=0.1)
+                with col_py:
+                    md_params['pressure_y'] = st.number_input("P_y", value=md_params['target_pressure_gpa'], step=0.1)
+                with col_pz:
+                    md_params['pressure_z'] = st.number_input("P_z", value=md_params['target_pressure_gpa'], step=0.1)
     with col_md2:
         md_params['n_steps'] = st.number_input(
             "Number of steps",
@@ -368,7 +416,6 @@ def setup_md_parameters_ui():
                 value=False,
                 help="Keep center of mass fixed throughout simulation"
             )
-
     total_time_fs = md_params['n_steps'] * md_params['timestep']
     total_time_ps = total_time_fs / 1000.0
 
@@ -383,196 +430,229 @@ def setup_md_parameters_ui():
 
 
 def run_md_simulation(atoms, calculator, md_params, log_queue, structure_name):
-
     try:
         log_queue.put(f"Starting MD simulation for {structure_name}")
-        log_queue.put(
-            f"Ensemble: {md_params['ensemble']}, Steps: {md_params['n_steps']}, T: {md_params['temperature']}K")
+        log_queue.put(f"  Ensemble: {md_params['ensemble']}")
+        log_queue.put(f"  Temperature: {md_params['temperature']} K")
+        log_queue.put(f"  Steps: {md_params['n_steps']}")
+        log_queue.put(f"  Timestep: {md_params['timestep']} fs")
 
+        atoms = atoms.copy()
         atoms.calc = calculator
 
-        # Initialize velocities according to Maxwell-Boltzmann distribution
-        log_queue.put("  Initializing velocities from Maxwell-Boltzmann distribution...")
+        log_queue.put(f"  Initial energy calculation...")
+        try:
+            initial_energy = atoms.get_potential_energy()
+            log_queue.put(f"  Initial energy: {initial_energy:.6f} eV")
+        except Exception as e:
+            log_queue.put(f"  Warning: Could not calculate initial energy: {str(e)}")
+            initial_energy = None
 
-        if md_params.get('random_seed', 0) != 0:
-            np.random.seed(md_params['random_seed'])
-
+        log_queue.put(f"  Setting initial velocities (Maxwell-Boltzmann distribution)...")
         MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
-
-        initial_kinetic = atoms.get_kinetic_energy()
-        initial_temp = atoms.get_temperature()
-        log_queue.put(f"  Initial kinetic energy: {initial_kinetic:.6f} eV")
-        log_queue.put(f"  Initial temperature: {initial_temp:.1f} K")
 
         velocities = atoms.get_velocities()
         max_velocity = np.max(np.linalg.norm(velocities, axis=1))
         log_queue.put(f"  Maximum velocity: {max_velocity:.6f} Å/fs")
-        if max_velocity < 1e-6:
-            log_queue.put("  ⚠️ Warning: Velocities are very small - atoms may not move!")
 
-        if md_params['remove_com_motion']:
-            momenta = atoms.get_momenta()
-            com_momentum = momenta.sum(axis=0)
-            momenta -= com_momentum / len(atoms)
-            atoms.set_momenta(momenta)
-            log_queue.put(f"  Center of mass motion removed")
+        from ase.md.velocitydistribution import Stationary
+        Stationary(atoms)
+        log_queue.put(f"  Center of mass motion removed")
 
-        md_logger = MDTrajectoryLogger(log_queue, structure_name, md_params)
+        dt = md_params['timestep'] * units.fs
+        log_queue.put(f"  Using timestep: {md_params['timestep']} fs = {dt:.2e} ASE units")
 
-        timestep_ase_units = md_params['timestep'] * units.fs
+        first_atom_pos = atoms.positions[0].copy()
+        log_queue.put(f"  Initial position of first atom: {first_atom_pos}")
 
-        log_queue.put(f"  Using timestep: {md_params['timestep']} fs = {timestep_ase_units:.2e} ASE units")
-        initial_positions = atoms.positions.copy()
-        log_queue.put(f"  Initial position of first atom: {initial_positions[0]}")
+        if md_params['ensemble'] == "NVE":
+            md_object = VelocityVerlet(atoms, timestep=dt)
+            log_queue.put("✓ NVE ensemble initialized")
 
-        if md_params['ensemble'] == 'NVE':
-            log_queue.put("  Setting up NVE (microcanonical) ensemble...")
-            md_object = VelocityVerlet(atoms, timestep_ase_units)
-
-        elif md_params['ensemble'] == 'NVT-Langevin':
-            log_queue.put("  Setting up NVT ensemble with Langevin thermostat...")
-
-            friction_ase_units = md_params['friction'] / units.fs
+        elif md_params['ensemble'] == "NVT-Langevin":
+            friction_coefficient = md_params.get('friction', 0.01) / units.fs
             md_object = Langevin(
                 atoms,
-                timestep_ase_units,
+                timestep=dt,
                 temperature_K=md_params['temperature'],
-                friction=friction_ase_units
+                friction=friction_coefficient
             )
+            log_queue.put(f"✓ NVT-Langevin ensemble initialized (friction={md_params.get('friction', 0.01)} 1/fs)")
 
-        elif md_params['ensemble'] == 'NVT-Berendsen':
-            log_queue.put("  Setting up NVT ensemble with Berendsen thermostat...")
-            taut_ase_units = md_params['taut'] * units.fs  # Convert fs to ASE units
+        elif md_params['ensemble'] == "NVT-Berendsen":
+            taut = md_params.get('temperature_damping_time', 100.0) * units.fs
             md_object = NVTBerendsen(
                 atoms,
-                timestep_ase_units,
+                timestep=dt,
                 temperature_K=md_params['temperature'],
-                taut=taut_ase_units
+                taut=taut
             )
+            log_queue.put(
+                f"✓ NVT-Berendsen ensemble initialized (taut={md_params.get('temperature_damping_time', 100.0)} fs)")
 
-        elif md_params['ensemble'] == 'NPT':
+        elif md_params['ensemble'] == "NPT":
             if not NPT_AVAILABLE:
                 raise ImportError("NPT ensemble not available in this ASE version")
 
-            log_queue.put(f"  Setting up NPT ensemble ({NPT_TYPE})...")
+            target_pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+            taut_fs = md_params.get('temperature_damping_time', 100.0)
+            taup_fs = md_params.get('pressure_damping_time', 1000.0)
+
+            coupling_type = md_params.get('pressure_coupling_type', 'isotropic')
 
             if NPT_TYPE == "Berendsen":
-                md_object = NPT(
-                    atoms,
-                    timestep_ase_units,
-                    temperature_K=md_params['temperature'],
-                    pressure_au=md_params['external_pressure'] * units.GPa,
-                    taut=md_params['taut'] * units.fs,
-                    taup=md_params['taup'] * units.fs,
-                    compressibility_au=1.0 / (md_params['bulk_modulus'] * units.GPa)
-                )
+                if coupling_type == "isotropic":
+                    compressibility_au = 4.57e-5
+                    md_object = NPT(
+                        atoms,
+                        timestep=dt,
+                        temperature_K=md_params['temperature'],
+                        pressure_au=target_pressure_gpa * 1e9 * units.Pascal,
+                        taut=taut_fs * units.fs,
+                        taup=taup_fs * units.fs,
+                        compressibility_au=compressibility_au
+                    )
+
+                elif coupling_type == "anisotropic":
+                    px = md_params.get('pressure_x', 0.0) * 1e9 * units.Pascal
+                    py = md_params.get('pressure_y', 0.0) * 1e9 * units.Pascal
+                    pz = md_params.get('pressure_z', 0.0) * 1e9 * units.Pascal
+                    pressure_au = np.array([px, py, pz, 0, 0, 0])
+
+                    md_object = NPT(
+                        atoms,
+                        timestep=dt,
+                        temperature_K=md_params['temperature'],
+                        pressure_au=pressure_au,
+                        taut=taut_fs * units.fs,
+                        taup=taup_fs * units.fs,
+                        compressibility_au=4.57e-5
+                    )
+
+                elif coupling_type == "semi-isotropic":
+                    pressure_au = target_pressure_gpa * 1e9 * units.Pascal
+                    mask = np.array([1, 1, 1, 0, 0, 0])
+
+                    md_object = NPT(
+                        atoms,
+                        timestep=dt,
+                        temperature_K=md_params['temperature'],
+                        pressure_au=pressure_au,
+                        taut=taut_fs * units.fs,
+                        taup=taup_fs * units.fs,
+                        compressibility_au=4.57e-5,
+                        mask=mask
+                    )
+
+                elif coupling_type == "directional":
+                    couple_x = md_params.get('couple_x', True)
+                    couple_y = md_params.get('couple_y', True)
+                    couple_z = md_params.get('couple_z', True)
+
+                    mask = np.array([int(couple_x), int(couple_y), int(couple_z), 0, 0, 0])
+
+                    pressure_au = target_pressure_gpa * 1e9 * units.Pascal
+                    pressure_tensor = np.zeros(6)
+                    pressure_tensor[0] = pressure_au if couple_x else 0.0
+                    pressure_tensor[1] = pressure_au if couple_y else 0.0
+                    pressure_tensor[2] = pressure_au if couple_z else 0.0
+
+                    md_object = NPT(
+                        atoms,
+                        timestep=dt,
+                        temperature_K=md_params['temperature'],
+                        pressure_au=pressure_tensor,
+                        taut=taut_fs * units.fs,
+                        taup=taup_fs * units.fs,
+                        compressibility_au=4.57e-5,
+                        mask=mask
+                    )
+
+                else:
+                    compressibility_au = 4.57e-5
+                    md_object = NPT(
+                        atoms,
+                        timestep=dt,
+                        temperature_K=md_params['temperature'],
+                        pressure_au=target_pressure_gpa * 1e9 * units.Pascal,
+                        taut=taut_fs * units.fs,
+                        taup=taup_fs * units.fs,
+                        compressibility_au=compressibility_au
+                    )
+
+                log_queue.put(
+                    f"✓ NPT-Berendsen ensemble initialized ({coupling_type} coupling, P={target_pressure_gpa} GPa)")
+
             else:
-                friction_ase_units = md_params['friction'] / units.fs
-                pressure_ase = md_params['external_pressure'] * units.GPa
-                bulk_modulus_ase = md_params['bulk_modulus'] * units.GPa
-                taup_ase_units = md_params['taup'] * units.fs
-
-                md_object = NPT(
+                from ase.md.npt import NPT as NPT_NH
+                target_pressure_ev_ang3 = target_pressure_gpa * units.GPa
+                md_object = NPT_NH(
                     atoms,
-                    timestep_ase_units,
+                    timestep=dt,
                     temperature_K=md_params['temperature'],
-                    externalstress=pressure_ase,
-                    ttime=1 / friction_ase_units,
-                    pfactor=(taup_ase_units ** 2) * bulk_modulus_ase
+                    externalstress=target_pressure_ev_ang3,
+                    ttime=taut_fs * units.fs,
+                    pfactor=(taup_fs * units.fs) ** 2 * md_params.get('bulk_modulus', 110.0) * units.GPa
                 )
+                log_queue.put(
+                    f"✓ NPT-Nose-Hoover ensemble initialized ({coupling_type} coupling, P={target_pressure_gpa} GPa)")
 
-        if md_params.get('use_rattle', False):
-            try:
-                from ase.md.rattle import Rattle
-                log_queue.put("  Applying RATTLE constraints...")
-                rattle = Rattle(tolerance=md_params.get('rattle_tolerance', 1e-6))
-                atoms.set_constraint(rattle)
-            except ImportError:
-                log_queue.put("  ⚠️ RATTLE not available, skipping constraints")
-
-        md_logger.set_md_object(md_object)
-
-        md_object.attach(md_logger, interval=1)
-
-        log_queue.put("  Running diagnostic single-step test...")
-        test_initial_pos = atoms.positions.copy()
-        md_object.run(1)
-        test_final_pos = atoms.positions.copy()
-        test_displacement = np.max(np.linalg.norm(test_final_pos - test_initial_pos, axis=1))
-        log_queue.put(f"  Single-step test displacement: {test_displacement:.8f} Å")
-
-        if test_displacement < 1e-8:
-            log_queue.put("  ❌ WARNING: Atoms barely moved in test - MD may have issues!")
         else:
-            log_queue.put(f"  ✅ SUCCESS: Atoms moved properly - MD should work correctly")
+            raise ValueError(f"Unknown ensemble: {md_params['ensemble']}")
 
-        if md_params['equilibration_steps'] > 0:
-            log_queue.put(f"  Running equilibration for {md_params['equilibration_steps']} steps...")
-            md_object.run(md_params['equilibration_steps'] - 1)
-            log_queue.put("  Equilibration completed, starting production run...")
+        logger = MDTrajectoryLogger(log_queue, structure_name, md_params)
+        logger.set_md_object(md_object)
 
-            md_logger.trajectory_data = []
-            md_logger.step_count = 0
-            md_logger.start_time = time.time()
+        md_object.attach(logger, interval=1)
 
-        production_steps = md_params['n_steps'] - md_params['equilibration_steps'] - 1
-        log_queue.put(f"  Running production MD for {production_steps} steps...")
+        log_queue.put(f"Running MD simulation ({md_params['n_steps']} steps)...")
+        start_time = time.time()
 
-        md_object.run(production_steps)
+        md_object.run(md_params['n_steps'])
 
-        final_positions = atoms.positions.copy()
-        position_change = np.max(np.linalg.norm(final_positions - initial_positions, axis=1))
-        log_queue.put(f"  Total maximum atomic displacement: {position_change:.6f} Å")
-
-        if position_change < 1e-6:
-            log_queue.put("  ⚠️ Warning: Atoms barely moved! Check timestep, temperature, or constraints")
-        else:
-            log_queue.put(f"  ✅ Atoms moved successfully (max displacement: {position_change:.3f} Å)")
+        end_time = time.time()
+        elapsed = end_time - start_time
 
         final_energy = atoms.get_potential_energy()
-        final_kinetic = atoms.get_kinetic_energy()
-        final_temperature = atoms.get_temperature()
+        final_temp = atoms.get_temperature()
 
         try:
             final_stress = atoms.get_stress(voigt=True)
             final_pressure = -np.mean(final_stress[:3])
         except:
-            final_stress = None
             final_pressure = None
 
-        log_queue.put(f"✅ MD simulation completed for {structure_name}")
-        log_queue.put(f"  Final temperature: {final_temperature:.1f} K")
-        log_queue.put(f"  Final potential energy: {final_energy:.6f} eV")
-        log_queue.put(f"  Final total energy: {final_energy + final_kinetic:.6f} eV")
+        log_queue.put(f"✓ MD simulation completed in {elapsed:.2f} seconds")
+        log_queue.put(f"  Final energy: {final_energy:.6f} eV")
+        log_queue.put(f"  Final temperature: {final_temp:.2f} K")
         if final_pressure is not None:
-            log_queue.put(f"  Final pressure: {final_pressure:.2f} GPa")
+            log_queue.put(f"  Final pressure: {final_pressure:.4f} GPa")
 
-        from pymatgen.io.ase import AseAtomsAdaptor
-        adaptor = AseAtomsAdaptor()
-        final_structure = adaptor.get_structure(atoms)
+        simulation_time_ps = md_params['n_steps'] * md_params['timestep'] / 1000.0
 
         return {
             'success': True,
-            'final_structure': final_structure,
+            'trajectory_data': logger.trajectory_data,
+            'final_atoms': atoms,
             'final_energy': final_energy,
-            'final_temperature': final_temperature,
+            'final_temperature': final_temp,
             'final_pressure': final_pressure,
-            'trajectory_data': md_logger.trajectory_data,
-            'md_params': md_params,
-            'total_steps_run': len(md_logger.trajectory_data),
-            'simulation_time_ps': len(md_logger.trajectory_data) * md_params['timestep'] / 1000.0,
-            'element_symbols': atoms.get_chemical_symbols()
+            'total_steps_run': md_params['n_steps'],
+            'simulation_time_ps': simulation_time_ps,
+            'elapsed_time_seconds': elapsed,
+            'md_params': md_params
         }
 
     except Exception as e:
-        log_queue.put(f"❌ MD simulation failed for {structure_name}: {str(e)}")
         import traceback
+        error_msg = f"❌ MD simulation failed for {structure_name}: {str(e)}"
+        log_queue.put(error_msg)
         log_queue.put(f"Traceback: {traceback.format_exc()}")
         return {
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }
-
 
 def create_md_trajectory_xyz(trajectory_data, structure_name, md_params, element_symbols=None):
 
@@ -617,7 +697,6 @@ def create_md_trajectory_xyz(trajectory_data, structure_name, md_params, element
 
 
 def create_md_analysis_plots(trajectory_data, md_params):
-    """Create analysis plots for MD trajectory with improved layout and debugging"""
 
     if not trajectory_data or len(trajectory_data) < 2:
         return None, None, None
@@ -666,21 +745,18 @@ def create_md_analysis_plots(trajectory_data, md_params):
         row=2, col=1
     )
 
-    # Temperature
     fig_main.add_trace(
         go.Scatter(x=times_ps, y=temperatures, name='Temperature',
                    line=dict(color='orange', width=3), showlegend=False),
         row=2, col=2
     )
 
-    # Volume
     fig_main.add_trace(
         go.Scatter(x=times_ps, y=volumes, name='Volume',
                    line=dict(color='green', width=3), showlegend=False),
         row=3, col=1
     )
 
-    # Maximum Force (debugging)
     fig_main.add_trace(
         go.Scatter(x=times_ps, y=max_forces, name='Max Force',
                    line=dict(color='purple', width=3), showlegend=False),
@@ -791,3 +867,65 @@ def export_md_results(md_results, structure_name):
             export_data['trajectory_statistics']['std_pressure_GPa'] = float(np.std(pressures))
 
     return json.dumps(export_data, indent=2)
+
+
+def create_npt_analysis_plots(trajectory_data, md_params):
+    if not trajectory_data or len(trajectory_data) < 2:
+        return None
+
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    from ase.cell import Cell
+
+    times_ps = [data.get('time_ps', data['step'] * md_params['timestep'] / 1000.0) for data in trajectory_data]
+
+    cell_a = [np.linalg.norm(data['cell'][0]) for data in trajectory_data]
+    cell_b = [np.linalg.norm(data['cell'][1]) for data in trajectory_data]
+    cell_c = [np.linalg.norm(data['cell'][2]) for data in trajectory_data]
+    volumes = [data.get('volume', 0) for data in trajectory_data]
+    densities = [data.get('mass', 0) / data.get('volume', 1) if data.get('volume', 0) > 0 else 0 for data in
+                 trajectory_data]
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Lattice Parameters vs Time', 'Volume vs Time',
+                        'Cell Angles vs Time', 'Density vs Time'),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+
+    fig.add_trace(go.Scatter(x=times_ps, y=cell_a, name='a', line=dict(color='red', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=times_ps, y=cell_b, name='b', line=dict(color='blue', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=times_ps, y=cell_c, name='c', line=dict(color='green', width=2)), row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=times_ps, y=volumes, name='Volume', line=dict(color='purple', width=3)), row=1, col=2)
+
+    angles_alpha = [np.degrees(Cell(data['cell']).angles()[0]) for data in trajectory_data]
+    angles_beta = [np.degrees(Cell(data['cell']).angles()[1]) for data in trajectory_data]
+    angles_gamma = [np.degrees(Cell(data['cell']).angles()[2]) for data in trajectory_data]
+
+
+    fig.add_trace(go.Scatter(x=times_ps, y=angles_alpha, name='α', line=dict(color='red', width=2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=times_ps, y=angles_beta, name='β', line=dict(color='blue', width=2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=times_ps, y=angles_gamma, name='γ', line=dict(color='green', width=2)), row=2, col=1)
+
+    if any(d > 0 for d in densities):
+        fig.add_trace(go.Scatter(x=times_ps, y=densities, name='Density', line=dict(color='orange', width=3)), row=2,
+                      col=2)
+
+    fig.update_xaxes(title_text="Time (ps)", title_font=dict(size=18), tickfont=dict(size=14))
+    fig.update_yaxes(title_text="Length (Å)", title_font=dict(size=18), tickfont=dict(size=14), row=1, col=1)
+    fig.update_yaxes(title_text="Volume (Å³)", title_font=dict(size=18), tickfont=dict(size=14), row=1,
+                     col=2)
+    fig.update_yaxes(title_text="Angle (°)", title_font=dict(size=18), tickfont=dict(size=14), row=2, col=1)
+
+    fig.update_yaxes(title_text="Density (g/cm³)", title_font=dict(size=18), tickfont=dict(size=14), row=2, col=2)
+
+    fig.update_layout(
+        height=700,
+        title=dict(text="NPT Cell Evolution", font=dict(size=24)),
+        font=dict(size=16),
+        margin=dict(l=80, r=80, t=100, b=80)
+    )
+
+    return fig
