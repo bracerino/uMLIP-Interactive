@@ -4,27 +4,7 @@ from collections import deque
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count):
-    """
-    Generates a standalone Python script for running an MD simulation
-    based on the provided parameters.
 
-    This script is designed to load structures from the local directory
-    (e.g., .cif, .vasp) and run the MD simulation. It now includes
-    console logging with time estimation and saves trajectories in XYZ format.
-
-    Args:
-        md_params (dict): Dictionary of MD parameters from the Streamlit UI.
-        selected_model (str): The full name of the model (e.g., "MACE-MP-0b3...").
-        model_size (str): The model key/path (e.g., "medium-0b3").
-        device (str): "cpu" or "cuda".
-        dtype (str): "float32" or "float64".
-        thread_count (int): The number of CPU threads to use.
-
-    Returns:
-        str: A string containing the complete, runnable Python script.
-    """
-
-    # 1. Generate the Calculator Setup Code Block
     calculator_setup_str = ""
     imports_str = f"""
 import os
@@ -206,7 +186,6 @@ except Exception as e:
         print(f"❌ ORB CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    # --- NEW: Nequix and DeePMD implementation ---
     elif "Nequix" in selected_model:
         calculator_setup_str = f"""
 print("Setting up Nequix calculator...")
@@ -239,33 +218,25 @@ except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
-    # --- END NEW ---
     else:
         calculator_setup_str = "print('Error: Could not determine calculator type.')\ncalculator = None\nexit()"
 
-    # 2. Clean up md_params and pretty-print it
-    # Fix for NPT explosion: Standardize on 'taup' and remove old/conflicting keys
 
-    # 1. Get the value from *either* key, prioritizing the UI's 'pressure_damping_time'
-    taup_val = md_params.get('taup', 1000.0)  # Default if neither exists
+    taup_val = md_params.get('taup', 1000.0)
     if 'pressure_damping_time' in md_params:
-        taup_val = md_params.pop('pressure_damping_time')  # Get value from this key
+        taup_val = md_params.pop('pressure_damping_time')
     elif 'taup' in md_params:
-        taup_val = md_params.pop('taup')  # Otherwise, get it from this key
+        taup_val = md_params.pop('taup')
 
-    # 2. Delete both keys to be safe
     if 'taup' in md_params: md_params.pop('taup')
     if 'pressure_damping_time' in md_params: md_params.pop('pressure_damping_time')
 
-    # 3. Set the *correct* key and value
     md_params['taup'] = taup_val
-    # --- END NPT FIX ---
 
     md_params_str = pprint.pformat(md_params, indent=4, width=80)
-
     indented_calculator_setup = textwrap.indent(calculator_setup_str, "    ")
 
-    # 3. Add Custom Logger and XYZ Writer Classes to the script
+
     custom_classes_str = """
 class ConsoleMDLogger:
     def __init__(self, atoms, total_steps, log_interval=10, steps_for_avg=10):
@@ -441,6 +412,7 @@ class CSVLogger:
             temp = self.atoms.get_temperature()
             try:
                 stress = self.atoms.get_stress(voigt=True)
+
                 pressure = -np.mean(stress[:3]) / units.GPa
             except Exception:
                 pressure = np.nan
@@ -467,8 +439,6 @@ class CSVLogger:
 
 """
 
-    # 4. Assemble the final script string
-    # --- MODIFICATION: Updated plotting function and font sizes ---
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
@@ -527,16 +497,41 @@ def run_md_simulation(atoms, basename, calculator):
         md = NVTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, taut=taut)
         print(f"  Initialized NVT-Berendsen ensemble (taut={{taut / units.fs:.1f}} fs).")
     elif ensemble == "NPT":
-        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
-        pressure_au = pressure_gpa * 1e9 * units.Pascal
         taut_fs = md_params.get('taut', 100.0) * units.fs
         taup_fs = md_params.get('taup', 1000.0) * units.fs
-
         compressibility_au = 1 / (100 * units.GPa) 
 
-        md = NPTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, pressure_au=pressure_au, taut=taut_fs, taup=taup_fs, compressibility_au=compressibility_au)
-        print(f"  Initialized NPT-Berendsen (isotropic) ensemble.")
-        print(f"    Target P: {{pressure_gpa}} GPa")
+        coupling_type = md_params.get('pressure_coupling_type', 'isotropic').lower()
+
+        if coupling_type == 'anisotropic':
+            px_gpa = md_params.get('pressure_x', 0.0)
+            py_gpa = md_params.get('pressure_y', 0.0)
+            pz_gpa = md_params.get('pressure_z', 0.0)
+
+            # Convert GPa to ASE pressure units (eV/Ang^3)
+            pressure_factor = 1e9 * units.Pascal
+            px_au = px_gpa * pressure_factor
+            py_au = py_gpa * pressure_factor
+            pz_au = pz_gpa * pressure_factor
+
+            # Create the 3x3 diagonal stress tensor matrix
+            pressure_au = np.diag([px_au, py_au, pz_au])
+
+            print(f"  Initialized NPT-Berendsen (ANISOTROPIC) ensemble.")
+            print(f"    Target P (xx,yy,zz): {{px_gpa:.2f}}, {{py_gpa:.2f}}, {{pz_gpa:.2f}} GPa")
+
+        else: # Isotropic case
+            pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+            pressure_au = pressure_gpa * 1e9 * units.Pascal # Scalar
+
+            print(f"  Initialized NPT-Berendsen (ISOTROPIC) ensemble.")
+            print(f"    Target P: {{pressure_gpa}} GPa")
+
+        md = NPTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, 
+                          pressure_au=pressure_au, # Pass scalar or 3x3 matrix
+                          taut=taut_fs, taup=taup_fs, 
+                          compressibility_au=compressibility_au)
+
         print(f"    T coupling (taut): {{taut_fs / units.fs:.1f}} fs")
         print(f"    P coupling (taup): {{taup_fs / units.fs:.1f}} fs")
 
@@ -596,22 +591,39 @@ def generate_plots(basename):
     print(f"  Generating plots for: {{basename}}")
 
     plt.rcParams.update({{
-        'font.size': 20,
-        'axes.titlesize': 24,
-        'axes.labelsize': 22,
-        'xtick.labelsize': 18,
-        'ytick.labelsize': 18,
-        'legend.fontsize': 20,
-        'figure.titlesize': 26
+        'font.size': 22,
+        'axes.titlesize': 26,
+        'axes.labelsize': 24,
+        'xtick.labelsize': 20,
+        'ytick.labelsize': 20,
+        'legend.fontsize': 22,
+        'figure.titlesize': 28,
+        'figure.figsize': (15, 10)
     }})
 
     csv_file = f"md_results/md_{{basename}}_data.csv"
 
     try:
         data = pd.read_csv(csv_file)
-        if data.empty:
-            print(f"    ... skipping, {{csv_file}} is empty.")
+        if data.empty or len(data) < 1:
+            print(f"    ... skipping, {{csv_file}} is empty or has no data.")
             return
+
+        initial_vals = data.iloc[0]
+        a_0 = initial_vals['a[A]']
+        b_0 = initial_vals['b[A]']
+        c_0 = initial_vals['c[A]']
+        alpha_0 = initial_vals['alpha[deg]']
+        beta_0 = initial_vals['beta[deg]']
+        gamma_0 = initial_vals['gamma[deg]']
+
+        data['a_perc'] = ((data['a[A]'] - a_0) / a_0) * 100 if a_0 != 0 else 0
+        data['b_perc'] = ((data['b[A]'] - b_0) / b_0) * 100 if b_0 != 0 else 0
+        data['c_perc'] = ((data['c[A]'] - c_0) / c_0) * 100 if c_0 != 0 else 0
+        data['alpha_perc'] = ((data['alpha[deg]'] - alpha_0) / alpha_0) * 100 if alpha_0 != 0 else 0
+        data['beta_perc'] = ((data['beta[deg]'] - beta_0) / beta_0) * 100 if beta_0 != 0 else 0
+        data['gamma_perc'] = ((data['gamma[deg]'] - gamma_0) / gamma_0) * 100 if gamma_0 != 0 else 0
+
         data = data.dropna()
         if data.empty:
             print(f"    ... skipping, no valid data to plot in {{csv_file}}.")
@@ -628,7 +640,7 @@ def generate_plots(basename):
     plot_prefix = f"md_results/md_{{basename}}"
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['T[K]'], label='Temperature')
         plt.xlabel("Time (ps)")
         plt.ylabel("Temperature (K)")
@@ -642,7 +654,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot temperature: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['P[GPa]'], label='Pressure')
         plt.xlabel("Time (ps)")
         plt.ylabel("Pressure (GPa)")
@@ -656,7 +668,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot pressure: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['Etot[eV]'], label='Total Energy', linestyle='-', linewidth=2)
         plt.xlabel("Time (ps)")
         plt.ylabel("Energy (eV)")
@@ -670,7 +682,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot total energy: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['Epot[eV]'], label='Potential Energy', linestyle='--')
         plt.xlabel("Time (ps)")
         plt.ylabel("Energy (eV)")
@@ -684,7 +696,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot potential energy: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['Ekin[eV]'], label='Kinetic Energy', linestyle=':')
         plt.xlabel("Time (ps)")
         plt.ylabel("Energy (eV)")
@@ -698,7 +710,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot kinetic energy: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['a[A]'], label='a (Å)')
         plt.plot(time_ps, data['b[A]'], label='b (Å)')
         plt.plot(time_ps, data['c[A]'], label='c (Å)')
@@ -714,7 +726,7 @@ def generate_plots(basename):
         print(f"    ... failed to plot lattice lengths: {{e}}")
 
     try:
-        plt.figure(figsize=(12, 8))
+        plt.figure()
         plt.plot(time_ps, data['alpha[deg]'], label='α (°)')
         plt.plot(time_ps, data['beta[deg]'], label='β (°)')
         plt.plot(time_ps, data['gamma[deg]'], label='γ (°)')
@@ -728,6 +740,31 @@ def generate_plots(basename):
         plt.close()
     except Exception as e:
         print(f"    ... failed to plot lattice angles: {{e}}")
+
+    try:
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(15, 12))
+
+        ax1.plot(time_ps, data['a_perc'], label='a (%)')
+        ax1.plot(time_ps, data['b_perc'], label='b (%)')
+        ax1.plot(time_ps, data['c_perc'], label='c (%)')
+        ax1.set_ylabel("Lattice Length (% Change)")
+        ax1.set_title(f"{{basename}} - Lattice Parameter % Change vs. Time")
+        ax1.legend()
+        ax1.grid(True, linestyle='--', alpha=0.6)
+
+        ax2.plot(time_ps, data['alpha_perc'], label='α (%)')
+        ax2.plot(time_ps, data['beta_perc'], label='β (%)')
+        ax2.plot(time_ps, data['gamma_perc'], label='γ (%)')
+        ax2.set_xlabel("Time (ps)")
+        ax2.set_ylabel("Lattice Angle (% Change)")
+        ax2.legend()
+        ax2.grid(True, linestyle='--', alpha=0.6)
+
+        plt.tight_layout()
+        plt.savefig(f"{{plot_prefix}}_lattice_perc_change.png")
+        plt.close()
+    except Exception as e:
+        print(f"    ... failed to plot lattice percentage change: {{e}}")
 
     print(f"  ... plots saved to md_results/md_{{basename}}_*.png")
 
@@ -800,6 +837,7 @@ def main():
         print("\\n--- Generating plots for all processed simulations ---")
         if not basenames_to_plot:
             print("No simulations were started, nothing to plot.")
+
 
         for basename in sorted(list(set(basenames_to_plot))):
             generate_plots(basename)
