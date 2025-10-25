@@ -16,20 +16,25 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from ase import units
-from ase.io import read 
+from ase.io import read
 from ase.build import make_supercell
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.nptberendsen import NPTBerendsen
+try:
+    from ase.md.npt import NPT as NPTNoseHoover
+    NPT_NH_AVAILABLE = True
+except ImportError:
+    NPT_NH_AVAILABLE = False
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.logger import MDLogger
-from collections import deque 
-import io 
+from collections import deque
+import io
 
 try:
-    from nequip.ase.nequip_calculator import NequIPCalculator
+    from nequix.ase_calculator import NequixCalculator
 except ImportError:
-    print("Warning: NequIP not found. Will fail if Nequix model is selected.")
+    print("Warning: Nequix (from atomicarchitects) not found. Will fail if Nequix model is selected.")
 try:
     from deepmd.calculator import DP
 except ImportError:
@@ -190,16 +195,19 @@ except Exception as e:
         calculator_setup_str = f"""
 print("Setting up Nequix calculator...")
 try:
-    calculator = NequIPCalculator.from_deployed_model(
+    calculator = NequixCalculator(
         model_path="{model_size}",
         device="{device}"
     )
     print(f"✅ Nequix {model_size} initialized on {device}")
+except NameError:
+     print(f"❌ Nequix initialization failed: NequixCalculator class not found. Is nequix installed?")
+     exit()
 except Exception as e:
-    print(f"❌ Nequix initialization failed: {{e}}")
+    print(f"❌ Nequix initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        calculator = NequIPCalculator.from_deployed_model(
+        calculator = NequixCalculator(
             model_path="{model_size}",
             device="cpu"
         )
@@ -214,6 +222,9 @@ print("Setting up DeePMD calculator...")
 try:
     calculator = DP(model="{model_size}")
     print(f"✅ DeePMD {model_size} initialized")
+except NameError:
+     print(f"❌ DeePMD initialization failed: DP class not found. Is deepmd-kit installed?")
+     exit()
 except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
@@ -235,7 +246,6 @@ except Exception as e:
 
     md_params_str = pprint.pformat(md_params, indent=4, width=80)
     indented_calculator_setup = textwrap.indent(calculator_setup_str, "    ")
-
 
     custom_classes_str = """
 class ConsoleMDLogger:
@@ -412,7 +422,6 @@ class CSVLogger:
             temp = self.atoms.get_temperature()
             try:
                 stress = self.atoms.get_stress(voigt=True)
-
                 pressure = -np.mean(stress[:3]) / units.GPa
             except Exception:
                 pressure = np.nan
@@ -488,55 +497,166 @@ def run_md_simulation(atoms, basename, calculator):
     if ensemble == "NVE":
         md = VelocityVerlet(atoms, timestep=dt)
         print("  Initialized NVE (VelocityVerlet) ensemble.")
+
     elif ensemble == "NVT-Langevin":
         friction = md_params.get('friction', 0.02) / units.fs
         md = Langevin(atoms, timestep=dt, temperature_K=temperature_K, friction=friction)
         print(f"  Initialized NVT-Langevin ensemble (friction={{friction * units.fs:.3f}} 1/ps).")
+
     elif ensemble == "NVT-Berendsen":
-        taut = md_params.get('taut', 100.0) * units.fs
-        md = NVTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, taut=taut)
-        print(f"  Initialized NVT-Berendsen ensemble (taut={{taut / units.fs:.1f}} fs).")
-    elif ensemble == "NPT":
+        taut_fs = md_params.get('taut', 100.0) * units.fs
+        md = NVTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, taut=taut_fs)
+        print(f"  Initialized NVT-Berendsen ensemble (taut={{taut_fs / units.fs:.1f}} fs).")
+
+    elif ensemble == "NPT (Berendsen)":
         taut_fs = md_params.get('taut', 100.0) * units.fs
         taup_fs = md_params.get('taup', 1000.0) * units.fs
-        compressibility_au = 1 / (100 * units.GPa) 
+
+        bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
+        if bulk_modulus_gpa <= 0:
+            print("  Warning: Bulk modulus must be positive. Using default 140 GPa.")
+            bulk_modulus_gpa = 140.0
+        compressibility_au = 1.0 / (bulk_modulus_gpa * units.GPa) 
+        print(f"    Using Bulk Modulus: {{bulk_modulus_gpa:.1f}} GPa -> Compressibility: {{compressibility_au * units.GPa:.4e}} 1/GPa")
 
         coupling_type = md_params.get('pressure_coupling_type', 'isotropic').lower()
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+
+        npt_kwargs = {{}} 
 
         if coupling_type == 'anisotropic':
-            px_gpa = md_params.get('pressure_x', 0.0)
-            py_gpa = md_params.get('pressure_y', 0.0)
-            pz_gpa = md_params.get('pressure_z', 0.0)
+            px_gpa = md_params.get('pressure_x', pressure_gpa)
+            py_gpa = md_params.get('pressure_y', pressure_gpa)
+            pz_gpa = md_params.get('pressure_z', pressure_gpa)
 
-            # Convert GPa to ASE pressure units (eV/Ang^3)
             pressure_factor = 1e9 * units.Pascal
             px_au = px_gpa * pressure_factor
             py_au = py_gpa * pressure_factor
             pz_au = pz_gpa * pressure_factor
 
-            # Create the 3x3 diagonal stress tensor matrix
             pressure_au = np.diag([px_au, py_au, pz_au])
 
             print(f"  Initialized NPT-Berendsen (ANISOTROPIC) ensemble.")
             print(f"    Target P (xx,yy,zz): {{px_gpa:.2f}}, {{py_gpa:.2f}}, {{pz_gpa:.2f}} GPa")
+            npt_kwargs['pressure_au'] = pressure_au
 
         else: # Isotropic case
-            pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
-            pressure_au = pressure_gpa * 1e9 * units.Pascal # Scalar
+            pressure_au = pressure_gpa * 1e9 * units.Pascal
 
             print(f"  Initialized NPT-Berendsen (ISOTROPIC) ensemble.")
             print(f"    Target P: {{pressure_gpa}} GPa")
+            npt_kwargs['pressure_au'] = pressure_au
 
-        md = NPTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, 
-                          pressure_au=pressure_au, # Pass scalar or 3x3 matrix
-                          taut=taut_fs, taup=taup_fs, 
-                          compressibility_au=compressibility_au)
+        npt_kwargs['timestep'] = dt
+        npt_kwargs['temperature_K'] = temperature_K
+        npt_kwargs['taut'] = taut_fs
+        npt_kwargs['taup'] = taup_fs
+        npt_kwargs['compressibility_au'] = compressibility_au
+
+        md = NPTBerendsen(atoms, **npt_kwargs) 
 
         print(f"    T coupling (taut): {{taut_fs / units.fs:.1f}} fs")
         print(f"    P coupling (taup): {{taup_fs / units.fs:.1f}} fs")
 
+    elif ensemble == "NPT (Nose-Hoover)":
+        if not NPT_NH_AVAILABLE:
+             print("\\n*** ERROR: ase.md.npt.NPT (Nose-Hoover) not found. Please check your ASE installation. ***")
+             sys.exit(1)
+
+        ttime_fs = md_params.get('taut', 100.0) * units.fs
+        taup_fs_val = md_params.get('taup', 1000.0) * units.fs
+
+        bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
+        if bulk_modulus_gpa <= 0:
+            print("  Warning: Bulk modulus must be positive. Using default 140 GPa.")
+            bulk_modulus_gpa = 140.0
+        pfactor = (taup_fs_val**2) * bulk_modulus_gpa * units.GPa
+        print(f"    Using taup={{md_params.get('taup', 1000.0)}} fs, Bulk Modulus={{bulk_modulus_gpa:.1f}} GPa -> pfactor={{pfactor / ((units.fs**2)*units.GPa):.2e}} GPa*fs^2")
+
+        coupling_type = md_params.get('pressure_coupling_type', 'isotropic').lower()
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        fix_angles = md_params.get('fix_angles', True) 
+        mask = None
+
+        npt_nh_kwargs = {{}}
+
+        if coupling_type == 'anisotropic':
+            px_gpa = md_params.get('pressure_x', pressure_gpa)
+            py_gpa = md_params.get('pressure_y', pressure_gpa)
+            pz_gpa = md_params.get('pressure_z', pressure_gpa)
+
+            stress_factor = units.GPa 
+            px_stress = px_gpa * stress_factor
+            py_stress = py_gpa * stress_factor
+            pz_stress = pz_gpa * stress_factor
+
+            externalstress = np.array([px_stress, py_stress, pz_stress, 0.0, 0.0, 0.0])
+
+            print(f"  Initialized NPT-Nose-Hoover (ANISOTROPIC) ensemble.")
+            print(f"    Target P (xx,yy,zz): {{px_gpa:.2f}}, {{py_gpa:.2f}}, {{pz_gpa:.2f}} GPa")
+            npt_nh_kwargs['externalstress'] = externalstress
+            if fix_angles:
+                 mask = np.diag([1, 1, 1]) # Fix shear components
+                 print("    Angles fixed (only diagonal strain allowed).")
+            else:
+                 mask = None # Allow all components to couple (default)
+                 print("    Angles variable (all strain components allowed).")
+            npt_nh_kwargs['mask'] = mask
+
+
+        elif coupling_type == 'directional':
+            couple_x = md_params.get('couple_x', True)
+            couple_y = md_params.get('couple_y', True)
+            couple_z = md_params.get('couple_z', True)
+
+            # Use 3x3 diagonal matrix mask to fix angles
+            if fix_angles:
+                mask = np.diag([int(couple_x), int(couple_y), int(couple_z)])
+                print(f"  Initialized NPT-Nose-Hoover (DIRECTIONAL with fixed angles) ensemble.")
+            else:
+                mask = [int(couple_x), int(couple_y), int(couple_z)] 
+                print(f"  Initialized NPT-Nose-Hoover (DIRECTIONAL with variable angles) ensemble.")
+
+            externalstress = pressure_gpa * units.GPa 
+
+            coupled_dirs = []
+            if couple_x: coupled_dirs.append('X')
+            if couple_y: coupled_dirs.append('Y')
+            if couple_z: coupled_dirs.append('Z')
+
+            print(f"    Coupling directions: {{', '.join(coupled_dirs)}}")
+            print(f"    Target P: {{pressure_gpa}} GPa (applied hydrostatically to coupled directions)")
+
+            npt_nh_kwargs['externalstress'] = externalstress
+            npt_nh_kwargs['mask'] = mask
+
+        else: # Isotropic case (default)
+            externalstress = pressure_gpa * units.GPa
+
+            print(f"  Initialized NPT-Nose-Hoover (ISOTROPIC) ensemble.")
+            print(f"    Target P: {{pressure_gpa}} GPa")
+            npt_nh_kwargs['externalstress'] = externalstress
+             # Determine mask based on fix_angles for isotropic
+            if fix_angles:
+                 mask = np.diag([1, 1, 1]) # Fix shear components
+                 print("    Angles fixed (only diagonal strain allowed).")
+            else:
+                 mask = None # Standard isotropic scaling
+                 print("    Angles variable (standard isotropic scaling).")
+            npt_nh_kwargs['mask'] = mask
+
+        npt_nh_kwargs['timestep'] = dt
+        npt_nh_kwargs['temperature_K'] = temperature_K
+        npt_nh_kwargs['ttime'] = ttime_fs
+        npt_nh_kwargs['pfactor'] = pfactor
+
+        md = NPTNoseHoover(atoms, **npt_nh_kwargs)
+
+        print(f"    T coupling (ttime): {{ttime_fs / units.fs:.1f}} fs")
+        print(f"    P coupling used pfactor (calculated from taup & bulk modulus)")
+
     if md is None:
-        print(f"Error: Unknown ensemble '{{ensemble}}'")
+        print(f"Error: Unknown ensemble specified: '{{ensemble}}'")
         return
 
     logfile = f"md_results/md_{{basename}}.log"
@@ -626,14 +746,16 @@ def generate_plots(basename):
 
         data = data.dropna()
         if data.empty:
-            print(f"    ... skipping, no valid data to plot in {{csv_file}}.")
+            print(f"    ... skipping, no valid data rows left after dropna in {{csv_file}}.")
             return
 
     except FileNotFoundError:
         print(f"    ... skipping, {{csv_file}} not found.")
         return
     except Exception as e:
-        print(f"    ... skipping, error reading {{csv_file}}: {{e}}")
+        print(f"    ... skipping, error reading or processing {{csv_file}}: {{e}}")
+        import traceback
+        traceback.print_exc()
         return
 
     time_ps = data['Time[ps]']
@@ -809,7 +931,7 @@ def main():
                 _ = atoms.get_forces()
                 print("      ... forces graph compiled.")
 
-                if md_params['ensemble'] == 'NPT':
+                if 'NPT' in md_params['ensemble']:
                     try:
                         _ = atoms.get_stress()
                         print("      ... stress graph compiled (for NPT).")
@@ -837,7 +959,6 @@ def main():
         print("\\n--- Generating plots for all processed simulations ---")
         if not basenames_to_plot:
             print("No simulations were started, nothing to plot.")
-
 
         for basename in sorted(list(set(basenames_to_plot))):
             generate_plots(basename)
