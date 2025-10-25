@@ -11,38 +11,44 @@ from datetime import datetime
 import time
 from collections import deque
 
-
 def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
     st.subheader("Virtual Tensile Test Parameters")
 
 
-    if default_settings and 'tensile_test' in default_settings:
-        defaults = default_settings['tensile_test']
-    else:
-        defaults = {
-            'strain_direction': 0,
+    defaults = {
+            'strain_direction_index': 0, 
             'strain_rate': 0.1,
             'max_strain': 10.0,
             'temperature': 300,
             'timestep': 1.0,
             'friction': 0.01,
             'equilibration_steps': 1000,
-            'sample_interval': 10,
-            'relax_between_strain': True,
+            'md_steps_per_increment': 100, 
+            'log_frequency': 10,
+            'traj_frequency': 100, 
+            'relax_between_strain': False,
             'relax_steps': 100,
             'use_npt_transverse': False,
             'bulk_modulus': 110.0
         }
+    if default_settings and 'tensile_test' in default_settings:
+        defaults.update({k: v for k, v in default_settings['tensile_test'].items() if k in defaults})
+        if 'strain_direction' in default_settings['tensile_test']:
+             defaults['strain_direction_index'] = default_settings['tensile_test'].get('strain_direction', 0)
+
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
+        strain_direction_options = ["x (a-axis)", "y (b-axis)", "z (c-axis)"]
         strain_direction = st.selectbox(
             "Strain Direction",
-            ["x (a-axis)", "y (b-axis)", "z (c-axis)"],
-            index=defaults['strain_direction'],
+            strain_direction_options,
+            index=defaults['strain_direction_index'],
             help="Direction along which to apply strain"
         )
+        strain_direction_index = strain_direction_options.index(strain_direction)
+
 
         strain_rate = st.number_input(
             "Strain Rate (%/ps)",
@@ -51,17 +57,18 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             value=defaults['strain_rate'],
             step=0.01,
             format="%.3f",
-            help="Rate of strain application"
+            help="Rate of strain application. Determines strain per MD step."
         )
-        strain_rate_si = strain_rate * 1e10  # Convert %/ps to s^-1
+        strain_rate_si = strain_rate * 1e10 # Convert %/ps to s^-1
         st.caption(f"📊 Equivalent to {strain_rate_si:.2e} s⁻¹")
+
         max_strain = st.number_input(
             "Maximum Strain (%)",
             min_value=0.05,
             max_value=50.00,
             value=defaults['max_strain'],
             step=1.00,
-            help="Maximum strain before test stops"
+            help="Maximum total engineering strain before test stops"
         )
 
     with col2:
@@ -71,7 +78,7 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             max_value=3000,
             value=defaults['temperature'],
             step=10,
-            help="Temperature for MD simulation"
+            help="Temperature for MD thermostat"
         )
 
         timestep = st.number_input(
@@ -81,7 +88,7 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             value=defaults['timestep'],
             step=0.1,
             format="%.1f",
-            help="MD timestep"
+            help="MD integration timestep"
         )
 
         friction = st.number_input(
@@ -91,7 +98,7 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             value=defaults['friction'],
             step=0.001,
             format="%.3f",
-            help="Langevin thermostat friction coefficient"
+            help="Langevin thermostat friction coefficient (used for NVT parts)"
         )
 
     with col3:
@@ -101,104 +108,125 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             max_value=10000,
             value=defaults['equilibration_steps'],
             step=100,
-            help="Steps for initial equilibration"
+            help="Optional NPT steps at 0 P before straining"
         )
 
-        sample_interval = st.number_input(
-            "Sample Interval",
+        md_steps_per_increment = st.number_input(
+            "MD Steps per Increment",
             min_value=1,
-            max_value=100,
-            value=defaults['sample_interval'],
-            step=1,
-            help="Record data every N steps"
+            max_value=5000,
+            value=defaults['md_steps_per_increment'],
+            step=10,
+            help="Number of MD steps run *between* each strain application. Strain is applied, then MD runs."
         )
 
-        relax_between_strain = st.checkbox(
-            "Relax Between Strain Steps",
-            value=defaults['relax_between_strain'],
-            help="Allow relaxation after each strain increment"
+        log_frequency = st.number_input( # New parameter
+            "Log Frequency (steps)",
+            min_value=1,
+            max_value=md_steps_per_increment, # Cannot log more often than steps run
+            value=max(1, min(defaults['log_frequency'], md_steps_per_increment)), # Ensure valid default
+            step=1,
+            help="Record CSV/Console data every N steps *during* the MD between increments."
         )
+
+        # --- NEW: Trajectory Frequency ---
+        traj_frequency = st.number_input(
+            "Trajectory Frequency (steps)",
+            min_value=1,
+            max_value=md_steps_per_increment,
+             # Ensure valid default, often less frequent than logging
+            value=max(1, min(defaults['traj_frequency'], md_steps_per_increment)),
+            step=10,
+            help="Save XYZ frame every N steps *during* the MD between increments."
+        )
+        # --- END NEW ---
+
+
+    relax_between_strain = st.checkbox(
+        "Relax Between Strain Steps",
+        value=defaults['relax_between_strain'],
+        help="Run additional MD steps *after* applying strain but *before* logging stress (uses same dynamics as main MD)."
+    )
 
     if relax_between_strain:
         relax_steps = st.number_input(
             "Relaxation Steps",
-            min_value=10,
-            max_value=1000,
+            min_value=1, # Allow at least 1 step
+            max_value=5000,
             value=defaults.get('relax_steps', 100),
             step=10,
-            help="Steps for relaxation if enabled"
+            help="Number of extra MD steps for relaxation if enabled."
         )
     else:
         relax_steps = 0
 
-    st.write("**Advanced Options**")
-    col_adv1, col_adv2 = st.columns(2)
 
-    with col_adv1:
-        use_npt_transverse = st.checkbox(
-            "NPT in Transverse Directions",
-            value=defaults['use_npt_transverse'],
-            help="Apply pressure control in directions perpendicular to tensile direction"
+    st.write("**Transverse Pressure Control (Optional)**")
+    use_npt_transverse = st.checkbox(
+        "Use NPT in Transverse Directions",
+        value=defaults['use_npt_transverse'],
+        help="Apply pressure control (target P=0) in directions perpendicular to tensile strain (attempts true uniaxial tension)."
+    )
+
+    if use_npt_transverse:
+        bulk_modulus = st.number_input(
+            "Bulk Modulus (GPa)",
+            min_value=1.0,
+            max_value=1000.0,
+            value=defaults['bulk_modulus'],
+            step=10.0,
+            help="Approximate bulk modulus for pressure coupling (NPT Berendsen)"
         )
+    else:
+        bulk_modulus = defaults['bulk_modulus'] # Keep value even if unused
 
-    with col_adv2:
-        if use_npt_transverse:
-            bulk_modulus = st.number_input(
-                "Bulk Modulus (GPa)",
-                min_value=1.0,
-                max_value=1000.0,
-                value=defaults['bulk_modulus'],
-                step=10.0,
-                help="Approximate bulk modulus for pressure coupling"
-            )
-        else:
-            bulk_modulus = defaults['bulk_modulus']
-
+    # --- Save Button Logic ---
     if st.button("💾 Save as Default Tensile Parameters", key="save_tensile_defaults"):
-        direction_map = {"x (a-axis)": 0, "y (b-axis)": 1, "z (c-axis)": 2}
-
         new_tensile_settings = {
-            'strain_direction': direction_map[strain_direction],
+            'strain_direction_index': strain_direction_index,
             'strain_rate': strain_rate,
             'max_strain': max_strain,
             'temperature': temperature,
             'timestep': timestep,
             'friction': friction,
             'equilibration_steps': equilibration_steps,
-            'sample_interval': sample_interval,
+            'md_steps_per_increment': md_steps_per_increment,
+            'log_frequency': log_frequency,
+            'traj_frequency': traj_frequency, # Save new param
             'relax_between_strain': relax_between_strain,
             'relax_steps': relax_steps,
             'use_npt_transverse': use_npt_transverse,
             'bulk_modulus': bulk_modulus
         }
-
         if 'default_settings' not in st.session_state:
             st.session_state.default_settings = {}
-
         st.session_state.default_settings['tensile_test'] = new_tensile_settings
-
-        # Use the passed function
         if save_settings_function and save_settings_function(st.session_state.default_settings):
             st.success("✅ Tensile test parameters saved as default!")
         else:
             st.error("❌ Failed to save tensile parameters")
+    # --- End Save Button Logic ---
 
-    direction_map = {"x (a-axis)": 0, "y (b-axis)": 1, "z (c-axis)": 2}
+    strain_increment = (strain_rate / 100.0) * (timestep * md_steps_per_increment / 1000.0)
+    num_increments = int(np.ceil((max_strain / 100.0) / strain_increment)) if strain_increment > 0 else 0
+    total_md_steps = equilibration_steps + num_increments * (md_steps_per_increment + relax_steps)
+    total_sim_time_ps = total_md_steps * timestep / 1000.0
 
-    strain_increment_steps = int(1000 / sample_interval)
-    total_steps_estimate = int((max_strain / strain_rate) * 1000 / timestep)
-
-    st.info(f"Estimated total steps: ~{total_steps_estimate:,} ({total_steps_estimate * timestep / 1000:.1f} ps)")
+    st.info(f"Strain increment: {strain_increment*100:.4f}% per {md_steps_per_increment} MD steps.\n"
+            f"~{num_increments} increments needed for max strain.\n"
+            f"Estimated total MD steps: ~{total_md_steps:,} ({total_sim_time_ps:.1f} ps)")
 
     return {
-        'strain_direction': direction_map[strain_direction],
+        'strain_direction': strain_direction_index,
         'strain_rate': strain_rate,
         'max_strain': max_strain,
         'temperature': temperature,
         'timestep': timestep,
         'friction': friction,
         'equilibration_steps': equilibration_steps,
-        'sample_interval': sample_interval,
+        'md_steps_per_increment': md_steps_per_increment,
+        'log_frequency': log_frequency,
+        'traj_frequency': traj_frequency, 
         'relax_between_strain': relax_between_strain,
         'relax_steps': relax_steps,
         'use_npt_transverse': use_npt_transverse,
