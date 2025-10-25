@@ -36,7 +36,8 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 
 ### **Compile the app**  
 
-If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo)  
+If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo).
+We ah
 
 For calculations on **GPU, compile CUDA**:  
 https://developer.nvidia.com/cuda-toolkit  
@@ -51,7 +52,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
   
 
 
-**Compile the app:** Open your terminal console and write the following commands (the bold text):  
+**Compile the app:** Open your terminal console and write the following commands (the bold text). It should work with Python 3.12. Currently, it will likely not work with Python 3.13 (also likely not with Ubuntu 25.x):  
 (Optional) Install Git:  
       **sudo apt update**  
       **sudo apt install git**    
@@ -59,9 +60,9 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH
 Currently, certain u-MLIP does not share compatible versions of certain packages (Torch, ...) with each other. Depending on which u-MLIP you want to use, please choose one option: 
 #### To run simulations with **MACE, CHGNet, SevenNet, and Orb-v3**:
 
-  1) Download updates and prerequisites:  
+  1) Download updates and prerequisites (if you are using WSL, include also 'python3.12-dev'):  
      **sudo apt update**  
-     **sudo apt install build-essential python3.12-dev python3-venv**  
+     **sudo apt install build-essential python3-venv**  
      Download the app code from GitHub (or download it manually without Git on the following link by clicking on 'Code' and 'Download ZIP', then extract the ZIP. With Git, it is automatically   extracted):  
       **git clone https://github.com/bracerino/mace-md-gui.git**
   3) Navigate to the downloaded project folder:  
