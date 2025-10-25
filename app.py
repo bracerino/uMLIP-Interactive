@@ -2247,7 +2247,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 # Convert dtype to ORB precision format
                 if dtype == "float32":
-                    precision = "float32-high"  
+                    precision = "float32-high"
                 else:
                     precision = "float32-highest"  # Higher precision option
 
@@ -3999,6 +3999,62 @@ with tab1:
                 default_settings=st.session_state.default_settings,
                 save_settings_function=save_default_settings
             )
+            st.subheader("Generate Standalone MD Script")
+
+            st.markdown("---")
+            st.subheader("Generate Standalone Tensile Test Script")
+
+            if 'generated_tensile_script' not in st.session_state:
+                st.session_state.generated_tensile_script = None
+
+
+            from helpers.generate_tensile_test_python_script import generate_tensile_test_python_script
+            if st.button("📝 Generate Tensile Test Python Script (using current settings)",
+                         key="generate_tensile_script_button",
+                         type="secondary"):
+                try:
+                    current_selected_model = selected_model
+                    current_model_size = model_size
+                    current_device = device
+                    current_dtype = dtype
+                    current_thread_count = st.session_state.thread_count
+
+                    # Call the tensile script generation function, passing tensile_params
+                    generated_script = generate_tensile_test_python_script(
+                        tensile_params,
+                        current_selected_model,
+                        current_model_size,
+                        current_device,
+                        current_dtype,
+                        current_thread_count
+                    )
+                    st.session_state.generated_tensile_script = generated_script
+                    st.success("✅ Tensile test script generated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate tensile script: {str(e)}")
+                    st.session_state.generated_tensile_script = None
+
+            if st.session_state.generated_tensile_script:
+                with st.expander("🐍 View Generated Tensile Test Script", expanded=True):
+                    st.code(st.session_state.generated_tensile_script, language='python')
+
+
+                    st.download_button(
+                        label="💾 Download Tensile Script (.py)",
+                        data=st.session_state.generated_tensile_script,
+                        file_name="run_tensile_test.py",
+                        mime="text/x-python",
+                        key="download_generated_tensile_script",
+                        type='primary'
+                    )
+                st.info("""
+                        **Instructions (Tensile Test):**
+                        1. Save the script (e.g., `run_tensile_test.py`).
+                        2. Place your structure file (`.cif`, `.vasp`, `POSCAR`) in the same directory. **(Usually only one structure per test)**.
+                        3. Ensure necessary libraries are installed (`pip install ase pandas matplotlib ...`).
+                        4. Run the script from your terminal: `python run_tensile_test.py`
+                        5. Results (`_tensile_data.csv`, plots `.png`) will be saved in the `md_results` subdirectory.
+                        """)
         if calc_type == "NEB Calculation":
             st.subheader("NEB: Initial and Final States")
 
