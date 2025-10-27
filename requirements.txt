@@ -14,9 +14,9 @@ torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models
 #torch==2.7.1
 #torchaudio==2.7.1
 
-cuequivariance
-cuequivariance-torch
-cuequivariance-ops-torch-cu12
+cuequivariance==0.6.1
+cuequivariance-torch==0.6.1
+cuequivariance-ops-torch-cu12==0.6.1
 
 mace-torch==0.3.14
 chgnet==0.3.8
