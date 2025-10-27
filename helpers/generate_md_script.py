@@ -4,7 +4,6 @@ from collections import deque
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count):
-
     calculator_setup_str = ""
     imports_str = f"""
 import os
@@ -16,7 +15,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from ase import units
-from ase.io import read
+from ase.io import read, write
 from ase.build import make_supercell
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
@@ -39,6 +38,20 @@ try:
     from deepmd.calculator import DP
 except ImportError:
     print("Warning: DeePMD-kit not found. Will fail if DeePMD model is selected.")
+
+try:
+    import GPUtil
+    GPUTIL_AVAILABLE = True
+except ImportError:
+    print("Warning: GPUtil not found. Cannot report GPU memory usage.")
+    GPUTIL_AVAILABLE = False
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    print("Warning: psutil not found. Cannot report RAM usage. (pip install psutil)")
+    PSUTIL_AVAILABLE = False
 
 os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 torch.set_num_threads({thread_count})
@@ -201,8 +214,8 @@ try:
     )
     print(f"✅ Nequix {model_size} initialized on {device}")
 except NameError:
-     print(f"❌ Nequix initialization failed: NequixCalculator class not found. Is nequix installed?")
-     exit()
+   print(f"❌ Nequix initialization failed: NequixCalculator class not found. Is nequix installed?")
+   exit()
 except Exception as e:
     print(f"❌ Nequix initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
@@ -223,15 +236,14 @@ try:
     calculator = DP(model="{model_size}")
     print(f"✅ DeePMD {model_size} initialized")
 except NameError:
-     print(f"❌ DeePMD initialization failed: DP class not found. Is deepmd-kit installed?")
-     exit()
+   print(f"❌ DeePMD initialization failed: DP class not found. Is deepmd-kit installed?")
+   exit()
 except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
     else:
         calculator_setup_str = "print('Error: Could not determine calculator type.')\ncalculator = None\nexit()"
-
 
     taup_val = md_params.get('taup', 1000.0)
     if 'pressure_damping_time' in md_params:
@@ -259,6 +271,28 @@ class ConsoleMDLogger:
         self.start_time = time.perf_counter()
         self.last_log_time = time.perf_counter()
         self.step_start_time = time.perf_counter()
+
+        self.device_str = "cpu"
+        self.is_cuda = False
+        self.device_id = 0
+        try:
+            if hasattr(atoms, 'calc') and atoms.calc is not None:
+                calc_device = None
+                if hasattr(atoms.calc, 'device'): # MACE, Nequix, ORB
+                    calc_device = str(atoms.calc.device)
+                elif hasattr(atoms.calc, 'use_device'): # CHGNet
+                    calc_device = str(atoms.calc.use_device)
+
+                if calc_device:
+                    self.device_str = calc_device
+                    self.is_cuda = "cuda" in self.device_str
+                    if self.is_cuda and ":" in self.device_str:
+                        try:
+                            self.device_id = int(self.device_str.split(':')[-1])
+                        except (ValueError, TypeError):
+                            self.device_id = 0 # default
+        except Exception:
+            pass # Best effort, default to no GPU logging
 
     def __call__(self):
         self.step_count += 1
@@ -302,6 +336,21 @@ class ConsoleMDLogger:
             log_str += f"E_kin = {ekin:.4f} eV"
             if pressure is not None:
                 log_str += f", P = {pressure:.2f} GPa"
+
+            if GPUTIL_AVAILABLE and self.is_cuda:
+                try:
+                    gpus = GPUtil.getGPUs()
+                    if self.device_id < len(gpus):
+                        gpu = gpus[self.device_id]
+                        log_str += f" | GPU Mem: {gpu.memoryUsed:.0f} MB"
+                except Exception:
+                    pass # Fail silently if GPU read fails mid-run
+            elif PSUTIL_AVAILABLE and not self.is_cuda:
+                try:
+                    mem = psutil.virtual_memory()
+                    log_str += f" | RAM Used: {mem.percent:.1f}%"
+                except Exception:
+                    pass # Fail silently if RAM read fails mid-run
 
             if estimated_remaining_time is not None:
                 log_str += f" | Avg/step: {avg_step_time:.2f}s"
@@ -680,7 +729,13 @@ def run_md_simulation(atoms, basename, calculator):
 
     console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'])
     md.attach(console_logger, interval=1)
-
+    # -- Adding this to clean GPU RAM memory
+    def clear_torch_cache():
+    	if torch.cuda.is_available():
+        	torch.cuda.empty_cache()
+    md.attach(clear_torch_cache, interval=10) 
+    # -- End of GPU RAM clean
+    
     xyz_writer = XYZTrajectoryWriter(atoms, xyz_trajectory_file) 
     md.attach(xyz_writer, interval=md_params['traj_interval'])
 
@@ -702,6 +757,13 @@ def run_md_simulation(atoms, basename, calculator):
         xyz_writer.close() 
         lattice_logger.close()
         csv_logger.close()
+
+        final_vasp_file = f"md_results/md_{{basename}}_final.vasp"
+        try:
+            print(f"  Saving final structure to: {{final_vasp_file}}")
+            write(final_vasp_file, atoms, format='vasp')
+        except Exception as e:
+            print(f"  Warning: Could not save final VASP file: {{e}}")
 
     end_time = time.perf_counter()
     elapsed = end_time - start_time
