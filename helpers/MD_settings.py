@@ -115,6 +115,34 @@ class MDTrajectoryLogger:
 def setup_md_parameters_ui():
     st.subheader("Molecular Dynamics Parameters")
     md_params = {}
+    md_params['use_fairchem'] = st.checkbox(
+        "Override with Fairchem (UMA) Model?",
+        help="If checked, the model selected above will be ignored and the Fairchem (UMA) model specified below will be used."
+    )
+
+    if md_params['use_fairchem']:
+        st.info("Fairchem (UMA) Model selected. MD settings below will be used.")
+
+        col_fc1, col_fc2 = st.columns(2)
+        with col_fc1:
+            md_params['fairchem_model_name'] = st.text_input(
+                "Fairchem Model Name",
+                value="uma-s-1p1",
+                help="The name of the UMA model to use (e.g., 'uma-s-1p1')."
+            )
+            md_params['fairchem_task'] = st.selectbox(
+                "Fairchem Task",
+                ["omat", "oc20", "omol", "odac", "omc"],
+                index=0,
+                help="The universal model task (e.g., 'omat' for materials, 'oc20' for catalysis)."
+            )
+        with col_fc2:
+            md_params['fairchem_key'] = st.text_input(
+                "Fairchem Hugging Face Key (HF_TOKEN)",
+                type="password",
+                help="Your Hugging Face access token ('unique key') for gated UMA models."
+            )
+        st.markdown("---")
     col_md1, col_md2, col_md3, col_md4 = st.columns(4)
 
     with col_md1:
