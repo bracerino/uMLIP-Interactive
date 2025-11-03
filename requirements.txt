@@ -25,5 +25,7 @@ sevenn==0.10.4
 orb-models==0.5.5
 nequix==0.2.0
 
+torch-dftd # for mace-mh d3 dispersion corrections
+
 #For Orb models
 pynanoflann @ git+https://github.com/dwastberg/pynanoflann.git@af434039ae14bedcbb838a7808924d6689274168
