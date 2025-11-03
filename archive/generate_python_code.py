@@ -148,7 +148,7 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS
+from ase.optimize import BFGS, LBFGS, FIRE
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -263,7 +263,7 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS
+from ase.optimize import BFGS, LBFGS, FIRE
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -3223,7 +3223,13 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
-    else:
+    elif cell_constraint == "Tetragonal (a=b, optimize a and c)":
+        from ase.constraints import FixSymmetry
+        existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
+        symmetry_constraint = FixSymmetry(atoms)
+        atoms.set_constraint(existing_constraints + [symmetry_constraint])
+        return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+    else:  # "Lattice parameters only (fix angles)"
         if hydrostatic_strain:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
@@ -3232,14 +3238,15 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
 
 
 class OptimizationLogger:
-    def __init__(self, filename, max_steps, output_dir="optimized_structures"):
+    def __init__(self, filename, max_steps, output_dir="optimized_structures", save_trajectory=True):
         self.filename = filename
         self.step_count = 0
         self.max_steps = max_steps
         self.step_times = []
         self.step_start_time = time.time()
         self.output_dir = output_dir
-        self.trajectory = []
+        self.save_trajectory = save_trajectory  
+        self.trajectory = [] if save_trajectory else None
         
     def __call__(self, optimizer=None):
         current_time = time.time()
@@ -3281,14 +3288,15 @@ class OptimizationLogger:
             
             lattice = get_lattice_parameters(atoms)
             
-            self.trajectory.append({
-                'step': self.step_count,
-                'energy': energy,
-                'max_force': max_force,
-                'positions': atoms.positions.copy(),
-                'cell': atoms.cell.array.copy(),
-                'lattice': lattice.copy()
-            })
+            if self.save_trajectory:
+                self.trajectory.append({
+                    'step': self.step_count,
+                    'energy': energy,
+                    'max_force': max_force,
+                    'positions': atoms.positions.copy(),
+                    'cell': atoms.cell.array.copy(),
+                    'lattice': lattice.copy()
+                })
             
             if len(self.step_times) > 0:
                 avg_time = np.mean(self.step_times)
@@ -3317,11 +3325,13 @@ class OptimizationLogger:
                       f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
 '''
 
+
 def _generate_optimization_code(optimization_params, calc_formation_energy):
     """Generate code for geometry optimization with selective dynamics support."""
     optimizer = optimization_params.get('optimizer', 'BFGS')
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
+    save_trajectory = optimization_params.get('save_trajectory', True)
     opt_type = optimization_params.get(
         'optimization_type', 'Both atoms and cell')
     cell_constraint = optimization_params.get(
@@ -3331,6 +3341,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimize_lattice = optimization_params.get(
         'optimize_lattice', {'a': True, 'b': True, 'c': True})
 
+    # Check if tetragonal mode is enabled
+    is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
+
     code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
@@ -3338,12 +3351,14 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimizer_type = "{optimizer}"
     fmax = {fmax}
     max_steps = {max_steps}
+    save_trajectory = {save_trajectory}
     optimization_type = "{opt_type}"
     cell_constraint = "{cell_constraint}"
     pressure = {pressure}
     hydrostatic_strain = {hydrostatic_strain}
     optimize_lattice = {optimize_lattice}
-    
+    is_tetragonal = {is_tetragonal}
+
     print(f"⚙️ Optimization settings:")
     print(f"  - Optimizer: {{optimizer_type}}")
     print(f"  - Force threshold: {{fmax}} eV/Å")
@@ -3351,6 +3366,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     print(f"  - Type: {{optimization_type}}")
     if pressure > 0:
         print(f"  - Pressure: {{pressure}} GPa")
+    if is_tetragonal:
+        print(f"  - 🔷 Tetragonal constraint: a=b will be enforced")
 
     reference_energies = {{}}'''
 
@@ -3364,7 +3381,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             all_elements.add(symbol)
 
     print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-    
+
     for i, element in enumerate(sorted(all_elements)):
         print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
@@ -3395,25 +3412,77 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             print(f"  📊 Initial energy: {initial_energy:.6f} eV")
             print(f"  📊 Initial max force: {initial_max_force:.4f} eV/Å")
 
+            # Setup optimization object based on type
             if optimization_type == "Atoms only (fixed cell)":
                 optimization_object = atoms
                 opt_mode = "atoms_only"
                 print(f"  🔒 Optimizing atoms only (fixed cell)")
+                tetragonal_callback = None
             elif optimization_type == "Cell only (fixed atoms)":
-                # Add constraint to fix all atoms for cell-only optimization
                 existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
                 all_fixed_constraint = FixAtoms(mask=[True] * len(atoms))
                 atoms.set_constraint([all_fixed_constraint] + existing_constraints)
-                optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
-                opt_mode = "cell_only"
-                print(f"  🔒 Optimizing cell only (fixed atoms)")
-            else:
-                optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
-                opt_mode = "both"
-                print(f"  🔄 Optimizing both atoms and cell")
 
-            logger = OptimizationLogger(filename, max_steps, "optimized_structures")
-            
+                if is_tetragonal:
+                    # For tetragonal cell-only optimization
+                    mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
+                    pressure_eV_A3 = pressure * 0.00624150913
+                    optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+                    # Define tetragonal enforcement callback
+                    def enforce_tetragonal():
+                        cell = atoms.get_cell()
+                        cellpar = cell.cellpar()
+                        avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                        old_a = cellpar[0]
+                        old_b = cellpar[1]
+                        cellpar[0] = avg_ab
+                        cellpar[1] = avg_ab
+                        cellpar[3:] = 90.0  # Ensure angles stay at 90
+                        atoms.set_cell(cellpar, scale_atoms=True)
+                        return old_a, old_b, avg_ab
+
+                    tetragonal_callback = enforce_tetragonal
+                    print(f"  🔒 Optimizing cell only (fixed atoms)")
+                    print(f"  📐 Using tetragonal constraint (a=b)")
+                else:
+                    optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
+                    tetragonal_callback = None
+                    print(f"  🔒 Optimizing cell only (fixed atoms)")
+
+                opt_mode = "cell_only"
+            else:  # Both atoms and cell
+                if is_tetragonal:
+                    # For tetragonal both optimization
+                    mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
+                    pressure_eV_A3 = pressure * 0.00624150913
+                    optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+                    # Define tetragonal enforcement callback
+                    def enforce_tetragonal():
+                        cell = atoms.get_cell()
+                        cellpar = cell.cellpar()
+                        avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                        old_a = cellpar[0]
+                        old_b = cellpar[1]
+                        cellpar[0] = avg_ab
+                        cellpar[1] = avg_ab
+                        cellpar[3:] = 90.0  # Ensure angles stay at 90
+                        atoms.set_cell(cellpar, scale_atoms=True)
+                        return old_a, old_b, avg_ab
+
+                    tetragonal_callback = enforce_tetragonal
+                    print(f"  🔄 Optimizing both atoms and cell")
+                    print(f"  📐 Using tetragonal constraint (a=b)")
+                else:
+                    optimization_object = create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain)
+                    tetragonal_callback = None
+                    print(f"  🔄 Optimizing both atoms and cell")
+
+                opt_mode = "both"
+
+            logger = OptimizationLogger(filename, max_steps, "optimized_structures", save_trajectory)
+
             if optimizer_type == "LBFGS":
                 optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
             else:
@@ -3422,10 +3491,80 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             optimizer.attach(lambda: logger(optimizer), interval=1)
 
             print(f"  🏃 Running {optimizer_type} optimization...")
-            if opt_mode == "cell_only":
-                optimizer.run(fmax=0.1, steps=max_steps)
+
+            # Tetragonal mode uses manual convergence loop
+            if is_tetragonal and tetragonal_callback is not None:
+                print(f"  🔷 Using manual convergence loop for tetragonal constraint")
+
+                fmax_criterion = fmax if opt_mode != "cell_only" else 0.1
+                stress_threshold = 0.1
+                ediff = 1e-4
+
+                for step in range(max_steps):
+                    # Single optimization step
+                    optimizer.run(fmax=fmax_criterion, steps=1)
+
+                    # Apply tetragonal constraint
+                    old_a, old_b, new_ab = tetragonal_callback()
+                    if abs(old_a - old_b) > 1e-6:
+                        print(f"    🔷 Enforced a=b: {old_a:.6f}, {old_b:.6f} → {new_ab:.6f} Å")
+
+                    # Get current atoms
+                    if hasattr(optimization_object, 'atoms'):
+                        current_atoms = optimization_object.atoms
+                    else:
+                        current_atoms = optimization_object
+
+                    # Check convergence
+                    forces = current_atoms.get_forces()
+                    max_force = np.max(np.linalg.norm(forces, axis=1))
+                    energy = current_atoms.get_potential_energy()
+
+                    # Check stress for cell optimization
+                    try:
+                        stress_voigt = current_atoms.get_stress(voigt=True)
+                        max_stress = np.max(np.abs(stress_voigt))
+                    except:
+                        max_stress = 0.0
+
+                    # Check energy convergence
+                    energy_converged = False
+                    if logger.trajectory and len(logger.trajectory) > 1:
+                        energy_change = abs(logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
+                        energy_converged = energy_change < ediff
+
+                    # Determine convergence
+                    if opt_mode == "atoms_only":
+                        force_converged = max_force < fmax
+                        stress_converged = True
+                        converged = force_converged and energy_converged
+                    elif opt_mode == "cell_only":
+                        force_converged = True
+                        stress_converged = max_stress < stress_threshold
+                        converged = stress_converged and energy_converged
+                    else:  # Both
+                        force_converged = max_force < fmax
+                        stress_converged = max_stress < stress_threshold
+                        converged = force_converged and stress_converged and energy_converged
+
+                    if converged:
+                        print(f"  ✅ Tetragonal optimization converged at step {step + 1}!")
+                        if opt_mode != "atoms_only":
+                            print(f"     Stress: {max_stress:.4f} < {stress_threshold} GPa ✓")
+                        if opt_mode != "cell_only":
+                            print(f"     Force: {max_force:.4f} < {fmax} eV/Å ✓")
+                        print(f"     Energy change: {energy_change:.2e} < {ediff} eV ✓")
+                        break
+
+                    if step >= max_steps - 1:
+                        print(f"  ⚠️ Reached maximum steps ({max_steps})")
+                        break
             else:
-                optimizer.run(fmax=fmax, steps=max_steps)
+                # Standard optimization (non-tetragonal)
+                if opt_mode == "cell_only":
+                    optimizer.run(fmax=0.1, steps=max_steps)
+                else:
+                    optimizer.run(fmax=fmax, steps=max_steps)
 
             if hasattr(optimization_object, 'atoms'):
                 final_atoms = optimization_object.atoms
@@ -3458,9 +3597,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 
             # Save optimized structure with selective dynamics preserved
             base_name = filename.replace('.vasp', '').replace('POSCAR', '')
-            
-            output_filename = f"optimized_structures/optimized_{base_name}.vasp"
-            
+
+            output_filename = f"optimized_structures/optimized-{base_name}.vasp"
+
             print(f"  💾 Saving optimized structure to {output_filename}")
             write_poscar_with_selective_dynamics(
                 final_atoms, 
@@ -3483,37 +3622,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 selective_dynamics
             )
             
-            trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
-            print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
             
-            with open(trajectory_filename, 'w') as traj_file:
-                symbols = final_atoms.get_chemical_symbols()
-                for step_data in logger.trajectory:
-                    num_atoms = len(step_data['positions'])
-                    energy = step_data['energy']
-                    max_force = step_data['max_force']
-                    lattice = step_data['lattice']
-                    step = step_data['step']
-                    cell_matrix = step_data['cell']
-                    
-                    lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
-                    
-                    traj_file.write(f"{num_atoms}\\n")
-                    
-                    comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
-                              f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
-                              f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
-                              f'Volume={lattice["volume"]:.6f} '
-                              f'Lattice="{lattice_string}" '
-                              f'Properties=species:S:1:pos:R:3')
-                    traj_file.write(f"{comment}\\n")
-                    
-                    for j, pos in enumerate(step_data['positions']):
-                        symbol = symbols[j] if j < len(symbols) else 'X'
-                        traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}\\n")
 
             result = {
                 "structure": filename,
+                "optimized_structure_filename": f"optimized-{base_name}.vasp",
                 "initial_energy_eV": initial_energy,
                 "final_energy_eV": final_energy,
                 "energy_change_eV": final_energy - initial_energy,
@@ -3535,12 +3648,50 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 "has_selective_dynamics": selective_dynamics is not None,
                 "num_fixed_atoms": len([flags for flags in (selective_dynamics or []) if not any(flags)]),
                 "output_structure": output_filename,
-                "trajectory_file": trajectory_filename,
                 # Convert dict to individual fields for CSV compatibility
                 "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_c": optimize_lattice.get('c', True) if isinstance(optimize_lattice, dict) else True
-            }'''
+            }
+            if save_trajectory and logger.trajectory is not None:
+                trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
+                print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
+                
+                with open(trajectory_filename, 'w') as traj_file:
+                    symbols = final_atoms.get_chemical_symbols()
+                    for step_data in logger.trajectory:
+                        num_atoms = len(step_data['positions'])
+                        energy = step_data['energy']
+                        max_force = step_data['max_force']
+                        lattice = step_data['lattice']
+                        step = step_data['step']
+                        cell_matrix = step_data['cell']
+                        
+                        lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
+                        
+                        traj_file.write(f"{num_atoms}\\n")
+                        
+                        comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                                  f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
+                                  f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
+                                  f'Volume={lattice["volume"]:.6f} '
+                                  f'Lattice="{lattice_string}" '
+                                  f'Properties=species:S:1:pos:R:3')
+                        traj_file.write(f"{comment}\\n")
+                        
+                        for j, pos in enumerate(step_data['positions']):
+                            symbol = symbols[j] if j < len(symbols) else 'X'
+                            traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}\\n")
+                
+                result["trajectory_file"] = trajectory_filename
+                print(f"  💾 Trajectory saved: {trajectory_filename}")
+            else:
+                if not save_trajectory:
+                    print(f"  ⏭️ Trajectory saving disabled by user")
+                else:
+                    print(f"  ⏭️ No trajectory data available")
+                result["trajectory_file"] = None
+            '''
 
     if calc_formation_energy:
         code += '''
