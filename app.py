@@ -1701,8 +1701,12 @@ MACE_MODELS = {
     "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
 
     # ========== SEVENNET MODELS ==========
-    "SevenNet-0 (Latest Universal)": "7net-0",
+    "SevenNet-0": "7net-0",
+    "SevenNet-MF-OMPA (MPA Modal)": "7net-mf-ompa-mpa",
+    "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
+    "SevenNet-OMAT24": "7net-omat",
     "SevenNet-L3I5": "7net-l3i5",
+
     # ========== MATTERSIM MODELS ==========
     "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
     "MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
@@ -2425,12 +2429,13 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 original_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.float32)
-
+                print(model_size)
                 if model_size == "7net-mf-ompa-mpa":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
                 elif model_size == "7net-mf-ompa-omat24":
-                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+                    print('here')
+                    calculator = SevenNetCalculator(model='SevenNet-mf-ompa', modal='omat24', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
                 else:
                     calculator = SevenNetCalculator(model=model_size, device=device)
@@ -3390,7 +3395,16 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 #st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
-st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
+colx1, colx2 = st.columns([2,1])
+with colx1:
+    st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
+with colx2:
+    # to cite the universal MLIPs
+    show_citations = st.checkbox("📚 Show Model **Citations & GitHub** Repositories", value=False)
+if show_citations:
+    from helpers.cite_models import  create_citation_info
+    create_citation_info()
+
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
