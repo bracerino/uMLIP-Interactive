@@ -91,12 +91,16 @@ else:
 
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
-                           substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
+                           substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
+                           mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
+                           ):
 
 
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
-        model_size, device, selected_model_key, dtype)
+        model_size, device, selected_model_key, dtype,        mace_head=mace_head,
+        mace_dispersion=mace_dispersion,
+        mace_dispersion_xc=mace_dispersion_xc )
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -114,7 +118,12 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
+    config_info = ""
+    if mace_head:
+        config_info += f"\nMACE Head: {mace_head}"
 
+    if mace_dispersion:
+        config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
@@ -122,7 +131,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
 Model: {selected_model_key or model_size}
 Device: {device}
-Precision: {dtype}
+Precision: {dtype}{config_info}
 \"\"\"
 
 import os
@@ -202,13 +211,16 @@ if __name__ == "__main__":
 
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
-                                       substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
+                                       substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
+                                       mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
 
     calculator_setup_code = _generate_calculator_setup_code(
-        model_size, device, selected_model_key, dtype)
+        model_size, device, selected_model_key, dtype,         mace_head=mace_head,
+        mace_dispersion=mace_dispersion,
+        mace_dispersion_xc=mace_dispersion_xc )
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -226,7 +238,12 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
+    config_info = ""
+    if mace_head:
+        config_info += f"\nMACE Head: {mace_head}"
 
+    if mace_dispersion:
+        config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
@@ -234,7 +251,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
 Model: {selected_model_key or model_size}
 Device: {device}
-Precision: {dtype}
+Precision: {dtype}{config_info}
 
 This script reads POSCAR files from the current directory.
 Place your POSCAR files in the same directory as this script before running.
@@ -1761,7 +1778,9 @@ def _generate_structure_creation_code(structures):
     return "\n".join(code_lines)
 
 
-def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
+def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
+                                    mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
+                                    ):
     """Generate calculator setup code with support for all MLIP models."""
 
     # Determine model type from selected model key
@@ -1771,6 +1790,8 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
     is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
+    is_url_model = isinstance(model_size, str) and (
+                model_size.startswith("http://") or model_size.startswith("https://"))
 
     if is_nequix:
         calc_code = f'''    device = "{device}"
@@ -1961,30 +1982,135 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         else:
             raise e'''
 
-    else:
-        # MACE-MP setup (default)
+    elif is_url_model:
+        # NEW: URL-based foundation models (e.g., MACE-MH-0, MACE-MH-1, MACE-MATPES)
+        model_filename = model_size.split("/")[-1]
+
+        # Build the mace_mp arguments
+        mace_args = []
+        mace_args.append(f'model=local_model_path')
+        mace_args.append(f'device=device')
+        mace_args.append(f'default_dtype="{dtype}"')
+
+        if mace_head:
+            mace_args.append(f'head="{mace_head}"')
+
+        if mace_dispersion:
+            mace_args.append(f'dispersion=True')
+            mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+        mace_args_str = ',\n        '.join(mace_args)
+
         calc_code = f'''    device = "{device}"
-    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
+    print(f"🔧 Initializing MACE foundation model from URL...")
+
+    def download_mace_model(model_url):
+        """Download MACE model from URL and cache it."""
+        from pathlib import Path
+        import urllib.request
+
+        model_filename = model_url.split("/")[-1]
+        cache_dir = Path.home() / ".cache" / "mace_foundation_models"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        model_path = cache_dir / model_filename
+
+        if model_path.exists():
+            print(f"✅ Using cached model: {{model_filename}}")
+            return str(model_path)
+
+        print(f"📥 Downloading {{model_filename}}... (this may take a few minutes)")
+        try:
+            urllib.request.urlretrieve(model_url, str(model_path))
+            print(f"✅ Model downloaded and cached")
+            return str(model_path)
+        except Exception as e:
+            print(f"❌ Download failed: {{e}}")
+            if model_path.exists():
+                model_path.unlink()
+            raise
+
     try:
         from mace.calculators import mace_mp
 
+        model_url = "{model_size}"
+        local_model_path = download_mace_model(model_url)
+        print(f"📁 Model path: {{local_model_path}}")
+
+        print(f"⚙️  Device: {{device}}")
+        print(f"⚙️  Dtype: {dtype}")'''
+
+        if mace_head:
+            calc_code += f'''
+        print(f"🎯 Head: {mace_head}")'''
+
+        if mace_dispersion:
+            calc_code += f'''
+        print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")'''
+
+        calc_code += f'''
+
         calculator = mace_mp(
-            model="{model_size}", dispersion=False, default_dtype="{dtype}", device=device)
-        print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
+            {mace_args_str}
+        )
+        print(f"✅ MACE foundation model initialized successfully on {{device}}")
 
     except Exception as e:
-        print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
+        print(f"❌ MACE initialization failed on {{device}}: {{e}}")
         if device == "cuda":
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = mace_mp(
-                    model="{model_size}", dispersion=False, default_dtype="{dtype}", device="cpu")
-                print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
+                    {mace_args_str.replace('device=device', 'device="cpu"')}
+                )
+                print("✅ MACE initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
                 raise cpu_error
         else:
             raise e'''
+
+    else:
+        # MACE-MP setup (default) - now with optional dispersion
+        mace_args = []
+        mace_args.append(f'model="{model_size}"')
+
+        if mace_dispersion:
+            mace_args.append(f'dispersion=True')
+            mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+        else:
+            mace_args.append(f'dispersion=False')
+
+        mace_args.append(f'default_dtype="{dtype}"')
+        mace_args.append(f'device=device')
+
+        mace_args_str = ', '.join(mace_args)
+
+        calc_code = f'''    device = "{device}"
+        print(f"🔧 Initializing MACE-MP calculator on {{device}}...")'''
+
+        if mace_dispersion:
+            calc_code += f'''
+        print(f"🔬 Dispersion correction: D3-{mace_dispersion_xc}")'''
+
+        calc_code += f'''
+        try:
+            from mace.calculators import mace_mp
+
+            calculator = mace_mp({mace_args_str})
+            print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
+
+        except Exception as e:
+            print(f"❌ MACE-MP initialization failed on {{device}}: {{e}}")
+            if device == "cuda":
+                print("⚠️ GPU initialization failed, falling back to CPU...")
+                try:
+                    calculator = mace_mp({mace_args_str.replace('device=device', 'device="cpu"')})
+                    print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
+                except Exception as cpu_error:
+                    print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                    raise cpu_error
+            else:
+                raise e'''
 
     return calc_code
 
