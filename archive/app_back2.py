@@ -32,12 +32,24 @@ from helpers.monitor_resources import *
 from helpers.mace_cards import *
 from helpers.generate_python_code import *
 
+from helpers.nudge_elastic_band import (
+    setup_neb_parameters_ui,
+    run_neb_calculation,
+    create_neb_trajectory_xyz,
+    create_neb_plot,
+    create_combined_neb_plot,
+    export_neb_results,
+    display_neb_results
+)
+
+
 from helpers.MD_settings import (
     setup_md_parameters_ui,
     run_md_simulation,
     create_md_trajectory_xyz,
     create_md_analysis_plots,
-    export_md_results
+    export_md_results,
+    create_npt_analysis_plots
 )
 
 from helpers.ga_optimization_module import (
@@ -59,6 +71,8 @@ from helpers.tensile_test import (
     create_stress_strain_plot,
     export_tensile_results
 )
+
+from helpers.generate_md_script import generate_md_python_script
 
 import py3Dmol
 import streamlit.components.v1 as components
@@ -93,6 +107,18 @@ try:
 except ImportError:
     ELASTIC_AVAILABLE = False
 
+try:
+    from alignn.ff.ff import AlignnAtomwiseCalculator, default_path
+    ALIGNN_AVAILABLE = True
+except ImportError:
+    ALIGNN_AVAILABLE = False
+
+try:
+    from deepmd.calculator import DP
+    DEEPMD_AVAILABLE = True
+except ImportError:
+    DEEPMD_AVAILABLE = False
+
 import torch
 
 # Add this after the existing THREAD_COUNT_FILE definition
@@ -121,6 +147,58 @@ DEFAULT_SETTINGS = {
 }
 
 
+def extract_orb_confidence(atoms, calculator, log_queue, structure_name):
+    """
+    Extract ORB-v3 confidence that was already calculated.
+    The confidence is automatically computed when forces are calculated.
+    """
+    try:
+        log_queue.put(f"Extracting ORB-v3 confidence for {structure_name}...")
+
+        # Check if confidence is available in calculator results
+        if 'confidence' not in calculator.results:
+            log_queue.put(f"  ⚠️ No confidence data - not an ORB-v3 model or forces not yet calculated")
+            return {'success': False, 'error': 'Confidence not available'}
+
+        # Get confidence from calculator results (already computed!)
+        confidences = calculator.results["confidence"]  # Shape: (num_atoms, 50)
+
+        # Find the predicted bin for each atom (highest probability bin)
+        predicted_bin_per_atom = np.argmax(confidences, axis=-1)
+
+        # Convert bins to predicted MAE values (0 to 0.4 Å in 50 bins)
+        bin_width = 0.4 / 50  # 0.008 Å per bin
+        per_atom_predicted_mae = predicted_bin_per_atom * bin_width
+
+        mean_predicted_mae = float(np.mean(per_atom_predicted_mae))
+        max_predicted_mae = float(np.max(per_atom_predicted_mae))
+
+
+        confidence_score = 1.0 / (1.0 + mean_predicted_mae / 0.1)
+
+        high_uncertainty_threshold = 0.1
+        high_uncertainty_atoms = np.where(per_atom_predicted_mae > high_uncertainty_threshold)[0].tolist()
+
+        log_queue.put(f"  Mean predicted MAE: {mean_predicted_mae:.4f} Å")
+        log_queue.put(f"  Max predicted MAE: {max_predicted_mae:.4f} Å")
+        log_queue.put(f"  Confidence score: {confidence_score:.4f}")
+        log_queue.put(f"  High uncertainty atoms: {len(high_uncertainty_atoms)}/{len(atoms)}")
+
+        return {
+            'success': True,
+            'per_atom_confidence_bins': predicted_bin_per_atom.tolist(),
+            'per_atom_predicted_mae': per_atom_predicted_mae.tolist(),
+            'confidence_distribution': confidences.tolist(),  # Full distribution
+            'mean_predicted_mae': mean_predicted_mae,
+            'max_predicted_mae': max_predicted_mae,
+            'confidence_score': float(confidence_score),
+            'high_uncertainty_atoms': high_uncertainty_atoms,
+            'method': 'ORB-v3 built-in confidence head'
+        }
+
+    except Exception as e:
+        log_queue.put(f"❌ Failed to extract ORB confidence for {structure_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
 
 def load_default_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -1435,11 +1513,12 @@ except ImportError:
 
 
 class OptimizationLogger:
-    def __init__(self, log_queue, structure_name):
+    def __init__(self, log_queue, structure_name,save_trajectory=True,tetragonal_callback=None):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
-        self.trajectory = []
+        self.trajectory = [] if save_trajectory else None
+        self.save_trajectory = save_trajectory
         self.previous_energy = None
 
         self.step_start_time = None
@@ -1476,7 +1555,8 @@ class OptimizationLogger:
                 'forces': forces.copy(),
                 'timestamp': current_time
             }
-            self.trajectory.append(trajectory_step)
+            if self.save_trajectory:
+                self.trajectory.append(trajectory_step)
 
             avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
 
@@ -1509,12 +1589,13 @@ class OptimizationLogger:
                 'elapsed_time': elapsed_time
             })
 
-            self.log_queue.put({
-                'type': 'trajectory_step',
-                'structure': self.structure_name,
-                'step': self.step_count,
-                'trajectory_data': trajectory_step
-            })
+            if self.save_trajectory:
+                self.log_queue.put({
+                    'type': 'trajectory_step',
+                    'structure': self.structure_name,
+                    'step': self.step_count,
+                    'trajectory_data': trajectory_step
+                })
 
     def _calculate_time_estimates(self, optimizer):
         if len(self.step_times) < 2:
@@ -1630,6 +1711,16 @@ MACE_MODELS = {
 
     # ========== NEQUIX MODELS ==========
     "Nequix-MP-1 (Universal Materials)": "nequix-mp-1",
+
+    # ========== DeepMD-kit MODELS ==========
+    #"DeePMD DPA-2 (Small)": "dpa2-small",
+    #"DeePMD DPA-2 (Medium)": "dpa2-medium",
+    #"DeePMD DPA-2 (Large)": "dpa2-large",
+    #"DeePMD DPA-3 (Universal)": "dpa3-universal",
+
+    #"AlignN-FF (JARVIS-DFT)": "alignn-ff-jarvis",
+    #"AlignN-FF (Custom)": "alignn-ff-custom",
+
 }
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
@@ -1802,7 +1893,12 @@ def create_cell_filter(atoms, optimization_params):
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
             return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
-    else:
+
+    elif cell_constraint == "Tetragonal (a=b, optimize a and c)":
+
+        return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+
+    else:  # "Lattice parameters only (fix angles)"
         if hydrostatic:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
@@ -1830,39 +1926,109 @@ def check_selective_dynamics(atoms):
     has_constraints = len(constrained_atoms) > 0
     total_constrained = len(constrained_atoms)
 
-    # Return empty dict as 4th value to match expected unpacking
+
     return has_constraints, total_constrained, total_atoms
 
 
 def setup_optimization_constraints(atoms, optimization_params):
-    opt_type = optimization_params.get(
-        'optimization_type', 'Both atoms and cell')
+    opt_type = optimization_params.get('optimization_type', 'Both atoms and cell')
 
-    has_constraints, total_constrained, total_atoms = check_selective_dynamics(
-        atoms)
+    has_constraints, total_constrained, total_atoms = check_selective_dynamics(atoms)
 
-    existing_constraints = atoms.constraints if hasattr(
-        atoms, 'constraints') and atoms.constraints else []
+    # Preserve existing constraints
+    existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
 
     if opt_type == "Atoms only (fixed cell)":
-        return atoms, None
+        # Keep existing constraints (selective dynamics)
+        return atoms, None, None
+
     elif opt_type == "Cell only (fixed atoms)":
-        atoms.set_constraint(FixAtoms(mask=[True] * len(atoms)))
+        # For cell-only optimization, we want to keep atoms fixed
+        # If there are already selective dynamics, they're redundant (all atoms will be fixed anyway)
+        # But we should preserve them for consistency
+        atoms.set_constraint(FixAtoms(indices=list(range(len(atoms)))))
+
+        cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
+
+        # Handle tetragonal for cell-only optimization
+        if cell_constraint == "Tetragonal (a=b, optimize a and c)":
+            mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
+            pressure = optimization_params.get('pressure', 0.0)
+            pressure_eV_A3 = pressure * 0.00624150913
+
+            cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+            # Create callback to enforce a=b after each step
+            def enforce_tetragonal():
+                cell = atoms.get_cell()
+                cellpar = cell.cellpar()
+
+                # Average a and b
+                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                old_a = cellpar[0]
+                old_b = cellpar[1]
+
+                cellpar[0] = avg_ab
+                cellpar[1] = avg_ab
+                cellpar[3:] = 90.0  # Ensure angles stay at 90
+
+                atoms.set_cell(cellpar, scale_atoms=True)
+
+                return old_a, old_b, avg_ab
+
+            return cell_filter, "cell_only", enforce_tetragonal
+        else:
+            cell_filter = create_cell_filter(atoms, optimization_params)
+            return cell_filter, "cell_only", None
+
+    else:  # Both atoms and cell
+        # Keep existing selective dynamics constraints
+        # They will restrict which atoms can move during optimization
+
+        cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
+
+        if cell_constraint == "Tetragonal (a=b, optimize a and c)":
+            mask = [True, True, True, False, False, False]  # a, b, c can change; angles fixed
+
+            pressure = optimization_params.get('pressure', 0.0)
+            pressure_eV_A3 = pressure * 0.00624150913
+
+            cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+            # Create callback to enforce a=b after each step
+            def enforce_tetragonal():
+                cell = atoms.get_cell()
+                cellpar = cell.cellpar()
+
+                # Average a and b
+                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                old_a = cellpar[0]
+                old_b = cellpar[1]
+
+                cellpar[0] = avg_ab
+                cellpar[1] = avg_ab
+                cellpar[3:] = 90.0  # Ensure angles stay at 90
+
+                atoms.set_cell(cellpar, scale_atoms=True)
+
+                return old_a, old_b, avg_ab
+
+            return cell_filter, "both", enforce_tetragonal
+
         cell_filter = create_cell_filter(atoms, optimization_params)
-        return cell_filter, "cell_only"
-    else:
-        cell_filter = create_cell_filter(atoms, optimization_params)
-        return cell_filter, "both"
+        return cell_filter, "both", None
 
 
 class CellOptimizationLogger:
-    def __init__(self, log_queue, structure_name, opt_mode="both"):
+    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True, tetragonal_callback=None):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
-        self.trajectory = []
+        self.trajectory = [] if save_trajectory else None
+        self.save_trajectory = save_trajectory
         self.previous_energy = None
         self.opt_mode = opt_mode
+        self.tetragonal_callback = tetragonal_callback
 
         self.step_start_time = None
         self.step_times = deque(maxlen=10)
@@ -1916,7 +2082,8 @@ class CellOptimizationLogger:
                     'stress': stress.copy() if stress is not None else None,
                     'timestamp': current_time
                 }
-                self.trajectory.append(trajectory_step)
+                if self.save_trajectory:
+                    self.trajectory.append(trajectory_step)
 
                 avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(
                     optimizer)
@@ -1959,13 +2126,18 @@ class CellOptimizationLogger:
                     'elapsed_time': elapsed_time
                 })
 
-                self.log_queue.put({
-                    'type': 'trajectory_step',
-                    'structure': self.structure_name,
-                    'step': self.step_count,
-                    'trajectory_data': trajectory_step
-                })
-
+                if self.save_trajectory:
+                    self.log_queue.put({
+                        'type': 'trajectory_step',
+                        'structure': self.structure_name,
+                        'step': self.step_count,
+                        'trajectory_data': trajectory_step
+                    })
+                if self.tetragonal_callback is not None:
+                    old_a, old_b, new_ab = self.tetragonal_callback()
+                    if abs(old_a - old_b) > 1e-6:  # Only log if there was a change
+                        self.log_queue.put(
+                            f"  🔷 Tetragonal constraint enforced: a={old_a:.6f} Å, b={old_b:.6f} Å → a=b={new_ab:.6f} Å")
             except Exception as e:
                 self.log_queue.put(f"  Error in optimization step {self.step_count}: {str(e)}")
 
@@ -2004,7 +2176,7 @@ class CellOptimizationLogger:
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
-                         ga_params=None):
+                         ga_params=None,  neb_initial=None, neb_finals=None):
     import time
     try:
         total_start_time = time.time()
@@ -2012,12 +2184,20 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             'type': 'total_start_time',
             'start_time': total_start_time
         })
+        if calc_type == "NEB Calculation":
+            log_queue.put("NEB calculation mode - using separate structure handling")
+        elif not structure_data:
+            log_queue.put("❌ No structures provided")
+            log_queue.put("CALCULATION_FINISHED")
+            return
 
         is_chgnet = model_size.startswith("chgnet")
         is_sevennet = selected_model.startswith("SevenNet")
         is_mattersim = selected_model.startswith("MatterSim")
         is_orb = selected_model.startswith("ORB")
         is_nequix = selected_model.startswith("Nequix")
+        is_deepmd = selected_model.startswith("DeePMD")
+        is_alignn = selected_model.startswith("AlignN")
 
         if is_nequix:
             # Nequix setup
@@ -2032,6 +2212,31 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             except Exception as e:
                 log_queue.put(f"❌ Nequix initialization failed: {str(e)}")
                 return
+        elif is_deepmd:
+            log_queue.put("Setting up DeePMD calculator...")
+            try:
+                # DeepMD uses frozen model files (.pb for TensorFlow, .pth for PyTorch)
+                model_path = model_size  #
+                calculator = DP(model=model_path)
+                log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ DeePMD initialization failed: {str(e)}")
+                return
+        elif is_alignn:
+            log_queue.put("Setting up AlignN calculator...")
+            try:
+                # AlignN provides ASE calculator interface
+                if model_size == "alignn-ff-jarvis":
+                    # Use pretrained JARVIS-DFT model
+                    calculator = AlignnAtomwiseCalculator(path=default_path())
+                else:
+                    # Custom model path
+                    calculator = AlignnAtomwiseCalculator(path=model_size)
+
+                log_queue.put(f"✅ AlignN {model_size} initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ AlignN initialization failed: {str(e)}")
+                return
         elif is_orb:
             # ORB setup
             log_queue.put("Setting up ORB calculator...")
@@ -2042,13 +2247,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 # Convert dtype to ORB precision format
                 if dtype == "float32":
-                    precision = "float32-high"  # Recommended for GPU acceleration
+                    precision = "float32-high"
                 else:
                     precision = "float32-highest"  # Higher precision option
 
                 log_queue.put(f"Precision: {precision}")
 
-                # Get the pretrained model function by name
                 model_function = getattr(pretrained, model_size)
                 orbff = model_function(
                     device=device,
@@ -2308,7 +2512,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("Calculator setup complete, starting structure calculations...")
 
         reference_energies = {}
-        if calc_formation_energy:
+        if calc_formation_energy and calc_type != "NEB Calculation":
             all_elements = set()
             for structure in structure_data.values():
                 for site in structure:
@@ -2317,416 +2521,698 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             reference_energies = calculate_atomic_reference_energies(all_elements, calculator, log_queue)
             log_queue.put(f"✅ Reference energies calculated for: {', '.join(all_elements)}")
 
-        for i, (name, structure) in enumerate(structure_data.items()):
-            if stop_event.is_set():
-                log_queue.put("Calculation stopped by user")
-                break
+        if calc_type == "NEB Calculation":
+            log_queue.put(f"DEBUG: Using passed parameters - initial: {neb_initial is not None}, finals: {len(neb_finals) if neb_finals else 0}")
 
-            structure_start_time = time.time()
-            log_queue.put({
-                'type': 'structure_start_time',
-                'structure': name,
-                'start_time': structure_start_time
-            })
+            if not neb_initial or not neb_finals:
+                log_queue.put("❌ No NEB structures configured")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+            else:
+                log_queue.put(f"Starting NEB calculations: 1 initial → {len(neb_finals)} final states")
 
-            log_queue.put(f"Processing structure {i + 1}/{len(structure_data)}: {name}")
-            log_queue.put({'type': 'progress', 'current': i, 'total': len(structure_data), 'name': name})
+                for i, (final_name, final_structure) in enumerate(neb_finals.items()):
+                    if stop_event.is_set():
+                        log_queue.put("Calculation stopped by user")
+                        break
 
-            try:
-                atoms = pymatgen_to_ase(structure)
-                atoms.calc = calculator
+                    structure_start_time = time.time()
+                    neb_structure_name = f"Initial_to_{final_name}"
 
-                log_queue.put(f"Testing calculator with {name}...")
+                    log_queue.put({
+                        'type': 'structure_start_time',
+                        'structure': neb_structure_name,
+                        'start_time': structure_start_time
+                    })
+
+                    log_queue.put(f"Processing NEB {i + 1}/{len(neb_finals)}: Initial → {final_name}")
+                    log_queue.put(
+                        {'type': 'progress', 'current': i, 'total': len(neb_finals), 'name': neb_structure_name})
+
+                    try:
+                        neb_results = run_neb_calculation(
+                            neb_initial,
+                            final_structure,
+                            calculator,
+                            neb_params,
+                            log_queue,
+                            stop_event,
+                            neb_structure_name
+                        )
+
+                        if neb_results['success']:
+                            energy = neb_results['energies'][0]
+                            log_queue.put(f"✅ NEB completed: {neb_structure_name}")
+                        else:
+                            log_queue.put(f"❌ NEB failed: {neb_structure_name}")
+                            energy = None
+
+                        log_queue.put({
+                            'type': 'result',
+                            'name': neb_structure_name,
+                            'energy': energy,
+                            'formation_energy': None,
+                            'structure': neb_initial,
+                            'calc_type': calc_type,
+                            'convergence_status': None,
+                            'phonon_results': None,
+                            'elastic_results': None,
+                            'ga_results': None,
+                            'md_results': None,
+                            'tensile_results': None,
+                            'neb_results': neb_results,
+                            'orb_confidence': None
+                        })
+
+                        structure_end_time = time.time()
+                        structure_duration = structure_end_time - structure_start_time
+
+                        log_queue.put({
+                            'type': 'structure_end_time',
+                            'structure': neb_structure_name,
+                            'end_time': structure_end_time,
+                            'duration': structure_duration,
+                            'calc_type': calc_type
+                        })
+
+                    except Exception as e:
+                        log_queue.put(f"❌ Error in NEB calculation {neb_structure_name}: {str(e)}")
+                        import traceback
+                        log_queue.put(f"Traceback: {traceback.format_exc()}")
+
+                        structure_end_time = time.time()
+                        structure_duration = structure_end_time - structure_start_time
+
+                        log_queue.put({
+                            'type': 'structure_end_time',
+                            'structure': neb_structure_name,
+                            'end_time': structure_end_time,
+                            'duration': structure_duration,
+                            'calc_type': calc_type,
+                            'failed': True
+                        })
+
+                        log_queue.put({
+                            'type': 'result',
+                            'name': neb_structure_name,
+                            'energy': None,
+                            'structure': neb_initial,
+                            'calc_type': calc_type,
+                            'error': str(e)
+                        })
+        else:
+            for i, (name, structure) in enumerate(structure_data.items()):
+                if stop_event.is_set():
+                    log_queue.put("Calculation stopped by user")
+                    break
+
+                structure_start_time = time.time()
+                log_queue.put({
+                    'type': 'structure_start_time',
+                    'structure': name,
+                    'start_time': structure_start_time
+                })
+
+                log_queue.put(f"Processing structure {i + 1}/{len(structure_data)}: {name}")
+                log_queue.put({'type': 'progress', 'current': i, 'total': len(structure_data), 'name': name})
 
                 try:
-                    test_energy = atoms.get_potential_energy()
-                    test_forces = atoms.get_forces()
-                    log_queue.put(f"✅ Calculator test successful for {name}")
-                    log_queue.put(
-                        f"Initial energy: {test_energy:.6f} eV, Initial max force: {np.max(np.abs(test_forces)):.6f} eV/Å")
-                except Exception as calc_error:
-                    log_queue.put(f"❌ Calculator test failed for {name}: {str(calc_error)}")
+                    atoms = pymatgen_to_ase(structure)
+                    atoms.calc = calculator
+
+                    log_queue.put(f"Testing calculator with {name}...")
+
+                    try:
+                        test_energy = atoms.get_potential_energy()
+                        test_forces = atoms.get_forces()
+                        log_queue.put(f"✅ Calculator test successful for {name}")
+                        log_queue.put(
+                            f"Initial energy: {test_energy:.6f} eV, Initial max force: {np.max(np.abs(test_forces)):.6f} eV/Å")
+                    except Exception as calc_error:
+                        log_queue.put(f"❌ Calculator test failed for {name}: {str(calc_error)}")
+                        log_queue.put({
+                            'type': 'result',
+                            'name': name,
+                            'energy': None,
+                            'structure': structure,
+                            'calc_type': calc_type,
+                            'error': f"Calculator test failed: {str(calc_error)}"
+                        })
+                        continue
+
+                    energy = None
+                    final_structure = structure
+                    convergence_status = None
+                    phonon_results = None
+                    elastic_results = None
+                    orb_confidence = None
+                    if is_orb:
+                        orb_confidence = extract_orb_confidence(atoms, calculator, log_queue, name)
+                    if calc_type == "Energy Only":
+                        try:
+                            energy = atoms.get_potential_energy()
+                            log_queue.put(f"✅ Energy for {name}: {energy:.6f} eV")
+                        except Exception as energy_error:
+                            log_queue.put(f"❌ Energy calculation failed for {name}: {str(energy_error)}")
+                            raise energy_error
+
+
+                    elif calc_type == "Geometry Optimization":
+
+                        log_queue.put(f"Starting geometry optimization for {name}")
+
+                        opt_type = optimization_params['optimization_type']
+                        log_queue.put(f"Optimization type: {opt_type}")
+
+                        atoms = pymatgen_to_ase(structure)
+                        atoms.calc = calculator
+
+                        has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
+
+                        if has_constraints:
+                            log_queue.put(
+                                f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
+                            log_queue.put(
+                                f"  Constrained atoms will respect their original selective dynamics during optimization")
+                        else:
+                            log_queue.put(
+                                f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
+
+                        if optimization_params.get('cell_constraint'):
+                            log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
+
+                        if optimization_params.get('pressure', 0) > 0:
+                            log_queue.put(f"External pressure: {optimization_params['pressure']} GPa")
+
+                        if optimization_params.get('hydrostatic_strain'):
+                            log_queue.put("Using hydrostatic strain constraint")
+
+                        log_queue.put({
+                            'type': 'opt_start',
+                            'structure': name,
+                            'max_steps': optimization_params['max_steps'],
+                            'fmax': optimization_params['fmax'],
+                            'ediff': optimization_params['ediff'],
+                            'optimization_type': opt_type,
+                            'stress_threshold': optimization_params.get('stress_threshold', 0.1)
+                        })
+
+                        try:
+                            save_traj = optimization_params.get('save_trajectory', True)
+                            optimization_object, opt_mode, tetragonal_callback = setup_optimization_constraints(atoms,
+                                                                                                                optimization_params)
+
+
+                            # Check if this is tetragonal mode
+                            is_tetragonal = (tetragonal_callback is not None)
+
+                            if opt_mode:
+                                logger = CellOptimizationLogger(log_queue, name, opt_mode, save_trajectory=save_traj,
+                                                                tetragonal_callback=tetragonal_callback)
+                            else:
+                                logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj)
+
+                            if optimization_params['optimizer'] == "LBFGS":
+                                optimizer = LBFGS(optimization_object, logfile=None)
+                            elif optimization_params['optimizer'] == "FIRE":
+                                optimizer = FIRE(optimization_object, logfile=None)
+                            else:
+                                optimizer = BFGS(optimization_object, logfile=None)
+
+                            optimizer.max_steps = optimization_params['max_steps']
+                            optimizer.attach(lambda: logger(optimizer), interval=1)
+
+                            # Set convergence criteria based on optimization type
+                            if opt_type == "Cell only (fixed atoms)":
+                                fmax_criterion = 0.1
+                            if is_tetragonal or (opt_type == "Cell only (fixed atoms)" and tetragonal_callback):
+                                # Use manual convergence loop for tetragonal mode
+                                log_queue.put(f"  🔷 Tetragonal mode: will check convergence manually")
+
+                                fmax_criterion = optimization_params['fmax']
+
+                                for step in range(optimization_params['max_steps']):
+                                    optimizer.run(fmax=fmax_criterion, steps=1)
+
+                                    if hasattr(optimization_object, 'atoms'):
+                                        current_atoms = optimization_object.atoms
+                                    else:
+                                        current_atoms = optimization_object
+
+                                    # Check convergence
+                                    forces = current_atoms.get_forces()
+                                    max_force = np.max(np.linalg.norm(forces, axis=1))
+                                    energy = current_atoms.get_potential_energy()
+
+                                    # Check stress for cell optimization
+                                    try:
+                                        stress_voigt = current_atoms.get_stress(voigt=True)
+                                        max_stress = np.max(np.abs(stress_voigt))
+                                    except:
+                                        max_stress = 0.0
+
+                                    # Check energy convergence
+                                    energy_converged = False
+                                    if logger.trajectory and len(logger.trajectory) > 1:
+                                        energy_change = abs(
+                                            logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
+                                        energy_converged = energy_change < optimization_params['ediff']
+
+
+                                    if opt_type == "Atoms only (fixed cell)":
+                                        force_converged = max_force < optimization_params['fmax']
+                                        stress_converged = True
+                                        converged = force_converged and energy_converged
+                                    elif opt_type == "Cell only (fixed atoms)":
+                                        force_converged = True
+                                        stress_converged = max_stress < optimization_params.get('stress_threshold', 0.1)
+                                        converged = stress_converged and energy_converged
+                                    else:  # Both
+                                        force_converged = max_force < optimization_params['fmax']
+                                        stress_converged = max_stress < optimization_params.get('stress_threshold', 0.1)
+                                        converged = force_converged and stress_converged and energy_converged
+
+                                    if converged:
+                                        log_queue.put(f"  ✅ Tetragonal optimization converged at step {step + 1}!")
+                                        if opt_type == "Cell only (fixed atoms)":
+                                            log_queue.put(
+                                                f"     Stress: {max_stress:.4f} < {optimization_params.get('stress_threshold', 0.1)} GPa ✓")
+                                        else:
+                                            log_queue.put(
+                                                f"     Force: {max_force:.4f} < {optimization_params['fmax']} eV/Å ✓")
+                                            log_queue.put(
+                                                f"     Stress: {max_stress:.4f} < {optimization_params.get('stress_threshold', 0.1)} GPa ✓")
+                                        log_queue.put(
+                                            f"     Energy change: {energy_change:.2e} < {optimization_params['ediff']} eV ✓")
+                                        break
+
+                                    if step >= optimization_params['max_steps'] - 1:
+                                        log_queue.put(
+                                            f"  ⚠️ Reached maximum steps ({optimization_params['max_steps']})")
+                                        break
+                            else:
+                                # For non-tetragonal modes, use standard ASE convergence
+                                fmax_criterion = optimization_params['fmax']
+                                optimizer.run(fmax=fmax_criterion, steps=optimization_params['max_steps'])
+
+                            # Get final structure
+                            if hasattr(optimization_object, 'atoms'):
+                                final_atoms = optimization_object.atoms
+                            else:
+                                final_atoms = optimization_object
+
+                            energy = final_atoms.get_potential_energy()
+                            final_forces = final_atoms.get_forces()
+                            max_final_force = np.max(np.linalg.norm(final_forces, axis=1))
+
+                            force_converged = max_final_force < optimization_params['fmax']
+                            energy_converged = False
+                            stress_converged = True
+
+                            if len(logger.trajectory) > 1:
+                                final_energy_change = logger.trajectory[-1]['energy_change']
+                                energy_converged = final_energy_change < optimization_params['ediff']
+
+                            if opt_mode in ["cell_only", "both"]:
+                                try:
+                                    final_stress = final_atoms.get_stress(voigt=True)
+                                    max_final_stress = np.max(np.abs(final_stress))
+                                    stress_converged = max_final_stress < 0.1
+                                    log_queue.put(f"  Final stress: {max_final_stress:.4f} GPa")
+                                except:
+                                    stress_converged = True
+
+                            # Determine convergence status
+                            if opt_type == "Atoms only (fixed cell)":
+                                if force_converged and energy_converged:
+                                    convergence_status = "CONVERGED (Force & Energy)"
+                                elif force_converged:
+                                    convergence_status = "CONVERGED (Force)"
+                                else:
+                                    convergence_status = "MAX STEPS REACHED"
+                            elif opt_type == "Cell only (fixed atoms)":
+                                if stress_converged and energy_converged:
+                                    convergence_status = "CONVERGED (Stress & Energy)"
+                                elif stress_converged:
+                                    convergence_status = "CONVERGED (Stress)"
+                                else:
+                                    convergence_status = "MAX STEPS REACHED"
+                            else:  # Both
+                                if force_converged and stress_converged and energy_converged:
+                                    convergence_status = "CONVERGED (Force, Stress & Energy)"
+                                elif force_converged and stress_converged:
+                                    convergence_status = "CONVERGED (Force & Stress)"
+                                elif force_converged:
+                                    convergence_status = "CONVERGED (Force only)"
+                                else:
+                                    convergence_status = "MAX STEPS REACHED"
+
+                            optimized_structure = ase_to_pymatgen_wrapped(final_atoms)
+                            final_structure = optimized_structure
+
+                            # Log final results
+                            if opt_mode == "cell_only":
+                                log_queue.put(
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
+                            elif opt_mode == "both":
+                                log_queue.put(
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
+                            else:
+                                log_queue.put(
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å ({optimizer.nsteps} steps)")
+
+                            log_queue.put({
+                                'type': 'complete_trajectory',
+                                'structure': name,
+                                'trajectory': logger.trajectory
+                            })
+                            log_queue.put({
+                                'type': 'opt_complete',
+                                'structure': name,
+                                'final_steps': optimizer.nsteps if not is_tetragonal else len(logger.trajectory),
+                                'converged': force_converged and stress_converged and energy_converged,
+                                'force_converged': force_converged,
+                                'energy_converged': energy_converged,
+                                'stress_converged': stress_converged,
+                                'convergence_status': convergence_status
+                            })
+
+                        except Exception as opt_error:
+                            log_queue.put(f"❌ Optimization failed for {name}: {str(opt_error)}")
+                            try:
+                                energy = atoms.get_potential_energy()
+                                final_structure = structure
+                                log_queue.put(f"⚠️  Using initial energy for {name}: {energy:.6f} eV")
+                            except:
+                                raise opt_error
+
+
+
+
+
+
+
+                    elif calc_type == "GA Structure Optimization":
+                        if not substitutions:
+                            log_queue.put("❌ No substitutions configured for GA optimization")
+                            continue
+
+                        log_queue.put(f"Starting GA structure optimization for {name}")
+                        log_queue.put(f"Substitutions: {substitutions}")
+                        log_queue.put(f"GA parameters: {ga_params}")
+
+                        # Use the structure (which should be the supercell if set)
+                        base_structure = structure
+                        log_queue.put(f"Using structure with {len(base_structure)} atoms")
+
+                        # Run GA optimization
+                        ga_results = None
+                        try:
+                            # Start GA optimization in a separate thread
+                            ga_thread = threading.Thread(
+                                target=run_ga_optimization,
+                                args=(base_structure, calculator, substitutions, ga_params, log_queue, stop_event)
+                            )
+                            ga_thread.start()
+
+                            # Wait for GA thread to complete
+                            ga_thread.join()
+
+                            # Process messages - look for GA results
+                            temp_messages = []
+                            ga_finished = False
+
+                            # Keep processing until we get the finish signal
+                            while not ga_finished:
+                                try:
+                                    msg = log_queue.get(timeout=1.0)
+
+                                    if isinstance(msg, dict) and msg.get('type') == 'ga_result':
+                                        ga_results = msg
+                                        energy = msg['best_energy']
+                                        final_structure = msg['best_structure']
+                                        log_queue.put(
+                                            f"✅ GA optimization completed for {name}: Best energy = {energy:.6f} eV")
+
+                                    elif msg == "GA_OPTIMIZATION_FINISHED":
+                                        ga_finished = True
+                                        log_queue.put(f"🏁 GA optimization finished for {name}")
+
+                                    else:
+                                        temp_messages.append(msg)
+
+                                except queue.Empty:
+                                    # Check if thread is still alive
+                                    if not ga_thread.is_alive():
+                                        # Thread finished but no finish message received
+                                        log_queue.put("⚠️ GA thread finished unexpectedly")
+                                        break
+                                    continue
+
+                            # Put back non-GA messages
+                            for msg in temp_messages:
+                                log_queue.put(msg)
+
+                            if ga_results is None:
+                                log_queue.put(f"⚠️ No GA results received for {name}")
+                                energy = None
+
+                        except Exception as ga_error:
+                            log_queue.put(f"❌ GA optimization failed for {name}: {str(ga_error)}")
+                            import traceback
+                            log_queue.put(f"Traceback: {traceback.format_exc()}")
+                            energy = None
+                            ga_results = None
+
+
+                    elif calc_type == "Phonon Calculation":
+                        if optimization_params['max_steps'] > 0:
+                            log_queue.put(f"Running brief pre-phonon optimization for {name}")
+                            temp_atoms = atoms.copy()
+                            temp_atoms.calc = calculator
+                            try:
+                                temp_optimizer = LBFGS(temp_atoms, logfile=None)
+                                temp_optimizer.run(fmax=0.02, steps=50)
+                                atoms = temp_atoms
+                                energy = atoms.get_potential_energy()
+                                log_queue.put(f"Pre-phonon optimization completed. Energy: {energy:.6f} eV")
+
+                            except Exception as pre_opt_error:
+                                log_queue.put(f"⚠️ Pre-optimization failed: {str(pre_opt_error)}")
+                                energy = atoms.get_potential_energy()
+
+                        phonon_results = calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, name)
+                        if phonon_results['success']:
+                            energy = atoms.get_potential_energy()
+
+                    elif calc_type == "Elastic Properties":
+                        if optimization_params['max_steps'] > 0:
+                            log_queue.put(f"Running pre-elastic optimization for {name} to ensure stability.")
+                            temp_atoms = atoms.copy()
+                            temp_atoms.calc = calculator
+                            temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt")
+                            try:
+                                temp_optimizer = LBFGS(temp_atoms, logfile=None)
+                                temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
+                                temp_optimizer.run(fmax=0.01, steps=400)
+                                atoms = temp_atoms
+                                energy = atoms.get_potential_energy()
+                                log_queue.put(
+                                    f"Pre-elastic optimization finished for {name}. Final energy: {energy:.6f} eV")
+                            except Exception as pre_opt_error:
+                                log_queue.put(f"⚠️ Pre-elastic optimization failed for {name}: {str(pre_opt_error)}")
+                                log_queue.put("Continuing with elastic calculation on potentially unoptimized structure.")
+                                energy = atoms.get_potential_energy()
+
+                        elastic_results = calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, name)
+                        if elastic_results['success']:
+                            energy = atoms.get_potential_energy()
+                    elif calc_type == "Molecular Dynamics":
+                        log_queue.put(f"Starting molecular dynamics simulation for {name}")
+
+                        # Run MD simulation
+                        md_results = run_md_simulation(atoms, calculator, md_params, log_queue, name)
+
+                        if md_results['success']:
+                            energy = md_results['final_energy']
+
+                            # --- THIS IS THE FIX ---
+                            # 1. Get the final ASE 'atoms' object from the results
+                            final_atoms_object = md_results['final_atoms']
+                            # 2. Convert it back to a Pymatgen structure
+                            final_structure = ase_to_pymatgen_wrapped(final_atoms_object)
+                            # --- END FIX ---
+
+                            log_queue.put(f"✅ MD simulation completed for {name}")
+                        else:
+                            log_queue.put(f"❌ MD simulation failed for {name}")
+                            energy = None
+                            final_structure = structure  # Keep original structure
+                            md_results = None
+                    elif calc_type == "Virtual Tensile Test":
+                        log_queue.put(f"Starting virtual tensile test for {name}")
+
+                        tensile_results = run_tensile_test(atoms, calculator, tensile_params, log_queue, name, stop_event)
+
+                        if tensile_results['success']:
+                            energy = atoms.get_potential_energy()
+                            final_structure = structure
+                            log_queue.put(f"✅ Tensile test completed for {name}")
+                        else:
+                            log_queue.put(f"❌ Tensile test failed for {name}")
+                            energy = None
+                            tensile_results = None
+
+                    elif calc_type == "NEB Calculation":
+                        log_queue.put(
+                            f"DEBUG: Received NEB structures - initial: {neb_initial is not None}, finals: {len(neb_finals) if neb_finals else 0}")
+
+                        if not neb_initial or not neb_finals:
+                            log_queue.put("❌ No NEB structures configured")
+                            log_queue.put("CALCULATION_FINISHED")
+                            return
+
+                        log_queue.put(f"Starting NEB calculations: 1 initial → {len(neb_finals)} final states")
+
+                        log_queue.put(f"Starting NEB calculations: 1 initial → {len(neb_finals)} final states")
+
+                        initial_structure = neb_initial
+
+                        for final_name, final_structure in neb_finals.items():
+                            if stop_event.is_set():
+                                log_queue.put("Calculation stopped by user")
+                                break
+
+                            structure_start_time = time.time()
+                            log_queue.put({
+                                'type': 'structure_start_time',
+                                'structure': f"Initial_to_{final_name}",
+                                'start_time': structure_start_time
+                            })
+
+                            log_queue.put(f"Processing NEB: Initial → {final_name}")
+
+                            neb_structure_name = f"Initial_to_{final_name}"
+
+                            try:
+                                neb_results = run_neb_calculation(
+                                    initial_structure,
+                                    final_structure,
+                                    calculator,
+                                    neb_params,
+                                    log_queue,
+                                    stop_event,
+                                    neb_structure_name
+                                )
+
+                                if neb_results['success']:
+                                    energy = neb_results['energies'][0]
+                                    log_queue.put(f"✅ NEB completed: {neb_structure_name}")
+                                else:
+                                    log_queue.put(f"❌ NEB failed: {neb_structure_name}")
+                                    energy = None
+
+                                log_queue.put({
+                                    'type': 'result',
+                                    'name': neb_structure_name,
+                                    'energy': energy,
+                                    'structure': initial_structure,
+                                    'calc_type': calc_type,
+                                    'neb_results': neb_results
+                                })
+
+                                structure_end_time = time.time()
+                                structure_duration = structure_end_time - structure_start_time
+
+                                log_queue.put({
+                                    'type': 'structure_end_time',
+                                    'structure': neb_structure_name,
+                                    'end_time': structure_end_time,
+                                    'duration': structure_duration,
+                                    'calc_type': calc_type
+                                })
+
+                            except Exception as e:
+                                log_queue.put(f"❌ Error in NEB calculation {neb_structure_name}: {str(e)}")
+
+                                structure_end_time = time.time()
+                                structure_duration = structure_end_time - structure_start_time
+
+                                log_queue.put({
+                                    'type': 'structure_end_time',
+                                    'structure': neb_structure_name,
+                                    'end_time': structure_end_time,
+                                    'duration': structure_duration,
+                                    'calc_type': calc_type,
+                                    'failed': True
+                                })
+
+                                log_queue.put({
+                                    'type': 'result',
+                                    'name': neb_structure_name,
+                                    'energy': None,
+                                    'structure': initial_structure,
+                                    'calc_type': calc_type,
+                                    'error': str(e)
+                                })
+                    formation_energy = None
+                    if calc_formation_energy and energy is not None:
+                        formation_energy = calculate_formation_energy(energy, structure, reference_energies)
+                        if formation_energy is not None:
+                            log_queue.put(f"✅ Formation energy for {name}: {formation_energy:.6f} eV/atom")
+                        else:
+                            log_queue.put(f"⚠️ Could not calculate formation energy for {name}")
+
+                    log_queue.put({
+                        'type': 'result',
+                        'name': name,
+                        'energy': energy,
+                        'formation_energy': formation_energy,
+                        'structure': final_structure,
+                        'calc_type': calc_type,
+                        'convergence_status': convergence_status,
+                        'phonon_results': phonon_results,
+                        'elastic_results': elastic_results,
+                        'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
+                        'md_results': md_results if calc_type == "Molecular Dynamics" else None,
+                        'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None,
+                        'orb_confidence': orb_confidence
+                    })
+
+                    structure_end_time = time.time()
+                    structure_duration = structure_end_time - structure_start_time
+
+                    log_queue.put({
+                        'type': 'structure_end_time',
+                        'structure': name,
+                        'end_time': structure_end_time,
+                        'duration': structure_duration,
+                        'calc_type': calc_type
+                    })
+                except Exception as e:
+
+                    structure_end_time = time.time()
+                    structure_duration = structure_end_time - structure_start_time
+
+                    log_queue.put({
+                        'type': 'structure_end_time',
+                        'structure': name,
+                        'end_time': structure_end_time,
+                        'duration': structure_duration,
+                        'calc_type': calc_type,
+                        'failed': True
+                    })
+
+                    log_queue.put(f"❌ Error calculating {name}: {str(e)}")
+                    log_queue.put(f"Error type: {type(e).__name__}")
                     log_queue.put({
                         'type': 'result',
                         'name': name,
                         'energy': None,
                         'structure': structure,
                         'calc_type': calc_type,
-                        'error': f"Calculator test failed: {str(calc_error)}"
+                        'error': str(e)
                     })
-                    continue
-
-                energy = None
-                final_structure = structure
-                convergence_status = None
-                phonon_results = None
-                elastic_results = None
-
-                if calc_type == "Energy Only":
-                    try:
-                        energy = atoms.get_potential_energy()
-                        log_queue.put(f"✅ Energy for {name}: {energy:.6f} eV")
-                    except Exception as energy_error:
-                        log_queue.put(f"❌ Energy calculation failed for {name}: {str(energy_error)}")
-                        raise energy_error
-
-
-                elif calc_type == "Geometry Optimization":
-
-                    log_queue.put(f"Starting geometry optimization for {name}")
-
-                    opt_type = optimization_params['optimization_type']
-                    log_queue.put(f"Optimization type: {opt_type}")
-
-                    atoms = pymatgen_to_ase(structure)
-                    atoms.calc = calculator
-
-                    has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(
-                        atoms)
-
-                    print("HER?")
-                    if has_constraints:
-                        log_queue.put(
-                            f"📌 Selective dynamics detected: {fixed_atoms}/{total_atoms} atoms are constrained")
-                        log_queue.put(
-                            f"  Constrained atoms will respect their original selective dynamics during optimization")
-                    else:
-                        log_queue.put(
-                            f"🔄 No selective dynamics found - all {total_atoms} atoms will be optimized")
-
-                    if optimization_params.get('cell_constraint'):
-                        log_queue.put(f"Cell constraint: {optimization_params['cell_constraint']}")
-
-                    if optimization_params.get('pressure', 0) > 0:
-                        log_queue.put(f"External pressure: {optimization_params['pressure']} GPa")
-
-                    if optimization_params.get('hydrostatic_strain'):
-                        log_queue.put("Using hydrostatic strain constraint")
-
-                    print("NOTH ERE?")
-                    log_queue.put({
-                        'type': 'opt_start',
-                        'structure': name,
-                        'max_steps': optimization_params['max_steps'],
-                        'fmax': optimization_params['fmax'],
-                        'ediff': optimization_params['ediff'],
-                        'optimization_type': opt_type,
-                        'stress_threshold': optimization_params.get('stress_threshold', 0.1)
-                    })
-
-                    try:
-                        optimization_object, opt_mode = setup_optimization_constraints(atoms, optimization_params)
-                        if opt_mode:
-                            logger = CellOptimizationLogger(log_queue, name, opt_mode)
-                        else:
-                            logger = OptimizationLogger(log_queue, name)
-                        if optimization_params['optimizer'] == "LBFGS":
-                            optimizer = LBFGS(optimization_object, logfile=None)
-                        elif optimization_params['optimizer'] == "FIRE":
-                            optimizer = FIRE(optimization_object, logfile=None)
-                        else:
-                            optimizer = BFGS(optimization_object, logfile=None)
-                        optimizer.max_steps = optimization_params['max_steps']
-                        optimizer.attach(lambda: logger(optimizer), interval=1)
-                        if opt_type == "Cell only (fixed atoms)":
-                            fmax_criterion = 0.1
-                        else:
-                            fmax_criterion = optimization_params['fmax']
-                        optimizer.run(fmax=fmax_criterion, steps=optimization_params['max_steps'])
-
-                        if hasattr(optimization_object, 'atoms'):
-                            final_atoms = optimization_object.atoms
-                        else:
-                            final_atoms = optimization_object
-                        energy = final_atoms.get_potential_energy()
-                        final_forces = final_atoms.get_forces()
-                        max_final_force = np.max(np.linalg.norm(final_forces, axis=1))
-
-                        force_converged = max_final_force < optimization_params['fmax']
-                        energy_converged = False
-                        stress_converged = True
-
-                        if len(logger.trajectory) > 1:
-                            final_energy_change = logger.trajectory[-1]['energy_change']
-
-                            energy_converged = final_energy_change < optimization_params['ediff']
-
-                        if opt_mode in ["cell_only", "both"]:
-                            try:
-                                final_stress = final_atoms.get_stress(voigt=True)
-                                max_final_stress = np.max(np.abs(final_stress))
-                                stress_converged = max_final_stress < 0.1
-                                log_queue.put(f"  Final stress: {max_final_stress:.4f} GPa")
-                            except:
-                                stress_converged = True
-
-                        if opt_type == "Atoms only (fixed cell)":
-                            if force_converged and energy_converged:
-                                convergence_status = "CONVERGED (Force & Energy)"
-                            elif force_converged:
-                                convergence_status = "CONVERGED (Force)"
-                            else:
-                                convergence_status = "MAX STEPS REACHED"
-                        elif opt_type == "Cell only (fixed atoms)":
-                            if stress_converged and energy_converged:
-                                convergence_status = "CONVERGED (Stress & Energy)"
-                            elif stress_converged:
-                                convergence_status = "CONVERGED (Stress)"
-                            else:
-                                convergence_status = "MAX STEPS REACHED"
-                        else:  # Both
-                            if force_converged and stress_converged and energy_converged:
-                                convergence_status = "CONVERGED (Force, Stress & Energy)"
-                            elif force_converged and stress_converged:
-                                convergence_status = "CONVERGED (Force & Stress)"
-                            elif force_converged:
-                                convergence_status = "CONVERGED (Force only)"
-                            else:
-                                convergence_status = "MAX STEPS REACHED"
-                        optimized_structure = ase_to_pymatgen_wrapped(final_atoms)
-                        final_structure = optimized_structure
-
-                        if opt_mode == "cell_only":
-                            log_queue.put(
-                                f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
-                        elif opt_mode == "both":
-                            log_queue.put(
-                                f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
-                        else:
-                            log_queue.put(
-                                f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å ({optimizer.nsteps} steps)")
-                        log_queue.put({
-                            'type': 'complete_trajectory',
-                            'structure': name,
-                            'trajectory': logger.trajectory
-                        })
-                        log_queue.put({
-                            'type': 'opt_complete',
-                            'structure': name,
-                            'final_steps': optimizer.nsteps,
-                            'converged': force_converged and stress_converged and energy_converged,
-                            'force_converged': force_converged,
-                            'energy_converged': energy_converged,
-                            'stress_converged': stress_converged,
-                            'convergence_status': convergence_status
-                        })
-
-                    except Exception as opt_error:
-                        log_queue.put(f"❌ Optimization failed for {name}: {str(opt_error)}")
-                        try:
-                            energy = atoms.get_potential_energy()
-                            final_structure = structure
-                            log_queue.put(f"⚠️  Using initial energy for {name}: {energy:.6f} eV")
-                        except:
-                            raise opt_error
-
-
-
-
-
-
-
-                elif calc_type == "GA Structure Optimization":
-                    if not substitutions:
-                        log_queue.put("❌ No substitutions configured for GA optimization")
-                        continue
-
-                    log_queue.put(f"Starting GA structure optimization for {name}")
-                    log_queue.put(f"Substitutions: {substitutions}")
-                    log_queue.put(f"GA parameters: {ga_params}")
-
-                    # Use the structure (which should be the supercell if set)
-                    base_structure = structure
-                    log_queue.put(f"Using structure with {len(base_structure)} atoms")
-
-                    # Run GA optimization
-                    ga_results = None
-                    try:
-                        # Start GA optimization in a separate thread
-                        ga_thread = threading.Thread(
-                            target=run_ga_optimization,
-                            args=(base_structure, calculator, substitutions, ga_params, log_queue, stop_event)
-                        )
-                        ga_thread.start()
-
-                        # Wait for GA thread to complete
-                        ga_thread.join()
-
-                        # Process messages - look for GA results
-                        temp_messages = []
-                        ga_finished = False
-
-                        # Keep processing until we get the finish signal
-                        while not ga_finished:
-                            try:
-                                msg = log_queue.get(timeout=1.0)
-
-                                if isinstance(msg, dict) and msg.get('type') == 'ga_result':
-                                    ga_results = msg
-                                    energy = msg['best_energy']
-                                    final_structure = msg['best_structure']
-                                    log_queue.put(
-                                        f"✅ GA optimization completed for {name}: Best energy = {energy:.6f} eV")
-
-                                elif msg == "GA_OPTIMIZATION_FINISHED":
-                                    ga_finished = True
-                                    log_queue.put(f"🏁 GA optimization finished for {name}")
-
-                                else:
-                                    temp_messages.append(msg)
-
-                            except queue.Empty:
-                                # Check if thread is still alive
-                                if not ga_thread.is_alive():
-                                    # Thread finished but no finish message received
-                                    log_queue.put("⚠️ GA thread finished unexpectedly")
-                                    break
-                                continue
-
-                        # Put back non-GA messages
-                        for msg in temp_messages:
-                            log_queue.put(msg)
-
-                        if ga_results is None:
-                            log_queue.put(f"⚠️ No GA results received for {name}")
-                            energy = None
-
-                    except Exception as ga_error:
-                        log_queue.put(f"❌ GA optimization failed for {name}: {str(ga_error)}")
-                        import traceback
-                        log_queue.put(f"Traceback: {traceback.format_exc()}")
-                        energy = None
-                        ga_results = None
-
-
-                elif calc_type == "Phonon Calculation":
-                    if optimization_params['max_steps'] > 0:
-                        log_queue.put(f"Running brief pre-phonon optimization for {name}")
-                        temp_atoms = atoms.copy()
-                        temp_atoms.calc = calculator
-                        try:
-                            temp_optimizer = LBFGS(temp_atoms, logfile=None)
-                            temp_optimizer.run(fmax=0.02, steps=50)
-                            atoms = temp_atoms
-                            energy = atoms.get_potential_energy()
-                            log_queue.put(f"Pre-phonon optimization completed. Energy: {energy:.6f} eV")
-
-                        except Exception as pre_opt_error:
-                            log_queue.put(f"⚠️ Pre-optimization failed: {str(pre_opt_error)}")
-                            energy = atoms.get_potential_energy()
-
-                    phonon_results = calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, name)
-                    if phonon_results['success']:
-                        energy = atoms.get_potential_energy()
-
-                elif calc_type == "Elastic Properties":
-                    if optimization_params['max_steps'] > 0:
-                        log_queue.put(f"Running pre-elastic optimization for {name} to ensure stability.")
-                        temp_atoms = atoms.copy()
-                        temp_atoms.calc = calculator
-                        temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt")
-                        try:
-                            temp_optimizer = LBFGS(temp_atoms, logfile=None)
-                            temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
-                            temp_optimizer.run(fmax=0.01, steps=400)
-                            atoms = temp_atoms
-                            energy = atoms.get_potential_energy()
-                            log_queue.put(
-                                f"Pre-elastic optimization finished for {name}. Final energy: {energy:.6f} eV")
-                        except Exception as pre_opt_error:
-                            log_queue.put(f"⚠️ Pre-elastic optimization failed for {name}: {str(pre_opt_error)}")
-                            log_queue.put("Continuing with elastic calculation on potentially unoptimized structure.")
-                            energy = atoms.get_potential_energy()
-
-                    elastic_results = calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, name)
-                    if elastic_results['success']:
-                        energy = atoms.get_potential_energy()
-                elif calc_type == "Molecular Dynamics":
-                    log_queue.put(f"Starting molecular dynamics simulation for {name}")
-
-                    # Run MD simulation
-                    md_results = run_md_simulation(atoms, calculator, md_params, log_queue, name)
-
-                    if md_results['success']:
-                        energy = md_results['final_energy']
-                        final_structure = md_results['final_structure']
-                        log_queue.put(f"✅ MD simulation completed for {name}")
-                    else:
-                        log_queue.put(f"❌ MD simulation failed for {name}")
-                        energy = None
-                        final_structure = structure  # Keep original structure
-                        md_results = None
-                elif calc_type == "Virtual Tensile Test":
-                    log_queue.put(f"Starting virtual tensile test for {name}")
-
-                    tensile_results = run_tensile_test(atoms, calculator, tensile_params, log_queue, name, stop_event)
-
-                    if tensile_results['success']:
-                        energy = atoms.get_potential_energy()
-                        final_structure = structure
-                        log_queue.put(f"✅ Tensile test completed for {name}")
-                    else:
-                        log_queue.put(f"❌ Tensile test failed for {name}")
-                        energy = None
-                        tensile_results = None
-
-                formation_energy = None
-                if calc_formation_energy and energy is not None:
-                    formation_energy = calculate_formation_energy(energy, structure, reference_energies)
-                    if formation_energy is not None:
-                        log_queue.put(f"✅ Formation energy for {name}: {formation_energy:.6f} eV/atom")
-                    else:
-                        log_queue.put(f"⚠️ Could not calculate formation energy for {name}")
-
-                log_queue.put({
-                    'type': 'result',
-                    'name': name,
-                    'energy': energy,
-                    'formation_energy': formation_energy,
-                    'structure': final_structure,
-                    'calc_type': calc_type,
-                    'convergence_status': convergence_status,
-                    'phonon_results': phonon_results,
-                    'elastic_results': elastic_results,
-                    'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
-                    'md_results': md_results if calc_type == "Molecular Dynamics" else None,
-                    'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None
-                })
-
-                structure_end_time = time.time()
-                structure_duration = structure_end_time - structure_start_time
-
-                log_queue.put({
-                    'type': 'structure_end_time',
-                    'structure': name,
-                    'end_time': structure_end_time,
-                    'duration': structure_duration,
-                    'calc_type': calc_type
-                })
-            except Exception as e:
-
-                structure_end_time = time.time()
-                structure_duration = structure_end_time - structure_start_time
-
-                log_queue.put({
-                    'type': 'structure_end_time',
-                    'structure': name,
-                    'end_time': structure_end_time,
-                    'duration': structure_duration,
-                    'calc_type': calc_type,
-                    'failed': True
-                })
-
-                log_queue.put(f"❌ Error calculating {name}: {str(e)}")
-                log_queue.put(f"Error type: {type(e).__name__}")
-                log_queue.put({
-                    'type': 'result',
-                    'name': name,
-                    'energy': None,
-                    'structure': structure,
-                    'calc_type': calc_type,
-                    'error': str(e)
-                })
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
 
@@ -2745,7 +3231,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put("CALCULATION_FINISHED")
 
 
-st.title("MLIP-Interactive: Compute properties with universal MLIPs")
+#st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
+st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
@@ -2965,9 +3452,10 @@ if st.session_state.calculation_running:
         progress_value = st.session_state.progress / st.session_state.total_steps
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
+
 tab1, tab_st, tab2, tab3, tab4, tab4_1,tab_vir, tab5,  = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔧 Virtual Tensile Tests", "🔬 MACE Models Info"])
+     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔧 Virtual Tensile Tests",  "🔬 MACE Models Info"])
 
 with tab_vir:
     st.header("Virtual Tensile Test Results")
@@ -3065,202 +3553,129 @@ with tab_vir:
                     )
             else:
                 st.info("No trajectory data available")
-
-
-with tab4_1:  # MD Trajectories and Analysis tab
+with tab4_1:
     st.header("MD Trajectories and Analysis")
 
-    md_results_list = [r for r in st.session_state.results if
-                       r['calc_type'] == 'Molecular Dynamics' and r.get('md_results')]
+    st.write("DEBUG INFO:")
+    st.write(f"'md_trajectories' in session_state: {'md_trajectories' in st.session_state}")
+    if 'md_trajectories' in st.session_state:
+        st.write(f"md_trajectories keys: {list(st.session_state.md_trajectories.keys())}")
+        for key, value in st.session_state.md_trajectories.items():
+            st.write(
+                f"  {key}: success={value.get('success', 'N/A')}, has_trajectory={len(value.get('trajectory_data', [])) > 0}")
+    st.write("---")
 
-    if md_results_list:
-        st.subheader("🧬 Molecular Dynamics Results")
+    if 'md_trajectories' in st.session_state and st.session_state.md_trajectories:
+        for structure_name, result in st.session_state.md_trajectories.items():
+            if result['success']:
+                st.subheader(f"Results for: {structure_name}")
 
-        # Structure selector for multiple MD results
-        if len(md_results_list) == 1:
-            selected_md = md_results_list[0]
-        else:
-            md_names = [r['name'] for r in md_results_list]
-            selected_name = st.selectbox("Select MD simulation:", md_names, key="md_selector")
-            selected_md = next(r for r in md_results_list if r['name'] == selected_name)
+                trajectory_data = result.get('trajectory_data', [])
+                md_params = result.get('md_params', {})
 
-        md_data = selected_md['md_results']
-
-        if md_data['success']:
-            st.subheader("📊 Simulation Summary")
-
-            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
-
-            with col_sum1:
-                st.metric("Total Steps", f"{md_data['total_steps_run']}")
-
-            with col_sum2:
-                st.metric("Simulation Time", f"{md_data['simulation_time_ps']:.2f} ps")
-
-            with col_sum3:
-                st.metric("Final Temperature", f"{md_data['final_temperature']:.1f} K")
-
-            with col_sum4:
-                if md_data.get('final_pressure') is not None:
-                    st.metric("Final Pressure", f"{md_data['final_pressure']:.2f} GPa")
-                else:
-                    st.metric("Final Energy", f"{md_data['final_energy']:.6f} eV")
-
-            # MD parameters summary
-            with st.expander("MD Parameters Used", expanded=False):
-                params = md_data['md_params']
-                param_data = []
-                for key, value in params.items():
-                    if key not in ['log_interval', 'traj_interval']:
-                        param_data.append({
-                            'Parameter': key.replace('_', ' ').title(),
-                            'Value': str(value)
-                        })
-
-                df_params = pd.DataFrame(param_data)
-                st.dataframe(df_params, use_container_width=True, hide_index=True)
-
-            st.subheader("🔍 MD Debugging Information")
-
-            if md_data['trajectory_data']:
-                trajectory = md_data['trajectory_data']
-
-                max_forces = [data.get('max_force', 0) for data in trajectory]
-                if any(f > 0 for f in max_forces):
-                    avg_force = np.mean(max_forces)
-                    max_force = np.max(max_forces)
-
-                    col_debug1, col_debug2, col_debug3 = st.columns(3)
-
-                    with col_debug1:
-                        st.metric("Average Max Force", f"{avg_force:.4f} eV/Å")
-
-                    with col_debug2:
-                        st.metric("Maximum Force", f"{max_force:.4f} eV/Å")
-
-                    with col_debug3:
-                        if max_force < 0.01:
-                            st.metric("Force Status", "Very Low", delta="May indicate static atoms")
-                        elif max_force > 1.0:
-                            st.metric("Force Status", "Very High", delta="Check system stability")
-                        else:
-                            st.metric("Force Status", "Normal", delta="✅")
-
-                if len(trajectory) >= 2:
-                    first_pos = trajectory[0]['positions']
-                    last_pos = trajectory[-1]['positions']
-                    displacements = np.linalg.norm(last_pos - first_pos, axis=1)
-                    max_displacement = np.max(displacements)
-                    avg_displacement = np.mean(displacements)
-
-                    col_disp1, col_disp2 = st.columns(2)
-
-                    with col_disp1:
-                        st.metric("Max Displacement", f"{max_displacement:.6f} Å")
-
-                    with col_disp2:
-                        st.metric("Avg Displacement", f"{avg_displacement:.6f} Å")
-
-                    if max_displacement < 0.001:
-                        st.warning("⚠️ Very small displacements - atoms barely moved!")
-                    elif max_displacement > 10.0:
-                        st.warning("⚠️ Very large displacements - system may be unstable!")
-                    else:
-                        st.success(f"✅ Reasonable atomic motion observed")
-            if md_data['trajectory_data'] and len(md_data['trajectory_data']) > 1:
-                st.subheader("📈 Trajectory Analysis")
-
-                fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
-                    md_data['trajectory_data'],
-                    md_data['md_params']
-                )
-
-                if fig_main:
-                    st.plotly_chart(fig_main, use_container_width=True)
-
-                if fig_pressure:
-                    st.subheader("📊 Pressure Analysis (NPT)")
-                    st.plotly_chart(fig_pressure, use_container_width=True)
-
-                if fig_conservation:
-                    st.subheader("🔋 Energy Conservation Check")
-                    st.plotly_chart(fig_conservation, use_container_width=True)
-
-                    trajectory = md_data['trajectory_data']
-                    total_energies = [data['potential_energy'] + data['kinetic_energy'] for data in trajectory]
-                    energy_drift = abs(total_energies[-1] - total_energies[0])
-                    avg_energy = np.mean(total_energies)
-                    drift_percentage = (energy_drift / abs(avg_energy)) * 100 if avg_energy != 0 else 0
-
-                    if drift_percentage < 0.1:
-                        st.success(f"✅ Excellent energy conservation (drift: {drift_percentage:.3f}%)")
-                    elif drift_percentage < 1.0:
-                        st.warning(f"⚠️ Good energy conservation (drift: {drift_percentage:.3f}%)")
-                    else:
-                        st.error(f"❌ Poor energy conservation (drift: {drift_percentage:.3f}%) - check timestep")
-
-                st.subheader("📥 Download MD Data")
-
-                col_dl1, col_dl2, col_dl3 = st.columns(3)
-
-                with col_dl1:
-                    element_symbols = md_data.get('element_symbols')
-                    xyz_content = create_md_trajectory_xyz(
-                        md_data['trajectory_data'],
-                        selected_md['name'],
-                        md_data['md_params'],
-                        element_symbols=element_symbols
+                if trajectory_data:
+                    fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
+                        trajectory_data,
+                        md_params
                     )
-                    if xyz_content:
-                        st.download_button(
-                            label="📥 Download Trajectory (XYZ)",
-                            data=xyz_content,
-                            file_name=f"md_trajectory_{selected_md['name'].replace('.', '_')}.xyz",
-                            mime="text/plain",
-                            key=f"download_md_xyz_{selected_md['name']}"
-                        )
 
-                with col_dl2:
-                    json_data = export_md_results(md_data, selected_md['name'])
-                    if json_data:
+                    if fig_main:
+                        st.plotly_chart(fig_main, use_container_width=True)
+
+                    if fig_pressure:
+                        st.subheader("Pressure Evolution")
+                        st.plotly_chart(fig_pressure, use_container_width=True)
+
+                    if fig_conservation:
+                        st.subheader("Energy Conservation")
+                        st.plotly_chart(fig_conservation, use_container_width=True)
+
+                    if md_params.get('ensemble') == 'NPT':
+                        st.subheader("NPT Cell Evolution Analysis")
+                        st.info(
+                            "📊 Tracking lattice parameters, volume, angles, and density changes during NPT simulation")
+
+                        npt_fig = create_npt_analysis_plots(trajectory_data, md_params)
+                        if npt_fig:
+                            st.plotly_chart(npt_fig, use_container_width=True)
+
+                        # NPT metrics
+                        final_data = trajectory_data[-1]
+                        initial_data = trajectory_data[0]
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric(
+                                "Volume Change",
+                                f"{final_data['volume']:.2f} Å³",
+                                f"{((final_data['volume'] - initial_data['volume']) / initial_data['volume'] * 100):.2f}%"
+                            )
+                        with col2:
+                            if 'mass' in final_data and final_data['volume'] > 0:
+                                final_density = (final_data['mass'] / final_data['volume']) * 1.66054
+                                st.metric("Final Density", f"{final_density:.3f} g/cm³")
+                        with col3:
+                            if final_data.get('pressure') is not None:
+                                st.metric("Final Pressure", f"{final_data['pressure']:.2f} GPa")
+
+                    st.markdown("---")
+
+                    st.subheader("Download Trajectory")
+
+                    element_symbols_list = None
+                    if structure_name in st.session_state.structures:
+                        try:
+                            element_symbols_list = [site.specie.symbol for site in
+                                                    st.session_state.structures[structure_name]]
+                        except AttributeError:
+                            try:
+                                element_symbols_list = st.session_state.structures[
+                                    structure_name].get_chemical_symbols()
+                            except:
+                                pass
+
+                    xyz_content = create_md_trajectory_xyz(
+                        trajectory_data,
+                        structure_name,
+                        md_params,
+                        element_symbols=element_symbols_list
+                    )
+
+                    st.download_button(
+                        label="📥 Download MD Trajectory (XYZ)",
+                        data=xyz_content,
+                        file_name=f"md_trajectory_{structure_name.replace('.', '_')}.xyz",
+                        mime="text/plain",
+                        help="Extended XYZ format with cell parameters, velocities, and energies",
+                        type='primary'
+                    )
+
+                    json_export = export_md_results(result, structure_name)
+                    if json_export:
                         st.download_button(
-                            label="📊 Download Analysis (JSON)",
-                            data=json_data,
-                            file_name=f"md_analysis_{selected_md['name'].replace('.', '_')}.json",
+                            label="📊 Download MD Summary (JSON)",
+                            data=json_export,
+                            file_name=f"md_summary_{structure_name.replace('.', '_')}.json",
                             mime="application/json",
-                            key=f"download_md_json_{selected_md['name']}"
+                            help="JSON file with MD parameters and statistics"
                         )
 
-                with col_dl3:
-                    if 'final_structure' in md_data:
-                        final_poscar = create_wrapped_poscar_content(md_data['final_structure'])
-                        st.download_button(
-                            label="📁 Download Final Structure",
-                            data=final_poscar,
-                            file_name=f"md_final_{selected_md['name'].replace('.', '_')}.vasp",
-                            mime="text/plain",
-                            key=f"download_md_final_{selected_md['name']}"
-                        )
-        else:
-            st.error(f"MD simulation failed: {md_data.get('error', 'Unknown error')}")
+                else:
+                    st.warning(f"No trajectory data available for {structure_name}")
+
+    elif st.session_state.calculation_running:
+        st.info("🔄 MD simulation in progress... Results will appear here when complete.")
 
     else:
-        st.info("No MD simulation results found. Results will appear here after MD calculations complete.")
-
+        st.info("Run an MD simulation to see trajectory analysis and results here.")
         st.markdown("""
-        **What you'll see here after MD calculations:**
-
-        📊 **Simulation Summary**: Key metrics like total steps, simulation time, final temperature
-
-        📈 **Trajectory Plots**: Energy, temperature, pressure, and volume evolution over time
-
-        📥 **Download Options**: 
-        - XYZ trajectory files for visualization
-        - JSON analysis data for further processing
-        - Final equilibrated structure
-
-        🔍 **Analysis Tools**: Statistical analysis of MD properties and equilibration
+        **Available MD Features:**
+        - Energy, temperature, and pressure evolution plots
+        - **NPT-specific:** Cell parameter evolution, volume changes, density tracking
+        - Trajectory download in extended XYZ format
+        - Summary statistics export
         """)
+
 with tab5:
     display_mace_models_info()
     st.markdown("---")
@@ -3346,8 +3761,8 @@ with tab1:
                 st.rerun()
 
     else:
-        st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures)")
-        st.info("📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
+        st.success(f"🔒 Structures Locked ({len(st.session_state.structures)} structures). "
+                   f"📌 Structures are locked to avoid refreshing during the calculation run. Use 'Unlock' to modify.")
 
         with st.expander("📋 Locked Structures", expanded=False):
             for i, (name, structure) in enumerate(st.session_state.structures.items(), 1):
@@ -3375,6 +3790,27 @@ with tab1:
     st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
                            type="primary")
     if st.session_state.structures:
+        pass
+    else:
+        st.markdown(
+            """
+            <div style="
+              background-color: #e8f4fd;
+              border-left: 6px solid #2196f3;
+              padding: 15px;
+              border-radius: 8px;
+              font-family: Arial, sans-serif;
+              color: #0d47a1;
+              max-width: 800px;
+              margin: 10px 0;
+            ">
+              <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    if True:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
 
         if show_preview:
@@ -3427,7 +3863,7 @@ with tab1:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
-                 "GA Structure Optimization", "Molecular Dynamics", "Virtual Tensile Test"],
+                 "GA Structure Optimization", "Molecular Dynamics", "Virtual Tensile Test",  "NEB Calculation"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -3507,17 +3943,182 @@ with tab1:
         if calc_type == "Molecular Dynamics":
             st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
             md_params = setup_md_parameters_ui()
+            st.divider()
+            st.subheader("Generate Standalone MD Script")
+
+            if 'generated_md_script' not in st.session_state:
+                st.session_state.generated_md_script = None
+
+            if st.button("📝 Generate MD Python Script (using current settings)", key="generate_md_script_button",
+                         type="secondary"):
+                try:
+                    current_selected_model = selected_model
+                    current_model_size = model_size
+                    current_device = device
+                    current_dtype = dtype
+                    current_thread_count = st.session_state.thread_count
+
+                    generated_script = generate_md_python_script(
+                        md_params,
+                        current_selected_model,
+                        current_model_size,
+                        current_device,
+                        current_dtype,
+                        current_thread_count
+                    )
+                    st.session_state.generated_md_script = generated_script
+                    st.success("✅ MD script generated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate script: {str(e)}")
+                    st.session_state.generated_md_script = None
+
+            if st.session_state.generated_md_script:
+                with st.expander("🐍 View Generated MD Script", expanded=True):
+                    st.code(st.session_state.generated_md_script, language='python')
+
+                    st.download_button(
+                        label="💾 Download MD Script (.py)",
+                        data=st.session_state.generated_md_script,
+                        file_name="run_md_simulation.py",
+                        mime="text/x-python",
+                        key="download_generated_md_script",
+                        type='primary'
+                    )
+                st.info("""
+                        **Instructions:**
+                        1. Save the script (e.g., `run_md_simulation.py`).
+                        2. Place your structure files (`.cif`, `.vasp`, `POSCAR`) in the same directory.
+                        3. Create a subdirectory named `md_results`.
+                        4. Ensure necessary libraries are installed (`pip install ase mace-torch ...`).
+                        5. Run the script from your terminal: `python run_md_simulation.py`
+                        """)
+
         if calc_type == "Virtual Tensile Test":
             st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
             tensile_params = setup_tensile_test_ui(
                 default_settings=st.session_state.default_settings,
                 save_settings_function=save_default_settings
             )
+            st.subheader("Generate Standalone MD Script")
+
+            st.markdown("---")
+            st.subheader("Generate Standalone Tensile Test Script")
+
+            if 'generated_tensile_script' not in st.session_state:
+                st.session_state.generated_tensile_script = None
+
+
+            from helpers.generate_tensile_test_python_script import generate_tensile_test_python_script
+            if st.button("📝 Generate Tensile Test Python Script (using current settings)",
+                         key="generate_tensile_script_button",
+                         type="secondary"):
+                try:
+                    current_selected_model = selected_model
+                    current_model_size = model_size
+                    current_device = device
+                    current_dtype = dtype
+                    current_thread_count = st.session_state.thread_count
+
+                    # Call the tensile script generation function, passing tensile_params
+                    generated_script = generate_tensile_test_python_script(
+                        tensile_params,
+                        current_selected_model,
+                        current_model_size,
+                        current_device,
+                        current_dtype,
+                        current_thread_count
+                    )
+                    st.session_state.generated_tensile_script = generated_script
+                    st.success("✅ Tensile test script generated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate tensile script: {str(e)}")
+                    st.session_state.generated_tensile_script = None
+
+            if st.session_state.generated_tensile_script:
+                with st.expander("🐍 View Generated Tensile Test Script", expanded=True):
+                    st.code(st.session_state.generated_tensile_script, language='python')
+
+
+                    st.download_button(
+                        label="💾 Download Tensile Script (.py)",
+                        data=st.session_state.generated_tensile_script,
+                        file_name="run_tensile_test.py",
+                        mime="text/x-python",
+                        key="download_generated_tensile_script",
+                        type='primary'
+                    )
+                st.info("""
+                        **Instructions (Tensile Test):**
+                        1. Save the script (e.g., `run_tensile_test.py`).
+                        2. Place your structure file (`.cif`, `.vasp`, `POSCAR`) in the same directory. **(Usually only one structure per test)**.
+                        3. Ensure necessary libraries are installed (`pip install ase pandas matplotlib ...`).
+                        4. Run the script from your terminal: `python run_tensile_test.py`
+                        5. Results (`_tensile_data.csv`, plots `.png`) will be saved in the `md_results` subdirectory.
+                        """)
+        if calc_type == "NEB Calculation":
+            st.subheader("NEB: Initial and Final States")
+
+            st.info(
+                "Upload ONE initial structure and ONE or MORE final structures. NEB will compute the minimum energy path for each initial→final pair.")
+
+            if 'neb_initial_structure' not in st.session_state:
+                st.session_state.neb_initial_structure = None
+            if 'neb_final_structures' not in st.session_state:
+                st.session_state.neb_final_structures = {}
+
+            col_init, col_final = st.columns(2)
+
+            with col_init:
+                st.write("**Initial Structure**")
+                initial_file = st.file_uploader(
+                    "Upload initial structure",
+                    type=['vasp', 'cif', 'poscar', 'xyz'],
+                    key="neb_initial_uploader"
+                )
+
+                if initial_file:
+                    try:
+                        initial_structure = load_structure(initial_file)
+                        st.session_state.neb_initial_structure = initial_structure
+                        st.success(
+                            f"Initial: {initial_structure.composition.reduced_formula} ({len(initial_structure)} atoms)")
+                    except Exception as e:
+                        st.error(f"Error loading initial structure: {e}")
+
+            with col_final:
+                st.write("**Final Structure(s)**")
+                final_files = st.file_uploader(
+                    "Upload final structure(s)",
+                    type=['vasp', 'cif', 'poscar', 'xyz'],
+                    accept_multiple_files=True,
+                    key="neb_final_uploader"
+                )
+
+                if final_files:
+                    new_finals = {}
+                    for final_file in final_files:
+                        try:
+                            final_structure = load_structure(final_file)
+                            new_finals[final_file.name] = final_structure
+                        except Exception as e:
+                            st.error(f"Error loading {final_file.name}: {e}")
+
+                    if new_finals:
+                        st.session_state.neb_final_structures = new_finals
+                        st.success(f"{len(new_finals)} final structure(s) loaded")
+                        for name, struct in new_finals.items():
+                            st.write(f"  • {name}: {struct.composition.reduced_formula} ({len(struct)} atoms)")
+
+            if st.session_state.neb_initial_structure and st.session_state.neb_final_structures:
+                st.success(f"Ready to compute {len(st.session_state.neb_final_structures)} NEB path(s)")
+
+                neb_params = setup_neb_parameters_ui()
         optimization_params = {
             'optimizer': "BFGS",
             'fmax': 0.05,
             'ediff': 1e-4,
-            'max_steps': 200
+            'max_steps': 200,
+
         }
         phonon_params = {
             'supercell_size': (2, 2, 2),
@@ -3833,7 +4434,7 @@ with tab1:
             #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
             #                                            format="%.3f")
             elastic_params['density'] = None
-
+            save_trajectory= True
 
 
 
@@ -3841,6 +4442,27 @@ with tab1:
         st.info("Upload structure files to begin")
 with tab_st:
     if st.session_state.structures_locked:
+        pass
+    else:
+        st.markdown(
+                    """
+                    <div style="
+                      background-color: #e8f4fd;
+                      border-left: 6px solid #2196f3;
+                      padding: 15px;
+                      border-radius: 8px;
+                      font-family: Arial, sans-serif;
+                      color: #0d47a1;
+                      max-width: 800px;
+                      margin: 10px 0;
+                    ">
+                      <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+    if True:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
         st.info(
@@ -3884,9 +4506,19 @@ with tab_st:
                 type="primary",
                 disabled=not all_compatible or
                          st.session_state.calculation_running or
-                         len(st.session_state.structures) == 0 or
-                         not st.session_state.structures_locked,
+                         (calc_type != "NEB Calculation" and (
+                                 len(st.session_state.structures) == 0 or not st.session_state.structures_locked)) or
+                         (calc_type == "NEB Calculation" and (
+                                 not st.session_state.get('neb_initial_structure') or
+                                 not st.session_state.get('neb_final_structures'))),
             )
+
+            # Add debug info right after the button:
+            if calc_type == "NEB Calculation":
+                st.write("**NEB Debug Info:**")
+                st.write(
+                    f"Initial structure: {'✅ Loaded' if st.session_state.get('neb_initial_structure') else '❌ Missing'}")
+                st.write(f"Final structures: {len(st.session_state.get('neb_final_structures', {}))} loaded")
 
         if len(st.session_state.structures) > 0 and not st.session_state.structures_locked:
             st.warning("🔒 Please lock your structures before starting calculation to prevent accidental changes.")
@@ -3900,7 +4532,7 @@ with tab_st:
 
         with col3:
             but_local_script = st.button(
-                "📂 Generate Python Script (Will use local POSCAR files in the same folder where the script will be placed)",
+                "📂 Generate Python Script (Will use POSCAR files in the same folder where the script will be placed)",
                 type="secondary",
                 disabled=False,
             )
@@ -4059,7 +4691,6 @@ with tab_st:
                         - `phonon_data_*.json` - Phonon results (if applicable)
                         - `elastic_data_*.json` - Elastic properties (if applicable)
                         """)
-
         if start_calc:
             st.session_state.calculation_running = True
             st.session_state.log_messages = []
@@ -4083,11 +4714,23 @@ with tab_st:
             substitutions = st.session_state.get('substitutions', {})
             ga_params = st.session_state.get('ga_params', {})
 
+            if calc_type == "NEB Calculation":
+                structures_to_pass = {}
+                neb_initial_to_pass = st.session_state.get('neb_initial_structure')
+                neb_finals_to_pass = st.session_state.get('neb_final_structures', {})
+
+                st.write(
+                    f"DEBUG: Passing to thread - initial={neb_initial_to_pass is not None}, finals={len(neb_finals_to_pass)}")
+            else:
+                structures_to_pass = st.session_state.structures
+                neb_initial_to_pass = None
+                neb_finals_to_pass = None
+
             thread = threading.Thread(
                 target=run_mace_calculation,
-                args=(st.session_state.structures, calc_type, model_size, device, optimization_params,
+                args=(structures_to_pass, calc_type, model_size, device, optimization_params,
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
-                      st.session_state.stop_event, substitutions, ga_params)
+                      st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass, neb_finals_to_pass)
             )
             thread.start()
             st.rerun()
@@ -4257,7 +4900,7 @@ with tab2:
                 if message.get('md_results'):
                     md_data = message['md_results']
                     if md_data['success'] and md_data.get('trajectory_data'):
-                        st.session_state.md_trajectories[message['name']] = md_data['trajectory_data']
+                        st.session_state.md_trajectories[message['name']] = md_data
                 st.session_state.results.append(message)
                 if st.session_state.results_backup_file:
                     append_to_backup_file(message, st.session_state.results_backup_file)
@@ -4571,7 +5214,36 @@ with tab2:
                         time_display = f"{remaining / 3600:.1f}h"
                     st.metric("Est. Remaining", time_display)
     if st.session_state.log_messages:
-        recent_messages = st.session_state.log_messages[-20:]
+        recent_messages = st.session_state.log_messages[-40:]
+        st.markdown("""
+            <style>
+            /* Make text area scrollbar more visible */
+            textarea {
+                scrollbar-width: auto !important;  /* Firefox */
+                scrollbar-color: #888 #f1f1f1 !important;  /* Firefox */
+            }
+
+            /* Webkit browsers (Chrome, Safari, Edge) */
+            textarea::-webkit-scrollbar {
+                width: 12px !important;
+                height: 12px !important;
+            }
+
+            textarea::-webkit-scrollbar-track {
+                background: #f1f1f1 !important;
+                border-radius: 10px !important;
+            }
+
+            textarea::-webkit-scrollbar-thumb {
+                background: #888 !important;
+                border-radius: 10px !important;
+            }
+
+            textarea::-webkit-scrollbar-thumb:hover {
+                background: #555 !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
         st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
 
     if has_new_messages and st.session_state.calculation_running:
@@ -4597,16 +5269,106 @@ def get_atomic_concentrations_from_structure(structure):
 with tab3:
     st.header("Results & Analysis")
     if st.session_state.results:
-        results_tab1, results_tab2, results_tab3, results_tab4, results_tab6, results_tab5, = st.tabs(["📊 Energies",
+        results_tab1, results_tab2, results_tab3, results_tab4, results_tab6, results_NEB, results_tab5, = st.tabs(["📊 Energies",
                                                                                                        "🔧 Geometry Optimization Details",
                                                                                                        "Elastic properties",
                                                                                                        "Phonons",
+
                                                                                                        "🧬 GA Optimization",
+                                                                                                       "NEB Calculations",
                                                                                                        "⏱️ Computation times"])
     else:
         st.info("Please start some calculation first.")
 
     if st.session_state.results:
+
+        with results_NEB:
+            st.header("NEB Calculation Results")
+
+            neb_results_list = [r for r in st.session_state.results if
+                                r['calc_type'] == 'NEB Calculation' and r.get('neb_results')]
+
+            if neb_results_list:
+                st.subheader("Diffusion Barrier Analysis")
+
+                all_neb_results = {r['name']: r['neb_results'] for r in neb_results_list
+                                   if r['neb_results']['success']}
+
+                coord_type = st.radio(
+                    "Reaction coordinate:",
+                    ["Image Index", "Structural Distance"],
+                    horizontal=True,
+                    help="Display as image numbers or cumulative distance along the path"
+                )
+
+                use_distance = (coord_type == "Structural Distance")
+
+                if len(all_neb_results) > 1:
+                    plot_option = st.radio(
+                        "Display mode:",
+                        ["Combined Plot", "Individual Plots"],
+                        horizontal=True,
+                        key="neb_plot_option"
+                    )
+
+                    if plot_option == "Combined Plot":
+                        fig_combined = create_combined_neb_plot(all_neb_results, use_distance=use_distance)
+                        st.plotly_chart(fig_combined, use_container_width=True)
+                    else:
+                        for name, neb_result in all_neb_results.items():
+                            with st.expander(f"{name}", expanded=True):
+                                display_neb_results(neb_result, name, use_distance=use_distance)
+                else:
+                    for result in neb_results_list:
+                        if result['neb_results']['success']:
+                            display_neb_results(result['neb_results'], result['name'], use_distance=use_distance)
+
+                st.subheader("Download Options")
+
+                col_download_all = st.columns(1)[0]
+
+                for result in neb_results_list:
+                    if result['neb_results']['success']:
+                        with st.expander(f"{result['name']}"):
+                            col_d1, col_d2 = st.columns(2)
+
+                            with col_d1:
+                                xyz_content = create_neb_trajectory_xyz(
+                                    result['neb_results']['trajectory_data'],
+                                    result['name']
+                                )
+                                st.download_button(
+                                    label="Download NEB Trajectory (XYZ)",
+                                    data=xyz_content,
+                                    file_name=f"neb_{result['name'].replace('.', '_')}.xyz",
+                                    mime="text/plain",
+                                    key=f"neb_xyz_{result['name']}",
+                                    type='primary'
+                                )
+
+                            with col_d2:
+                                json_content = export_neb_results(result['neb_results'], result['name'])
+                                st.download_button(
+                                    label="Download NEB Data (JSON)",
+                                    data=json_content,
+                                    file_name=f"neb_data_{result['name'].replace('.', '_')}.json",
+                                    mime="application/json",
+                                    key=f"neb_json_{result['name']}",
+                                    type='primary'
+                                )
+            else:
+                st.info("No NEB results available. Results will appear after NEB calculations complete.")
+
+                st.markdown("""
+                **What you'll see here after NEB calculations:**
+
+                - Energy profiles showing the minimum energy path
+                - Forward and reverse diffusion barriers (in eV and kJ/mol)
+                - Transition state location
+                - Downloadable trajectory files in XYZ format
+                - Detailed energy data for each image
+                - Combined plots for multiple NEB calculations
+                """)
 
         with results_tab6:
             ga_results_list = [r for r in st.session_state.results if
@@ -5156,7 +5918,165 @@ with tab3:
                 )
 
                 optimized_structures = [r for r in successful_results if r['calc_type'] == 'Geometry Optimization']
+            orb_confidence_results = [r for r in st.session_state.results if
+                                      r.get('orb_confidence') and r['orb_confidence'].get('success')]
 
+            if orb_confidence_results:
+                st.subheader("🎯 ORB-v3 Confidence Analysis")
+
+                if len(orb_confidence_results) == 1:
+                    selected_conf = orb_confidence_results[0]
+                else:
+                    conf_names = [r['name'] for r in orb_confidence_results]
+                    selected_name = st.selectbox("Select structure for confidence analysis:",
+                                                 conf_names, key="conf_selector")
+                    selected_conf = next(r for r in orb_confidence_results if r['name'] == selected_name)
+
+                conf_data = selected_conf['orb_confidence']
+
+                col_conf1, col_conf2, col_conf3, col_conf4 = st.columns(4)
+
+                with col_conf1:
+                    st.metric("Confidence Score", f"{conf_data['confidence_score']:.4f}")
+                with col_conf2:
+                    st.metric("Mean Predicted MAE", f"{conf_data['mean_predicted_mae']:.4f} Å")
+                with col_conf3:
+                    st.metric("Max Predicted MAE", f"{conf_data['max_predicted_mae']:.4f} Å")
+                with col_conf4:
+                    n_uncertain = len(conf_data['high_uncertainty_atoms'])
+                    total_atoms = len(conf_data['per_atom_predicted_mae'])
+                    st.metric("High Uncertainty Atoms", f"{n_uncertain}/{total_atoms}")
+
+
+                fig_uncertainty = go.Figure()
+                fig_uncertainty.add_trace(go.Bar(
+                    y=conf_data['per_atom_predicted_mae'],
+                    marker_color=['red' if mae > 0.1 else 'orange' if mae > 0.05 else 'green'
+                                  for mae in conf_data['per_atom_predicted_mae']],
+                    marker_line_color='black',
+                    marker_line_width=1.5,
+                    name='Predicted Force MAE',
+                    hovertemplate='<b>Atom %{x}</b><br>Predicted MAE: %{y:.4f} Å<extra></extra>'
+                ))
+
+                fig_uncertainty.add_hline(
+                    y=0.1,
+                    line_dash="dash",
+                    line_color="red",
+                    line_width=2,
+                    annotation_text="High Uncertainty Threshold (0.1 Å)",
+                    annotation_font_size=16
+                )
+
+                fig_uncertainty.update_layout(
+                    title=dict(text="Per-Atom Predicted Force Error (MAE)", font=dict(size=26)),  # INCREASED from 24
+                    xaxis_title="Atom Index",
+                    yaxis_title="Predicted MAE (Å)",
+                    height=600,
+                    font=dict(size=20),
+                    xaxis=dict(
+                        tickfont=dict(size=18),
+                        title_font=dict(size=22)
+                    ),
+                    yaxis=dict(
+                        tickfont=dict(size=18),
+                        title_font=dict(size=22)
+                    ),
+                    hoverlabel=dict(
+                        bgcolor="white",
+                        font_size=20,
+                        font_family="Arial",
+                        bordercolor="black"
+                    )
+                )
+                st.plotly_chart(fig_uncertainty, use_container_width=True)
+
+                confidence = conf_data['confidence_score']
+                if confidence > 0.9:
+                    st.success("✅ High confidence - predictions are very reliable")
+                elif confidence > 0.7:
+                    st.info("ℹ️ Good confidence - predictions generally reliable")
+                elif confidence > 0.5:
+                    st.warning("⚠️ Moderate confidence - use with caution")
+                else:
+                    st.error("❌ Low confidence - predictions may be unreliable")
+
+                if conf_data['high_uncertainty_atoms']:
+                    with st.expander(f"⚠️ High Uncertainty Atoms ({len(conf_data['high_uncertainty_atoms'])} atoms)"):
+                        uncertain_data = []
+                        for idx in conf_data['high_uncertainty_atoms']:
+                            uncertain_data.append({
+                                'Atom Index': idx,
+                                'Predicted MAE (Å)': f"{conf_data['per_atom_predicted_mae'][idx]:.4f}"
+                            })
+                        df_uncertain = pd.DataFrame(uncertain_data)
+                        st.dataframe(df_uncertain, use_container_width=True, hide_index=True)
+                st.markdown("---")
+
+                with st.expander("📚 Understanding ORB-v3 Confidence Predictions", expanded=False):
+                    st.markdown("""
+                            ### What is the Confidence Head?
+
+                            ORB-v3 models include a **trained confidence classifier** that predicts how accurate the force 
+                            predictions are likely to be. This classifier was trained to predict the **Mean Absolute Error (MAE)** 
+                            between predicted and true forces on the training data.
+
+                            ### How It Works
+
+                            - The confidence head outputs **50 bins** representing force error magnitudes from **0 to 0.4 Å**
+                            - Each atom gets a predicted MAE bin based on how uncertain the model is about that atom's forces
+                            - The classifier learned these patterns during training by comparing its force predictions to DFT reference data
+
+                            ### What is MAE?
+
+                            **Mean Absolute Error (MAE)** measures the average magnitude of errors in predictions:
+                            - It calculates the absolute difference between predicted and actual force values
+                            - Lower MAE = more accurate predictions
+                            - MAE is expressed in the same units as forces (eV/Å)
+
+                            **Example:** If the predicted force on an atom is 0.15 eV/Å but the true force is 0.20 eV/Å, 
+                            the absolute error is 0.05 eV/Å.
+
+                            ### Interpretation Guidelines
+
+                            The **Predicted MAE per atom** tells you how much error to expect in the force predictions:
+
+                            | Predicted MAE | Confidence Level | Interpretation |
+                            |---------------|------------------|----------------|
+                            | **< 0.05 Å** | Very High (Green) | Forces are highly reliable, suitable for all applications |
+                            | **0.05 - 0.1 Å** | Good (Yellow) | Forces are generally reliable for most calculations |
+                            | **0.1 - 0.2 Å** | Moderate (Orange) | Use with caution, verify important results |
+                            | **> 0.2 Å** | Low (Red) | High uncertainty, predictions may be unreliable |
+
+                            ### Confidence Score
+
+                            The **overall confidence score (0-1)** is derived from the mean predicted MAE:
+                            - **> 0.9**: Very high confidence - predictions are trustworthy
+                            - **0.7 - 0.9**: Good confidence - predictions generally reliable
+                            - **0.5 - 0.7**: Moderate confidence - consider validation
+                            - **< 0.5**: Low confidence - results should be verified
+
+                            ### When to Pay Attention
+
+                            High uncertainty (high predicted MAE) often occurs when:
+                            - Atoms are in unusual chemical environments
+                            - The structure is outside the model's training distribution
+                            - There are strong electronic effects or complex bonding
+                            - The system has defects, surfaces, or interfaces
+
+                            ### Practical Use
+
+                            Use confidence predictions to:
+                            - **Identify problematic atoms** that may need special attention
+                            - **Validate results** by checking high-uncertainty regions with higher-level calculations
+                            - **Guide active learning** by selecting uncertain structures for additional DFT calculations
+                            - **Filter predictions** by rejecting low-confidence results in high-stakes applications
+
+                            ### Reference
+
+                            For more details, see the [ORB models documentation](https://github.com/orbital-materials/orb-models) 
+                            and the paper: *"Orb-v3: atomistic simulation at scale"* (arXiv:2504.06231)
+                            """)
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
         elastic_results = [r for r in st.session_state.results if
@@ -6551,6 +7471,10 @@ with tab3:
             else:
                 st.info(
                     "No completed calculations of elastic properties found. Results will appear here after this type of calculation is finish.")
+
+
+
+
         with results_tab2:
             with results_tab2:
                 st.subheader("Geometry Optimization Details")
@@ -7599,6 +8523,7 @@ with tab4:
         - Bulk download option for multiple structures
         - Compatible with visualization software (OVITO, VMD, ASE)
         """)
+
 
 if st.session_state.calculation_running:
     time.sleep(2)
