@@ -4,7 +4,8 @@ from collections import deque
 import copy  # Import copy
 
 
-def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count):
+def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
+                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -41,7 +42,7 @@ from collections import deque
 import io
 
 try:
-    from nequix.ase_calculator import NequixCalculator
+    from nequix.calculator import NequixCalculator
 except ImportError:
     print("Warning: Nequix (from atomicarchitects) not found. Will fail if Nequix model is selected.")
 try:
@@ -67,7 +68,6 @@ os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 torch.set_num_threads({thread_count})
 """
 
-
     if add_fairchem_imports:
         imports_str += """
 try:
@@ -76,8 +76,6 @@ except ImportError:
     print("Error: fairchem-core not found. Please install with: pip install fairchem-core")
     exit()
 """
-
-
 
     if "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
@@ -125,29 +123,48 @@ except Exception as e:
     elif "CHGNet" in actual_selected_model:
         imports_str += """
 try:
+    actual_model_size_str = "{actual_model_size}"
     from chgnet.model.model import CHGNet
     from chgnet.model.dynamics import CHGNetCalculator
+    chgnet_version = actual_model_size_str.split("-")[1]
 except ImportError:
     print("Error: CHGNet not found. Please install with: pip install chgnet")
+    chgnet_version = actual_model_size_str
     exit()
 """
         calculator_setup_str = f"""
 print("Setting up CHGNet calculator...")
+
+# Parse version from model size string (e.g., "CHGNet-0.3.0" -> "0.3.0")
+actual_model_size_str = "{actual_model_size}"
+try:
+    chgnet_version = actual_model_size_str.split("-")[1]
+except IndexError:
+    print(f"  Warning: Could not parse CHGNet version from '{{actual_model_size_str}}'. Using full string.")
+    chgnet_version = actual_model_size_str
+
+print(f"  CHGNet version: {{chgnet_version}}")
+print(f"  Device: {device}")
+print("  Note: CHGNet requires float32 precision")
+
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    chgnet = CHGNet.load(model_name="{actual_model_size}", use_device="{device}", verbose=False) 
+    # Use the parsed 'chgnet_version' variable here
+    chgnet = CHGNet.load(model_name=chgnet_version, use_device="{device}", verbose=False) 
     calculator = CHGNetCalculator(model=chgnet, use_device="{device}")
     torch.set_default_dtype(original_dtype)
-    print(f"✅ CHGNet {actual_model_size} initialized on {device}")
+    # Use the 'chgnet_version' variable in the success message
+    print(f"✅ CHGNet {{chgnet_version}} initialized on {device}")
 except Exception as e:
     print(f"❌ CHGNet initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        chgnet = CHGNet.load(model_name="{actual_model_size}", use_device="cpu", verbose=False)
+        # Also use 'chgnet_version' in the fallback
+        chgnet = CHGNet.load(model_name=chgnet_version, use_device="cpu", verbose=False)
         calculator = CHGNetCalculator(model=chgnet, use_device="cpu")
         torch.set_default_dtype(original_dtype)
-        print("✅ CHGNet initialized on CPU (fallback)")
+        print(f"✅ CHGNet {{chgnet_version}} initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ CHGNet CPU fallback failed: {{cpu_e}}")
         exit()
@@ -181,6 +198,7 @@ except Exception as e:
         print(f"❌ MACE-OFF CPU fallback failed: {{cpu_e}}")
         exit()
 """
+
     elif "MACE" in actual_selected_model:  # Catch MACE after MACE-OFF
         imports_str += """
 try:
@@ -189,11 +207,112 @@ except ImportError:
     print("Error: MACE not found. Please install with: pip install mace-torch")
     exit()
 """
-        calculator_setup_str = f"""
+        # Check if this is a URL-based foundation model
+        is_url_model = actual_model_size.startswith("http://") or actual_model_size.startswith("https://")
+
+        if is_url_model:
+            # URL-based foundation model with download support
+            calculator_setup_str = f"""
+print("Setting up MACE foundation model from URL...")
+
+def download_mace_model(model_url):
+    \"\"\"Download MACE model from URL and cache it.\"\"\"
+    from pathlib import Path
+    import urllib.request
+
+    model_filename = model_url.split("/")[-1]
+    cache_dir = Path.home() / ".cache" / "mace_foundation_models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    model_path = cache_dir / model_filename
+
+    if model_path.exists():
+        print(f"✅ Using cached model: {{model_filename}}")
+        return str(model_path)
+
+    print(f"📥 Downloading {{model_filename}}... (this may take a few minutes)")
+    try:
+        urllib.request.urlretrieve(model_url, str(model_path))
+        print(f"✅ Model downloaded and cached")
+        return str(model_path)
+    except Exception as e:
+        print(f"❌ Download failed: {{e}}")
+        if model_path.exists():
+            model_path.unlink()
+        raise
+
+try:
+    model_url = "{actual_model_size}"
+    local_model_path = download_mace_model(model_url)
+    print(f"📁 Model path: {{local_model_path}}")
+
+    print(f"⚙️  Device: {device}")
+    print(f"⚙️  Dtype: {dtype}")"""
+
+            if mace_head:
+                calculator_setup_str += f"""
+    print(f"🎯 Head: {mace_head}")"""
+
+            if mace_dispersion:
+                calculator_setup_str += f"""
+    print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
+
+            # Build calculator arguments
+            calc_args = [
+                f'model=local_model_path',
+                f'device="{device}"',
+                f'default_dtype="{dtype}"'
+            ]
+
+            if mace_head:
+                calc_args.append(f'head="{mace_head}"')
+
+            if mace_dispersion:
+                calc_args.append(f'dispersion=True')
+                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+            calc_args_str = ',\n        '.join(calc_args)
+
+            calculator_setup_str += f"""
+
+    calculator = mace_mp(
+        {calc_args_str}
+    )
+    print(f"✅ MACE foundation model initialized on {device}")
+
+except Exception as e:
+    print(f"❌ MACE initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = mace_mp(
+            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+        )
+        print("✅ MACE initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
+        else:
+            # Standard MACE-MP model
+            calc_args = [
+                f'model="{actual_model_size}"',
+                f'device="{device}"',
+                f'default_dtype="{dtype}"'
+            ]
+
+            if mace_dispersion:
+                calc_args.append(f'dispersion=True')
+                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+            else:
+                calc_args.append(f'dispersion=False')
+
+            calc_args_str = ',\n        '.join(calc_args)
+
+            calculator_setup_str = f"""
 print("Setting up MACE calculator...")
 try:
     calculator = mace_mp(
-        model="{actual_model_size}", dispersion=False, default_dtype="{dtype}", device="{device}"
+        {calc_args_str}
     )
     print(f"✅ MACE {actual_model_size} initialized on {device}")
 except Exception as e:
@@ -201,16 +320,22 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            model="{actual_model_size}", dispersion=False, default_dtype="{dtype}", device="cpu"
+            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
         )
         print("✅ MACE initialized on CPU (fallback)")
     except Exception as cpu_e:
-        # Corrected error message if needed
-        print(f"❌ MACE CPU fallback failed: {{cpu_e}}") 
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
         exit()
 """
+
     elif "SevenNet" in actual_selected_model:
         imports_str += """
+try:
+    torch.serialization.add_safe_globals([slice])
+except AttributeError:
+    print("  ... running on older torch version, add_safe_globals not needed.")
+    pass
+
 try:
     from sevenn.calculator import SevenNetCalculator
 except ImportError:
@@ -219,12 +344,6 @@ except ImportError:
 """
         calculator_setup_str = f"""
 print("Setting up SevenNet calculator...")
-print("  Applying torch.load workaround for SevenNet (allowlisting 'slice')...")
-try:
-    torch.serialization.add_safe_globals([slice])
-except AttributeError:
-    print("  ... running on older torch version, add_safe_globals not needed.")
-    pass
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
@@ -277,8 +396,8 @@ except Exception as e:
 print("Setting up Nequix calculator...")
 try:
     calculator = NequixCalculator(
-        model_path="{actual_model_size}",
-        device="{device}"
+       "{actual_model_size}",
+        #device="{device}"
     )
     print(f"✅ Nequix {actual_model_size} initialized on {device}")
 except NameError:
@@ -289,7 +408,7 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = NequixCalculator(
-            model_path="{actual_model_size}",
+            "{actual_model_size}",
             device="cpu"
         )
         print("✅ Nequix initialized on CPU (fallback)")
@@ -577,14 +696,18 @@ class CSVLogger:
             self.file = None
             print(f"  Closed CSV log file: {self.filename}")
 """
-
+    mace_header_lines = ""
+    if "MACE" in actual_selected_model and mace_head:
+        mace_header_lines += f"\nMACE Head: {mace_head}"
+    if "MACE" in actual_selected_model and mace_dispersion:
+        mace_header_lines += f"\nMACE Dispersion: D3-{mace_dispersion_xc}"
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
 Generated by the uMLIP-Interactive Streamlit app.
 
 --- SETTINGS ---
-MLIP Model: {actual_selected_model}
+MLIP Model: {actual_selected_model}{mace_header_lines}
 Model Key: {actual_model_size}
 Device: {device}
 Precision: {dtype}
@@ -815,8 +938,8 @@ def run_md_simulation(atoms, basename, calculator):
     md.attach(console_logger, interval=1)
     # -- CLeaning the GPU RAM during the run
     def clear_torch_cache():
-    	if torch.cuda.is_available():
-        	torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     md.attach(clear_torch_cache, interval=10) 
     # -- End of GPU cleaning
     xyz_writer = XYZTrajectoryWriter(atoms, xyz_trajectory_file) 
@@ -1046,7 +1169,7 @@ def main():
         exit()
 
     print("\\nSearching for structure files (*.cif, *.vasp, POSCAR*)...")
-    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*")
+    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*") + glob.glob("*.poscar") 
 
     if not structure_files:
         print("No structure files found. Please place .cif or .vasp/POSCAR files in this directory.")
