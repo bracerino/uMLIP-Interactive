@@ -39,7 +39,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 
 If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo).
 
-**Warning:** The uMLIP-Interactive is currently tested with **Python 3.12**. Please first download this version if you do not have it. We noticed certain problems with Python 3.11 and Python 3.13 (Ubuntu 25.x natively has the 3.13 version). 
+:warning: **Warning:**  The uMLIP-Interactive is currently tested with **Python 3.12**. Please first download this version if you do not have it. We noticed certain problems with Python 3.11 and Python 3.13 (Ubuntu 25.x natively has the 3.13 version). 
 
 **Compile the app:** Open your terminal console and write the following commands (the bold text):  
 (Optional) Install Git:  
