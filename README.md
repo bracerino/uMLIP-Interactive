@@ -38,22 +38,10 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 ### **Compile the app**  
 
 If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo).
-We ah
 
-For calculations on **GPU, compile CUDA**:  
-https://developer.nvidia.com/cuda-toolkit  
-Do not forget to **add it to the PATH**, e.g.:  
-- In your console, open bashrc: 'nano ~/.bashrc'  
-- Scroll to the end of the file  
-- Add the following two lines to the end of the file (modify accordingly for your version of CUDA, mine is 12.9):  
-export PATH=/usr/local/cuda-12.9/bin:$PATH  
-export LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH  
-- Save the changes: press 'ctrl + c', and exit the nano with 'ctrl + x'  
-- Reload the config file by writting in console: 'source ~/.bashrc'
-  
+**Warning:** The uMLIP-Interactive is currently tested with **Python 3.12**. Please first download this version if you do not have it. We noticed certain problems with Python 3.11 and Python 3.13 (Ubuntu 25.x natively has the 3.13 version). 
 
-
-**Compile the app:** Open your terminal console and write the following commands (the bold text). It should work with Python 3.12. Currently, it will likely not work with Python 3.13 (also likely not with Ubuntu 25.x):  
+**Compile the app:** Open your terminal console and write the following commands (the bold text):  
 (Optional) Install Git:  
       **sudo apt update**  
       **sudo apt install git**    
