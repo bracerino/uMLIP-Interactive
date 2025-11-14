@@ -1,17 +1,8 @@
-
-"""
-Python Script Generator for MACE Calculations
-This module generates standalone Python scripts for MACE molecular dynamics calculations.
-"""
-
 import json
 from datetime import datetime
 
 
-
-
 def _generate_mlip_imports():
-    """Generate imports for all supported MLIP models."""
     return """# MACE imports
 try:
     from mace.calculators import mace_mp, mace_off
@@ -91,12 +82,14 @@ else:
 
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
-                           substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
-
-
+                           substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
+                           mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
+                           ):
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
-        model_size, device, selected_model_key, dtype)
+        model_size, device, selected_model_key, dtype, mace_head=mace_head,
+        mace_dispersion=mace_dispersion,
+        mace_dispersion_xc=mace_dispersion_xc)
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -114,7 +107,12 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
+    config_info = ""
+    if mace_head:
+        config_info += f"\nMACE Head: {mace_head}"
 
+    if mace_dispersion:
+        config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
@@ -122,7 +120,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
 Model: {selected_model_key or model_size}
 Device: {device}
-Precision: {dtype}
+Precision: {dtype}{config_info}
 \"\"\"
 
 import os
@@ -200,15 +198,19 @@ if __name__ == "__main__":
 
     return script
 
+
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
-                                       substitutions=None, ga_params=None, supercell_info=None, thread_count=4):
+                                       substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
+                                       mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
 
     calculator_setup_code = _generate_calculator_setup_code(
-        model_size, device, selected_model_key, dtype)
+        model_size, device, selected_model_key, dtype, mace_head=mace_head,
+        mace_dispersion=mace_dispersion,
+        mace_dispersion_xc=mace_dispersion_xc)
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -226,7 +228,12 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(calc_formation_energy)
+    config_info = ""
+    if mace_head:
+        config_info += f"\nMACE Head: {mace_head}"
 
+    if mace_dispersion:
+        config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
@@ -234,7 +241,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Calculation Type: {calc_type}
 Model: {selected_model_key or model_size}
 Device: {device}
-Precision: {dtype}
+Precision: {dtype}{config_info}
 
 This script reads POSCAR files from the current directory.
 Place your POSCAR files in the same directory as this script before running.
@@ -330,7 +337,6 @@ if __name__ == "__main__":
 """
 
     return script
-
 
 
 def _generate_ga_classes():
@@ -1704,14 +1710,6 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
     return code
 
 
-
-
-
-
-
-
-
-
 def _generate_structure_creation_code(structures):
     """Generate code to create POSCAR files from structures."""
     code_lines = []
@@ -1743,7 +1741,7 @@ def _generate_structure_creation_code(structures):
             # Read from file using ASE, then convert to pymatgen
             from ase.io import read
             from pymatgen.io.ase import AseAtomsAdaptor
-            
+
             ase_atoms = read("{structure_data}")
             adaptor = AseAtomsAdaptor()
             pmg_structure = adaptor.get_structure(ase_atoms)
@@ -1751,7 +1749,7 @@ def _generate_structure_creation_code(structures):
         else:
             # Assume it's already POSCAR content
             poscar_content = "{structure_data}"
-        
+
         with open("{vasp_filename}", "w") as f:
             f.write(poscar_content)
         print(f"✅ Created {{'{vasp_filename}'}}")
@@ -1761,7 +1759,9 @@ def _generate_structure_creation_code(structures):
     return "\n".join(code_lines)
 
 
-def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64"):
+def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
+                                    mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
+                                    ):
     """Generate calculator setup code with support for all MLIP models."""
 
     # Determine model type from selected model key
@@ -1771,6 +1771,8 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
     is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
+    is_url_model = isinstance(model_size, str) and (
+            model_size.startswith("http://") or model_size.startswith("https://"))
 
     if is_nequix:
         calc_code = f'''    device = "{device}"
@@ -1961,15 +1963,121 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         else:
             raise e'''
 
-    else:
-        # MACE-MP setup (default)
+    elif is_url_model:
+        # NEW: URL-based foundation models (e.g., MACE-MH-0, MACE-MH-1, MACE-MATPES)
+        model_filename = model_size.split("/")[-1]
+
+        # Build the mace_mp arguments
+        mace_args = []
+        mace_args.append(f'model=local_model_path')
+        mace_args.append(f'device=device')
+        mace_args.append(f'default_dtype="{dtype}"')
+
+        if mace_head:
+            mace_args.append(f'head="{mace_head}"')
+
+        if mace_dispersion:
+            mace_args.append(f'dispersion=True')
+            mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+        mace_args_str = ',\n        '.join(mace_args)
+
         calc_code = f'''    device = "{device}"
-    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
+    print(f"🔧 Initializing MACE foundation model from URL...")
+
+    def download_mace_model(model_url):
+        """Download MACE model from URL and cache it."""
+        from pathlib import Path
+        import urllib.request
+
+        model_filename = model_url.split("/")[-1]
+        cache_dir = Path.home() / ".cache" / "mace_foundation_models"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        model_path = cache_dir / model_filename
+
+        if model_path.exists():
+            print(f"✅ Using cached model: {{model_filename}}")
+            return str(model_path)
+
+        print(f"📥 Downloading {{model_filename}}... (this may take a few minutes)")
+        try:
+            urllib.request.urlretrieve(model_url, str(model_path))
+            print(f"✅ Model downloaded and cached")
+            return str(model_path)
+        except Exception as e:
+            print(f"❌ Download failed: {{e}}")
+            if model_path.exists():
+                model_path.unlink()
+            raise
+
     try:
         from mace.calculators import mace_mp
 
+        model_url = "{model_size}"
+        local_model_path = download_mace_model(model_url)
+        print(f"📁 Model path: {{local_model_path}}")
+
+        print(f"⚙️  Device: {{device}}")
+        print(f"⚙️  Dtype: {dtype}")'''
+
+        if mace_head:
+            calc_code += f'''
+        print(f"🎯 Head: {mace_head}")'''
+
+        if mace_dispersion:
+            calc_code += f'''
+        print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")'''
+
+        calc_code += f'''
+
         calculator = mace_mp(
-            model="{model_size}", dispersion=False, default_dtype="{dtype}", device=device)
+            {mace_args_str}
+        )
+        print(f"✅ MACE foundation model initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ MACE initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = mace_mp(
+                    {mace_args_str.replace('device=device', 'device="cpu"')}
+                )
+                print("✅ MACE initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+    else:
+        # MACE-MP setup (default) - now with optional dispersion
+        mace_args = []
+        mace_args.append(f'model="{model_size}"')
+
+        if mace_dispersion:
+            mace_args.append(f'dispersion=True')
+            mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+        else:
+            mace_args.append(f'dispersion=False')
+
+        mace_args.append(f'default_dtype="{dtype}"')
+        mace_args.append(f'device=device')
+
+        mace_args_str = ', '.join(mace_args)
+
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")'''
+
+        if mace_dispersion:
+            calc_code += f'''
+        print(f"🔬 Dispersion correction: D3-{mace_dispersion_xc}")'''
+
+        calc_code += f'''
+    try:
+        from mace.calculators import mace_mp
+
+        calculator = mace_mp({mace_args_str})
         print(f"✅ MACE-MP calculator initialized successfully on {{device}}")
 
     except Exception as e:
@@ -1977,8 +2085,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         if device == "cuda":
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
-                calculator = mace_mp(
-                    model="{model_size}", dispersion=False, default_dtype="{dtype}", device="cpu")
+                calculator = mace_mp({mace_args_str.replace('device=device', 'device="cpu"')})
                 print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
@@ -2007,7 +2114,7 @@ def _generate_energy_only_code(calc_formation_energy):
             all_elements.add(symbol)
 
     print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-    
+
     for i, element in enumerate(sorted(all_elements)):
         print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
@@ -2023,7 +2130,7 @@ def _generate_energy_only_code(calc_formation_energy):
         try:
             atoms = read(filename)
             atoms.calc = calculator
-            
+
             print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
             energy = atoms.get_potential_energy()
 
@@ -2055,7 +2162,7 @@ def _generate_energy_only_code(calc_formation_energy):
 
 
             results.append(result)
-            
+
             # Save results after each structure completes
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/energy_results.csv", index=False)
@@ -2064,7 +2171,7 @@ def _generate_energy_only_code(calc_formation_energy):
         except Exception as e:
             print(f"  ❌ Failed: {e}")
             results.append({"structure": filename, "error": str(e)})
-            
+
             # Save results even for failed structures
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/energy_results.csv", index=False)
@@ -2094,7 +2201,7 @@ def _generate_energy_only_code(calc_formation_energy):
                 f.write("\\n")
             else:
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
-    
+
     print(f"💾 Saved summary to results/energy_summary.txt")
 '''
 
@@ -2103,11 +2210,11 @@ def _generate_energy_only_code(calc_formation_energy):
     # Generate energy plots
     print("\\n📊 Generating energy plots...")
     successful_results = [r for r in results if "error" not in r]
-    
+
     if len(successful_results) > 0:
         try:
             import matplotlib.pyplot as plt
-            
+
             # Set global font sizes
             plt.rcParams.update({
                 'font.size': 18,
@@ -2118,11 +2225,11 @@ def _generate_energy_only_code(calc_formation_energy):
                 'legend.fontsize': 18,
                 'figure.titlesize': 26
             })
-            
+
             # Prepare data
             structure_names = [r["structure"] for r in successful_results]
             energies = [r["energy_eV"] for r in successful_results]
-            
+
             # 1. Total Energy Plot
             plt.figure(figsize=(16, 12))
             bars = plt.bar(range(len(structure_names)), energies, color='steelblue', alpha=0.7)
@@ -2132,18 +2239,18 @@ def _generate_energy_only_code(calc_formation_energy):
             plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-            
+
             # Extend y-axis to accommodate labels above bars
             y_min, y_max = plt.ylim()
             y_range = y_max - y_min
             plt.ylim(y_min, y_max + y_range * 0.15)
-            
+
             # Add vertical value labels above bars
             for i, (bar, energy) in enumerate(zip(bars, energies)):
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + y_range * 0.02, 
                         f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold', 
                         rotation=90, color='black')
-            
+
             plt.tight_layout()
             plt.savefig('results/total_energy_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
@@ -2151,14 +2258,14 @@ def _generate_energy_only_code(calc_formation_energy):
 
     if calc_formation_energy:
         code += '''
-            
+
             # 2. Formation Energy Plot
             formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
             valid_formation = [(name, fe) for name, fe in zip(structure_names, formation_energies) if fe is not None]
-            
+
             if valid_formation:
                 valid_names, valid_fe = zip(*valid_formation)
-                
+
                 plt.figure(figsize=(16, 12))
                 colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
                 bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
@@ -2168,22 +2275,22 @@ def _generate_energy_only_code(calc_formation_energy):
                 plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Extend y-axis to accommodate labels (handle positive and negative values)
                 y_min, y_max = plt.ylim()
                 y_range = y_max - y_min
-                
+
                 # Check if we have negative values
                 has_negative = any(fe < 0 for fe in valid_fe)
                 has_positive = any(fe > 0 for fe in valid_fe)
-                
+
                 if has_negative and has_positive:
                     plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.15)
                 elif has_negative and not has_positive:
                     plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.05)
                 else:
                     plt.ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
-                
+
                 # Add vertical value labels outside bars
                 for i, (bar, fe) in enumerate(zip(bars, valid_fe)):
                     if fe >= 0:
@@ -2195,19 +2302,19 @@ def _generate_energy_only_code(calc_formation_energy):
                     plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
                             f'{fe:.4f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
                             rotation=90, color='black')
-                
+
                 plt.tight_layout()
                 plt.savefig('results/formation_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
                 print("  ✅ Saved formation energy plot: results/formation_energy_comparison.png")'''
 
     code += '''
-            
+
             # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
                 relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
-                
+
                 plt.figure(figsize=(16, 12))
                 colors = ['green' if re == 0 else 'orange' for re in relative_energies]
                 bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
@@ -2217,12 +2324,12 @@ def _generate_energy_only_code(calc_formation_energy):
                 plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
                 y_range = max(relative_energies) if max(relative_energies) > 0 else 1
                 plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
-                
+
                 # Add vertical value labels above bars
                 for i, (bar, re) in enumerate(zip(bars, relative_energies)):
                     if re > 0:
@@ -2234,20 +2341,20 @@ def _generate_energy_only_code(calc_formation_energy):
                     plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
                             f'{re:.1f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
                             rotation=90, color='black')
-                
+
                 plt.tight_layout()
                 plt.savefig('results/relative_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
                 print("  ✅ Saved relative energy plot: results/relative_energy_comparison.png")
-            
+
             # Reset matplotlib settings
             plt.rcParams.update(plt.rcParamsDefault)
-            
+
         except ImportError:
             print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
         except Exception as e:
             print(f"  ⚠️ Error generating plots: {e}")
-    
+
     else:
         print("  ℹ️ No successful calculations to plot")
 '''
@@ -2278,7 +2385,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             all_elements.add(symbol)
 
     print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-    
+
     for i, element in enumerate(sorted(all_elements)):
         print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
@@ -2308,7 +2415,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                     self.step_count = 0
                     self.max_steps = max_steps
                     self.previous_energy = None
-                    
+
                 def __call__(self, optimizer=None):
                     if optimizer is not None and hasattr(optimizer, 'atoms'):
                         atoms_obj = optimizer.atoms
@@ -2316,7 +2423,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                         max_force = np.max(np.linalg.norm(forces, axis=1))
                         energy = atoms_obj.get_potential_energy()
                         energy_per_atom = energy / len(atoms_obj)
-                        
+
                         if self.previous_energy is not None:
                             energy_change = abs(energy - self.previous_energy)
                             energy_change_per_atom = energy_change / len(atoms_obj)
@@ -2324,13 +2431,13 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                             energy_change = float('inf')
                             energy_change_per_atom = float('inf')
                         self.previous_energy = energy
-                        
+
                         try:
                             stress = atoms_obj.get_stress(voigt=True)
                             max_stress = np.max(np.abs(stress))
                         except:
                             max_stress = 0.0
-                        
+
                         self.step_count += 1
                         print(f"    Pre-opt step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
                               f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
@@ -2529,7 +2636,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     code += '''
 
             results.append(result)
-            
+
             # Save results after each structure completes
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/elastic_results.csv", index=False)
@@ -2572,20 +2679,19 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 f.write("\\n")
             else:
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
-    
-    print(f"💾 Saved summary to results/elastic_summary.txt")'''
 
+    print(f"💾 Saved summary to results/elastic_summary.txt")'''
 
     # Add plotting functionality for elastic properties
     code += '''
     # Generate elastic properties plots
     print("\\n📊 Generating elastic properties plots...")
     successful_results = [r for r in results if "error" not in r]
-    
+
     if len(successful_results) > 0:
         try:
             import matplotlib.pyplot as plt
-            
+
             # Set global font sizes
             plt.rcParams.update({
                 'font.size': 18,
@@ -2596,11 +2702,11 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 'legend.fontsize': 18,
                 'figure.titlesize': 26
             })
-            
+
             # Prepare data
             structure_names = [r["structure"] for r in successful_results]
             energies = [r["energy_eV"] for r in successful_results]
-            
+
             # 1. Total Energy Plot
             plt.figure(figsize=(16, 10))
             bars = plt.bar(range(len(structure_names)), energies, color='steelblue', alpha=0.7)
@@ -2610,7 +2716,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-            
+
             # Add value labels and stability indicators
             for i, (bar, energy, result) in enumerate(zip(bars, energies, successful_results)):
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(energies)*0.01, 
@@ -2620,7 +2726,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(energies)-min(energies))*0.05, 
                         '✓' if stable else '✗', ha='center', va='center', 
                         fontsize=20, color='green' if stable else 'red', fontweight='bold')
-            
+
             plt.tight_layout()
             plt.savefig('results/elastic_total_energy_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
@@ -2628,14 +2734,14 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     if calc_formation_energy:
         code += '''
-            
+
             # 2. Formation Energy Plot
             formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
             valid_formation = [(name, fe, result) for name, fe, result in zip(structure_names, formation_energies, successful_results) if fe is not None]
-            
+
             if valid_formation:
                 valid_names, valid_fe, valid_results = zip(*valid_formation)
-                
+
                 plt.figure(figsize=(16, 10))
                 colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
                 bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
@@ -2645,7 +2751,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Add value labels on bars
                 for i, (bar, fe, result) in enumerate(zip(bars, valid_fe, valid_results)):
                     plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(valid_fe)-min(valid_fe))*0.02, 
@@ -2655,7 +2761,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                     plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(valid_fe)-min(valid_fe))*0.08, 
                             '✓' if stable else '✗', ha='center', va='center', 
                             fontsize=20, color='green' if stable else 'red', fontweight='bold')
-                
+
                 plt.axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2)
                 plt.legend(['Stability line'], fontsize=18)
                 plt.tight_layout()
@@ -2664,12 +2770,12 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 print("  ✅ Saved formation energy plot: results/elastic_formation_energy_comparison.png")'''
 
     code += '''
-            
+
             # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
                 relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
-                
+
                 plt.figure(figsize=(16, 10))
                 colors = ['green' if re == 0 else 'orange' for re in relative_energies]
                 bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
@@ -2679,7 +2785,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Add value labels on bars
                 for i, (bar, re, result) in enumerate(zip(bars, relative_energies, successful_results)):
                     plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(relative_energies)*0.02, 
@@ -2689,12 +2795,12 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                     plt.text(bar.get_x() + bar.get_width()/2, max(relative_energies)*0.1, 
                             '✓' if stable else '✗', ha='center', va='center', 
                             fontsize=20, color='green' if stable else 'red', fontweight='bold')
-                
+
                 plt.tight_layout()
                 plt.savefig('results/elastic_relative_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
                 print("  ✅ Saved relative energy plot: results/elastic_relative_energy_comparison.png")
-            
+
             # 4. Bulk Modulus Comparison Plot
             bulk_moduli = []
             for result in successful_results:
@@ -2703,7 +2809,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 bulk_voigt = result.get("bulk_modulus_voigt_GPa")
                 bulk_value = bulk_hill if bulk_hill is not None else bulk_voigt
                 bulk_moduli.append(bulk_value)
-            
+
             plt.figure(figsize=(16, 10))
             # Color based on mechanical stability
             colors = ['green' if result.get("mechanically_stable", False) else 'red' for result in successful_results]
@@ -2714,43 +2820,43 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-            
+
             # Add value labels on bars
             for i, (bar, bulk, result) in enumerate(zip(bars, bulk_moduli, successful_results)):
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(bulk_moduli)*0.01, 
                         f'{bulk:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
-                
+
                 # Add shear and Young's modulus as smaller text
                 shear_hill = result.get("shear_modulus_hill_GPa")
                 shear_voigt = result.get("shear_modulus_voigt_GPa")
                 shear_value = shear_hill if shear_hill is not None else shear_voigt
                 youngs_value = result.get("youngs_modulus_GPa")
-                
+
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height()*0.5, 
                         f'G: {shear_value:.0f}\\nE: {youngs_value:.0f}', 
                         ha='center', va='center', fontsize=14, fontweight='bold',
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
-            
+
             # Add legend for colors
             import matplotlib.patches as mpatches
             stable_patch = mpatches.Patch(color='green', alpha=0.7, label='Mechanically Stable')
             unstable_patch = mpatches.Patch(color='red', alpha=0.7, label='Mechanically Unstable')
             plt.legend(handles=[stable_patch, unstable_patch], loc='upper right', fontsize=18)
-            
+
             plt.grid(True, alpha=0.3, axis='y')
             plt.tight_layout()
             plt.savefig('results/bulk_modulus_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
             print("  ✅ Saved bulk modulus plot: results/bulk_modulus_comparison.png")
-            
+
             # Reset matplotlib settings
             plt.rcParams.update(plt.rcParamsDefault)
-            
+
         except ImportError:
             print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
         except Exception as e:
             print(f"  ⚠️ Error generating plots: {e}")
-    
+
     else:
         print("  ℹ️ No successful calculations to plot")
 '''
@@ -2773,18 +2879,18 @@ def wrap_positions_in_cell(atoms):
 def get_lattice_parameters(atoms):
     cell = atoms.get_cell()
     a, b, c = np.linalg.norm(cell, axis=1)
-    
+
     def angle_between_vectors(v1, v2):
         cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         return np.degrees(np.arccos(cos_angle))
-    
+
     alpha = angle_between_vectors(cell[1], cell[2])
     beta = angle_between_vectors(cell[0], cell[2])
     gamma = angle_between_vectors(cell[0], cell[1])
-    
+
     volume = np.abs(np.linalg.det(cell))
-    
+
     return {
         'a': a, 'b': b, 'c': c,
         'alpha': alpha, 'beta': beta, 'gamma': gamma,
@@ -2795,22 +2901,22 @@ def get_lattice_parameters(atoms):
 def get_atomic_composition(atoms):
     symbols = atoms.get_chemical_symbols()
     total_atoms = len(symbols)
-    
+
     composition = {}
     for symbol in symbols:
         composition[symbol] = composition.get(symbol, 0) + 1
-    
+
     concentrations = {}
     for element, count in composition.items():
         concentrations[element] = (count / total_atoms) * 100
-    
+
     return composition, concentrations
 
 
 
 def save_elastic_constants_to_csv(structure_name, elastic_tensor, csv_filename="results/elastic_constants_cij.csv"):
 
-    
+
     elastic_data = {
         'structure_name': structure_name,
         'C11_GPa': float(elastic_tensor[0, 0]),
@@ -2853,52 +2959,52 @@ def save_elastic_constants_to_csv(structure_name, elastic_tensor, csv_filename="
 
     if os.path.exists(csv_filename):
         df_existing = pd.read_csv(csv_filename)
-        
+
         if structure_name in df_existing['structure_name'].values:
             df_existing.loc[df_existing['structure_name'] == structure_name, list(elastic_data.keys())] = list(elastic_data.values())
         else:
             df_new_row = pd.DataFrame([elastic_data])
             df_existing = pd.concat([df_existing, df_new_row], ignore_index=True)
-        
+
         df_existing.to_csv(csv_filename, index=False)
     else:
         df_new = pd.DataFrame([elastic_data])
         df_new.to_csv(csv_filename, index=False)
-    
+
     print(f"  💾 Elastic constants saved to {csv_filename}")
 
 
 def append_optimization_summary(filename, structure_name, initial_atoms, final_atoms, 
                                initial_energy, final_energy, convergence_status, steps, selective_dynamics=None):
-    
+
     initial_lattice = get_lattice_parameters(initial_atoms)
     final_lattice = get_lattice_parameters(final_atoms)
     composition, concentrations = get_atomic_composition(final_atoms)
-    
+
     energy_change = final_energy - initial_energy
     volume_change = ((final_lattice['volume'] - initial_lattice['volume']) / initial_lattice['volume']) * 100
-    
+
     a_change = ((final_lattice['a'] - initial_lattice['a']) / initial_lattice['a']) * 100
     b_change = ((final_lattice['b'] - initial_lattice['b']) / initial_lattice['b']) * 100
     c_change = ((final_lattice['c'] - initial_lattice['c']) / initial_lattice['c']) * 100
-    
+
     alpha_change = final_lattice['alpha'] - initial_lattice['alpha']
     beta_change = final_lattice['beta'] - initial_lattice['beta']
     gamma_change = final_lattice['gamma'] - initial_lattice['gamma']
-    
+
     comp_formula = "".join([f"{element}{composition[element]}" for element in sorted(composition.keys())])
-    
+
     elements = sorted(composition.keys())
     conc_values = [concentrations[element] for element in elements]
     conc_string = " ".join([f"{element}:{conc:.1f}" for element, conc in zip(elements, conc_values)])
-    
+
     constraint_info = "None"
     if selective_dynamics is not None:
         total_atoms = len(selective_dynamics)
         completely_fixed = sum(1 for flags in selective_dynamics if not any(flags))
         partially_fixed = sum(1 for flags in selective_dynamics if not all(flags) and any(flags))
         free_atoms = sum(1 for flags in selective_dynamics if all(flags))
-        
+
         constraint_parts = []
         if completely_fixed > 0:
             constraint_parts.append(f"{completely_fixed}complete")
@@ -2906,38 +3012,38 @@ def append_optimization_summary(filename, structure_name, initial_atoms, final_a
             constraint_parts.append(f"{partially_fixed}partial")
         if free_atoms > 0:
             constraint_parts.append(f"{free_atoms}free")
-        
+
         constraint_info = ",".join(constraint_parts)
-    
+
     file_exists = os.path.exists(filename)
-    
+
     with open(filename, 'a') as f:
         if not file_exists:
             header = "Structure,Formula,Atoms,Composition,Steps,Convergence,E_initial_eV,E_final_eV,E_change_eV,E_per_atom_eV,a_init_A,b_init_A,c_init_A,alpha_init_deg,beta_init_deg,gamma_init_deg,V_init_A3,a_final_A,b_final_A,c_final_A,alpha_final_deg,beta_final_deg,gamma_final_deg,V_final_A3,a_change_percent,b_change_percent,c_change_percent,alpha_change_deg,beta_change_deg,gamma_change_deg,V_change_percent"
             f.write(header + "\\n")
-        
+
         line = f"{structure_name},{comp_formula},{len(final_atoms)},{conc_string},{steps},{convergence_status},{initial_energy:.6f},{final_energy:.6f},{energy_change:.6f},{final_energy/len(final_atoms):.6f},{initial_lattice['a']:.6f},{initial_lattice['b']:.6f},{initial_lattice['c']:.6f},{initial_lattice['alpha']:.3f},{initial_lattice['beta']:.3f},{initial_lattice['gamma']:.3f},{initial_lattice['volume']:.6f},{final_lattice['a']:.6f},{final_lattice['b']:.6f},{final_lattice['c']:.6f},{final_lattice['alpha']:.3f},{final_lattice['beta']:.3f},{final_lattice['gamma']:.3f},{final_lattice['volume']:.6f},{a_change:.3f},{b_change:.3f},{c_change:.3f},{alpha_change:.3f},{beta_change:.3f},{gamma_change:.3f},{volume_change:.3f}"
         f.write(line + "\\n")
 
 
 def read_poscar_with_selective_dynamics(filename):
     atoms = read(filename)
-    
+
     with open(filename, 'r') as f:
         lines = f.readlines()
-    
+
     selective_dynamics = None
     if len(lines) > 7:
         line_7 = lines[7].strip().upper()
         if line_7.startswith('S'):
             selective_dynamics = []
             coord_start = 9
-            
+
             for i in range(coord_start, len(lines)):
                 line = lines[i].strip()
                 if not line or line.startswith('#'):
                     continue
-                    
+
                 parts = line.split()
                 if len(parts) >= 6:
                     try:
@@ -2947,7 +3053,7 @@ def read_poscar_with_selective_dynamics(filename):
                         break
                 elif len(parts) == 3:
                     break
-    
+
     return atoms, selective_dynamics
 
 
@@ -2956,11 +3062,11 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
         with open(filename, 'w') as f:
             f.write(f"{comment}\\n")
             f.write("1.0\\n")
-            
+
             cell = atoms.get_cell()
             for i in range(3):
                 f.write(f"  {cell[i][0]:16.12f}  {cell[i][1]:16.12f}  {cell[i][2]:16.12f}\\n")
-            
+
             symbols = atoms.get_chemical_symbols()
             unique_symbols = []
             symbol_counts = []
@@ -2968,13 +3074,13 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
                 if symbol not in unique_symbols:
                     unique_symbols.append(symbol)
                     symbol_counts.append(symbols.count(symbol))
-            
+
             f.write("  " + "  ".join(unique_symbols) + "\\n")
             f.write("  " + "  ".join(map(str, symbol_counts)) + "\\n")
-            
+
             f.write("Selective dynamics\\n")
             f.write("Direct\\n")
-            
+
             scaled_positions = atoms.get_scaled_positions()
             for symbol in unique_symbols:
                 for i, atom_symbol in enumerate(symbols):
@@ -2992,34 +3098,34 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
             for line in lines[1:]:
                 f.write(line)
 
-                
+
 def apply_selective_dynamics_constraints(atoms, selective_dynamics):
     """Apply selective dynamics as ASE constraints with support for partial fixing."""
     if selective_dynamics is None or len(selective_dynamics) != len(atoms):
         return atoms
-    
+
     # Check if we have any constraints to apply
     has_constraints = False
     for flags in selective_dynamics:
         if not all(flags):  # If any direction is False (fixed)
             has_constraints = True
             break
-    
+
     if not has_constraints:
         print(f"  🔄 Selective dynamics found but all atoms are completely free")
         return atoms
-    
+
     # Apply constraints
     try:
         from ase.constraints import FixCartesian, FixAtoms
-        
+
         constraints = []
         constraint_summary = []
-        
+
         # Group atoms by constraint type
         completely_fixed_indices = []
         partial_constraints = []
-        
+
         for i, flags in enumerate(selective_dynamics):
             if not any(flags):  # All directions fixed (F F F)
                 completely_fixed_indices.append(i)
@@ -3029,12 +3135,12 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
                 # ASE:  T=fixed, F=free
                 mask = [not flag for flag in flags]  # Invert the flags
                 partial_constraints.append((i, mask))
-        
+
         # Apply complete fixing
         if completely_fixed_indices:
             constraints.append(FixAtoms(indices=completely_fixed_indices))
             constraint_summary.append(f"{len(completely_fixed_indices)} atoms completely fixed")
-        
+
         # Apply partial constraints - create individual FixCartesian for each atom
         if partial_constraints:
             partial_groups = {}
@@ -3043,24 +3149,24 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
                 if mask_key not in partial_groups:
                     partial_groups[mask_key] = []
                 partial_groups[mask_key].append(atom_idx)
-            
+
             for mask, atom_indices in partial_groups.items():
                 # Create individual FixCartesian constraints for each atom
                 for atom_idx in atom_indices:
                     constraints.append(FixCartesian(atom_idx, mask))
-                
+
                 fixed_dirs = [dir_name for dir_name, is_fixed in zip(['x', 'y', 'z'], mask) if is_fixed]
                 constraint_summary.append(f"{len(atom_indices)} atoms fixed in {','.join(fixed_dirs)} directions")
-        
+
         # Apply all constraints
         if constraints:
             atoms.set_constraint(constraints)
-            
+
             total_constrained = len(completely_fixed_indices) + len(partial_constraints)
             print(f"  📌 Applied selective dynamics to {total_constrained}/{len(atoms)} atoms:")
             for summary in constraint_summary:
                 print(f"    - {summary}")
-        
+
     except ImportError:
         # Fallback: only handle completely fixed atoms
         print(f"  ⚠️ FixCartesian not available, only applying complete atom fixing")
@@ -3068,7 +3174,7 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
         for i, flags in enumerate(selective_dynamics):
             if not any(flags):  # All directions False (completely fixed)
                 fixed_indices.append(i)
-        
+
         if fixed_indices:
             from ase.constraints import FixAtoms
             constraint = FixAtoms(indices=fixed_indices)
@@ -3076,7 +3182,7 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
             print(f"  📌 Applied complete fixing to {len(fixed_indices)}/{len(atoms)} atoms")
         else:
             print(f"  ⚠️ No completely fixed atoms found, partial constraints not supported")
-    
+
     except Exception as e:
         # If FixCartesian fails for any reason, fall back to complete fixing only
         print(f"  ⚠️ FixCartesian failed ({str(e)}), falling back to complete atom fixing only")
@@ -3084,7 +3190,7 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
         for i, flags in enumerate(selective_dynamics):
             if not any(flags):  # All directions False (completely fixed)
                 fixed_indices.append(i)
-        
+
         if fixed_indices:
             from ase.constraints import FixAtoms
             constraint = FixAtoms(indices=fixed_indices)
@@ -3092,7 +3198,7 @@ def apply_selective_dynamics_constraints(atoms, selective_dynamics):
             print(f"  📌 Applied complete fixing to {len(fixed_indices)}/{len(atoms)} atoms (fallback)")
         else:
             print(f"  ⚠️ No completely fixed atoms found")
-    
+
     return atoms
 
 
@@ -3247,30 +3353,30 @@ class OptimizationLogger:
         self.output_dir = output_dir
         self.save_trajectory = save_trajectory  
         self.trajectory = [] if save_trajectory else None
-        
+
     def __call__(self, optimizer=None):
         current_time = time.time()
-        
+
         if self.step_count > 0:
             step_time = current_time - self.step_start_time
             self.step_times.append(step_time)
-        
+
         self.step_count += 1
         self.step_start_time = current_time
-        
+
         if optimizer is not None and hasattr(optimizer, 'atoms'):
             if hasattr(optimizer.atoms, 'atoms'):
                 atoms = optimizer.atoms.atoms
             else:
                 atoms = optimizer.atoms
-                
+
             forces = atoms.get_forces()
             max_force = np.max(np.linalg.norm(forces, axis=1))
             energy = atoms.get_potential_energy()
 
             # Calculate energy per atom
             energy_per_atom = energy / len(atoms)
-            
+
             # Calculate energy change
             if hasattr(self, 'previous_energy') and self.previous_energy is not None:
                 energy_change = abs(energy - self.previous_energy)
@@ -3279,15 +3385,15 @@ class OptimizationLogger:
                 energy_change = float('inf')
                 energy_change_per_atom = float('inf')
             self.previous_energy = energy
-            
+
             try:
                 stress = atoms.get_stress(voigt=True)
                 max_stress = np.max(np.abs(stress))
             except:
                 max_stress = 0.0
-            
+
             lattice = get_lattice_parameters(atoms)
-            
+
             if self.save_trajectory:
                 self.trajectory.append({
                     'step': self.step_count,
@@ -3297,24 +3403,24 @@ class OptimizationLogger:
                     'cell': atoms.cell.array.copy(),
                     'lattice': lattice.copy()
                 })
-            
+
             if len(self.step_times) > 0:
                 avg_time = np.mean(self.step_times)
                 remaining_steps = max(0, self.max_steps - self.step_count)
                 estimated_remaining_time = avg_time * remaining_steps
-                
+
                 if avg_time < 60:
                     avg_time_str = f"{avg_time:.1f}s"
                 else:
                     avg_time_str = f"{avg_time/60:.1f}m"
-                
+
                 if estimated_remaining_time < 60:
                     remaining_time_str = f"{estimated_remaining_time:.1f}s"
                 elif estimated_remaining_time < 3600:
                     remaining_time_str = f"{estimated_remaining_time/60:.1f}m"
                 else:
                     remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
-                
+
                 print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
                       f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
                       f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom) | "
@@ -3607,7 +3713,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 selective_dynamics, 
                 f"Optimized - {convergence_status}"
             )
-            
+
             detailed_summary_file = "results/optimization_detailed_summary.csv"
             print(f"  📊 Appending detailed summary to {detailed_summary_file}")
             append_optimization_summary(
@@ -3621,8 +3727,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 optimizer.nsteps,
                 selective_dynamics
             )
-            
-            
+
+
 
             result = {
                 "structure": filename,
@@ -3656,7 +3762,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             if save_trajectory and logger.trajectory is not None:
                 trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
                 print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
-                
+
                 with open(trajectory_filename, 'w') as traj_file:
                     symbols = final_atoms.get_chemical_symbols()
                     for step_data in logger.trajectory:
@@ -3666,11 +3772,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         lattice = step_data['lattice']
                         step = step_data['step']
                         cell_matrix = step_data['cell']
-                        
+
                         lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
-                        
+
                         traj_file.write(f"{num_atoms}\\n")
-                        
+
                         comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
                                   f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
                                   f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
@@ -3678,11 +3784,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                                   f'Lattice="{lattice_string}" '
                                   f'Properties=species:S:1:pos:R:3')
                         traj_file.write(f"{comment}\\n")
-                        
+
                         for j, pos in enumerate(step_data['positions']):
                             symbol = symbols[j] if j < len(symbols) else 'X'
                             traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}\\n")
-                
+
                 result["trajectory_file"] = trajectory_filename
                 print(f"  💾 Trajectory saved: {trajectory_filename}")
             else:
@@ -3718,7 +3824,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 
     code += '''
             results.append(result)
-            
+
             # Save results after each structure
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/optimization_results.csv", index=False)
@@ -3729,7 +3835,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             import traceback
             traceback.print_exc()
             results.append({"structure": filename, "error": str(e)})
-            
+
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/optimization_results.csv", index=False)
             print(f"  💾 Results updated and saved (with error)")
@@ -3769,19 +3875,18 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 f.write("\\n")
             else:
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
-    
-    print(f"💾 Saved summary to results/optimization_summary.txt")'''
 
+    print(f"💾 Saved summary to results/optimization_summary.txt")'''
 
     code += '''
     # Generate optimization plots
     print("\\n📊 Generating optimization plots...")
     successful_results = [r for r in results if "error" not in r]
-    
+
     if len(successful_results) > 0:
         try:
             import matplotlib.pyplot as plt
-            
+
             # Set global font sizes
             plt.rcParams.update({
                 'font.size': 18,
@@ -3792,11 +3897,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 'legend.fontsize': 18,
                 'figure.titlesize': 26
             })
-            
+
             # Prepare data
             structure_names = [r["structure"] for r in successful_results]
             final_energies = [r["final_energy_eV"] for r in successful_results]
-            
+
             # 1. Total Energy Plot
             plt.figure(figsize=(16, 12))
             bars = plt.bar(range(len(structure_names)), final_energies, color='steelblue', alpha=0.7)
@@ -3806,18 +3911,18 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-            
+
             # Extend y-axis to accommodate labels above bars
             y_min, y_max = plt.ylim()
             y_range = y_max - y_min
             plt.ylim(y_min, y_max + y_range * 0.15)
-            
+
             # Add vertical value labels above bars
             for i, (bar, energy) in enumerate(zip(bars, final_energies)):
                 plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + y_range * 0.02, 
                         f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold', 
                         rotation=90, color='black')
-            
+
             plt.tight_layout()
             plt.savefig('results/optimization_final_energy_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
@@ -3825,14 +3930,14 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 
     if calc_formation_energy:
         code += '''
-            
+
             # 2. Formation Energy Plot
             formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
             valid_formation = [(name, fe, result) for name, fe, result in zip(structure_names, formation_energies, successful_results) if fe is not None]
-            
+
             if valid_formation:
                 valid_names, valid_fe, valid_results = zip(*valid_formation)
-                
+
                 plt.figure(figsize=(16, 12))
                 colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
                 bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
@@ -3842,22 +3947,22 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Extend y-axis to accommodate labels (handle positive and negative values)
                 y_min, y_max = plt.ylim()
                 y_range = y_max - y_min
-                
+
                 # Check if we have negative values
                 has_negative = any(fe < 0 for fe in valid_fe)
                 has_positive = any(fe > 0 for fe in valid_fe)
-                
+
                 if has_negative and has_positive:
                     plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.15)
                 elif has_negative and not has_positive:
                     plt.ylim(y_min - y_range * 0.15, y_max + y_range * 0.05)
                 else:
                     plt.ylim(y_min - y_range * 0.05, y_max + y_range * 0.15)
-                
+
                 # Add vertical value labels outside bars
                 for i, (bar, fe) in enumerate(zip(bars, valid_fe)):
                     if fe >= 0:
@@ -3869,19 +3974,19 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                     plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
                             f'{fe:.4f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
                             rotation=90, color='black')
-                
+
                 plt.tight_layout()
                 plt.savefig('results/optimization_formation_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
                 print("  ✅ Saved formation energy plot: results/optimization_formation_energy_comparison.png")'''
 
     code += '''
-            
+
             # 3. Relative Energy Plot
             if len(final_energies) > 1:
                 min_energy = min(final_energies)
                 relative_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
-                
+
                 plt.figure(figsize=(16, 12))
                 colors = ['green' if re == 0 else 'orange' for re in relative_energies]
                 bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
@@ -3891,12 +3996,12 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-                
+
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
                 y_range = max(relative_energies) if max(relative_energies) > 0 else 1
                 plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
-                
+
                 # Add vertical value labels above bars
                 for i, (bar, re) in enumerate(zip(bars, relative_energies)):
                     if re > 0:
@@ -3908,12 +4013,12 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                     plt.text(bar.get_x() + bar.get_width()/2, y_pos, 
                             f'{re:.1f}', ha='center', va=va_align, fontsize=16, fontweight='bold', 
                             rotation=90, color='black')
-                
+
                 plt.tight_layout()
                 plt.savefig('results/optimization_relative_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
                 print("  ✅ Saved relative energy plot: results/optimization_relative_energy_comparison.png")
-            
+
             # 4. Lattice Parameter Changes Plot
             print("  📏 Reading detailed optimization summary for lattice changes...")
             try:
@@ -3921,39 +4026,39 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 detailed_summary_file = "results/optimization_detailed_summary.csv"
                 if os.path.exists(detailed_summary_file):
                     df_lattice = pd.read_csv(detailed_summary_file)
-                    
+
                     if len(df_lattice) > 0:
                         plt.figure(figsize=(18, 10))
-                        
+
                         # Extract lattice changes
                         structures = df_lattice['Structure'].tolist()
                         a_changes = df_lattice['a_change_percent'].tolist()
                         b_changes = df_lattice['b_change_percent'].tolist()
                         c_changes = df_lattice['c_change_percent'].tolist()
-                        
+
                         # Create grouped bar chart
                         x = np.arange(len(structures))
                         width = 0.25
-                        
+
                         bars1 = plt.bar(x - width, a_changes, width, label='a parameter', color='red', alpha=0.7)
                         bars2 = plt.bar(x, b_changes, width, label='b parameter', color='green', alpha=0.7)
                         bars3 = plt.bar(x + width, c_changes, width, label='c parameter', color='blue', alpha=0.7)
-                        
+
                         plt.xlabel('Structure', fontsize=22, fontweight='bold')
                         plt.ylabel('Lattice Parameter Change (%)', fontsize=22, fontweight='bold')
                         plt.title('Lattice Parameter Changes After Optimization', fontsize=26, fontweight='bold', pad=20)
                         plt.xticks(x, [name.replace('.vasp', '').replace('POSCAR_', '') for name in structures], 
                                   rotation=45, ha='right', fontsize=18, fontweight='bold')
                         plt.yticks(fontsize=18, fontweight='bold')
-                        
+
                         # Add horizontal line at zero
                         plt.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=2)
                         plt.grid(True, alpha=0.3, axis='y')
-                        
+
                         # Add legend below x-axis
                         plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), 
                                   ncol=3, fontsize=18, frameon=False)
-                        
+
                         # Adjust layout to accommodate legend
                         plt.subplots_adjust(bottom=0.2)
                         plt.tight_layout()
@@ -3964,22 +4069,21 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         print("  ⚠️ No lattice data found in detailed summary")
                 else:
                     print("  ⚠️ Detailed optimization summary file not found")
-                    
+
             except Exception as lattice_error:
                 print(f"  ⚠️ Error creating lattice changes plot: {lattice_error}")
-            
+
             # Reset matplotlib settings
             plt.rcParams.update(plt.rcParamsDefault)
-            
+
         except ImportError:
             print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
         except Exception as e:
             print(f"  ⚠️ Error generating plots: {e}")
-    
+
     else:
         print("  ℹ️ No successful calculations to plot")
 '''
-
 
     return code
 
@@ -4030,7 +4134,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     temperature = {temperature}
     npoints_per_segment = {npoints}
     pre_opt_steps = {optimization_params.get('max_steps', 50)}
-    
+
     print(f"⚙️ Phonon settings:")
     print(f"  - Displacement: {{displacement_distance}} Å")
     print(f"  - Temperature: {{temperature}} K")
@@ -4048,7 +4152,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             all_elements.add(symbol)
 
     print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-    
+
     for i, element in enumerate(sorted(all_elements)):
         print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
@@ -4109,22 +4213,22 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             total_atoms = len(atoms) * {supercell_size[0]} * {supercell_size[1]} * {supercell_size[2]}'''
 
     code += '''
-            
+
             print(f"  📏 Using supercell: {supercell_matrix} ({total_atoms} total atoms)")
-            
+
             phonon = Phonopy(phonopy_atoms, supercell_matrix=supercell_matrix, primitive_matrix='auto')
-            
+
             print(f"  📍 Generating displacements...")
             phonon.generate_displacements(distance=displacement_distance)
             supercells = phonon.get_supercells_with_displacements()
             print(f"  📊 Generated {len(supercells)} displaced supercells")
-            
+
             print("  ⚡ Calculating forces...")
             forces = []
             for j, supercell in enumerate(supercells):
                 if j % max(1, len(supercells) // 5) == 0:
                     print(f"    📊 Progress: {j+1}/{len(supercells)} ({100*(j+1)/len(supercells):.1f}%)")
-                    
+
                 ase_supercell = Atoms(
                     symbols=supercell.symbols,
                     positions=supercell.positions,
@@ -4134,19 +4238,19 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 ase_supercell.calc = calculator
                 supercell_forces = ase_supercell.get_forces()
                 forces.append(supercell_forces)
-            
+
             print("  ✅ All force calculations completed")
             phonon.forces = forces
             print("  🔧 Calculating force constants...")
             phonon.produce_force_constants()
-            
+
             print("  📈 Calculating phonon band structure...")
             try:
                 from pymatgen.symmetry.bandstructure import HighSymmKpath
                 kpath = HighSymmKpath(pmg_structure)
                 path = kpath.kpath["path"]
                 kpoints_dict = kpath.kpath["kpoints"]
-                
+
                 path_kpoints = []
                 for segment in path:
                     if len(segment) >= 2:
@@ -4156,39 +4260,39 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                             t = j / (npoints_per_segment - 1)
                             kpt = start_point + t * (end_point - start_point)
                             path_kpoints.append(kpt.tolist())
-                
+
                 bands = [path_kpoints]
                 print(f"  📍 Generated {len(path_kpoints)} k-points along high-symmetry path")
-                
+
             except Exception:
                 print("  ⚠️ Using fallback k-point path")
                 bands = [[[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]]
-            
+
             phonon.run_band_structure(bands, is_band_connection=False, with_eigenvectors=False)
             band_dict = phonon.get_band_structure_dict()
-            
+
             print("  📊 Calculating phonon DOS...")
             mesh_density = [30, 30, 30] if len(atoms) <= 100 else [20, 20, 20]
             phonon.run_mesh(mesh_density)
             phonon.run_total_dos()
             dos_dict = phonon.get_total_dos_dict()
-            
+
             print(f"  🌡️ Calculating thermodynamics at {temperature} K...")
             phonon.run_thermal_properties(t_step=10, t_max=1500, t_min=0)
             thermal_dict = phonon.get_thermal_properties_dict()
-            
+
             frequencies = np.array(band_dict['frequencies']) * units_phonopy.THzToEv * 1000
             dos_frequencies = dos_dict['frequency_points'] * units_phonopy.THzToEv * 1000
             dos_values = dos_dict['total_dos']
-            
+
             valid_frequencies = frequencies[~np.isnan(frequencies)]
             imaginary_modes = np.sum(valid_frequencies < -0.001)
             min_frequency = np.min(valid_frequencies) if len(valid_frequencies) > 0 else 0
             max_frequency = np.max(valid_frequencies) if len(valid_frequencies) > 0 else 0
-            
+
             temps = np.array(thermal_dict['temperatures'])
             temp_idx = np.argmin(np.abs(temps - temperature))
-            
+
             thermo_props = {{
                 'temperature': float(temps[temp_idx]),
                 'zero_point_energy': float(thermal_dict['zero_point_energy']),
@@ -4197,7 +4301,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 'entropy': float(thermal_dict['entropy'][temp_idx]),
                 'free_energy': float(thermal_dict['free_energy'][temp_idx])
             }}
-            
+
             result = {{
                 "structure": filename,
                 "calculation_type": "phonon_calculation",
@@ -4209,7 +4313,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 "num_atoms": len(atoms),
                 "total_supercell_atoms": total_atoms
             }}
-            
+
             phonon_data_dict = {{
                 "structure_name": [filename],
                 "supercell_matrix_00": [supercell_matrix[0][0]],
@@ -4227,10 +4331,10 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 "num_atoms": [len(atoms)],
                 "total_supercell_atoms": [total_atoms]
             }}
-            
+
             df_phonon = pd.DataFrame(phonon_data_dict)
             df_phonon.to_csv(f"results/phonon_data_{filename.replace('.', '_')}.csv", index=False)
-            
+
             if len(valid_frequencies) > 0:
                 freq_data = {{
                     "frequency_meV": valid_frequencies[~np.isnan(valid_frequencies)].flatten(),
@@ -4238,7 +4342,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 }}
                 df_freq = pd.DataFrame(freq_data)
                 df_freq.to_csv(f"results/phonon_frequencies_{filename.replace('.', '_')}.csv", index=False)
-            
+
             dos_data = {{
                 "energy_meV": dos_frequencies,
                 "dos_states_per_meV": dos_values,
@@ -4246,14 +4350,14 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             }}
             df_dos = pd.DataFrame(dos_data)
             df_dos.to_csv(f"results/phonon_dos_{filename.replace('.', '_')}.csv", index=False)
-            
+
             final_energy = atoms.get_potential_energy()
             result["energy_eV"] = final_energy
-            
+
             if calc_formation_energy:
                 formation_energy = calculate_formation_energy(final_energy, atoms, reference_energies)
                 result["formation_energy_eV_per_atom"] = formation_energy
-            
+
             structure_time = time.time() - structure_start_time
             print(f"  ✅ Phonon calculation completed in {structure_time:.1f}s")
             print(f"  ✅ Energy: {final_energy:.6f} eV")
@@ -4263,27 +4367,27 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 print(f"  ⚠️ Structure may be dynamically unstable")
             else:
                 print(f"  ✅ Structure appears dynamically stable")
-            
-                
+
+
             results.append(result)
-            
+
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/phonon_results.csv", index=False)
             print(f"  💾 Results updated and saved")
-            
+
         except Exception as e:
             print(f"  ❌ Phonon calculation failed: {e}")
             results.append({"structure": filename, "error": str(e)}")
-            
+
             df_results = pd.DataFrame(results)
             df_results.to_csv("results/phonon_results.csv", index=False)
             print(f"  💾 Results updated and saved")
-    
+
     df_results = pd.DataFrame(results)
     df_results.to_csv("results/phonon_results.csv", index=False)
 
     print(f"\\n💾 Saved results to results/phonon_results.csv")
-    
+
     with open("results/phonon_summary.txt", "w") as f:
         f.write("MACE Phonon Calculation Results\\n")
         f.write("=" * 40 + "\\n\\n")
@@ -4301,7 +4405,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 f.write("\\n")
             else:
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
-    
+
     print(f"💾 Saved summary to results/phonon_summary.txt")
 '''
     return code
