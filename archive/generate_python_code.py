@@ -299,7 +299,7 @@ def main():
 
     # Find and validate POSCAR files in current directory
     print("\\n📁 Looking for POSCAR files in current directory...")
-    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
 
     if not structure_files:
         print("❌ No POSCAR files found in current directory!")
@@ -2098,7 +2098,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
 def _generate_energy_only_code(calc_formation_energy):
     """Generate code for energy-only calculations."""
-    code = '''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    code = '''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
     results = []
     print(f"📊 Found {len(structure_files)} structure files")
 
@@ -2365,7 +2365,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     """Generate code for elastic property calculations."""
     strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
@@ -3450,7 +3450,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
@@ -3879,6 +3879,33 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     print(f"💾 Saved summary to results/optimization_summary.txt")'''
 
     code += '''
+    # Calculate and save statistics
+    successful_results = [r for r in results if "error" not in r]
+    if len(successful_results) > 0:
+        final_energies = [r["final_energy_eV"] for r in successful_results]
+        optimization_steps = [r["optimization_steps"] for r in successful_results]
+        stats = {
+            "total_energy_mean_eV": [np.mean(final_energies)],
+            "total_energy_std_eV": [np.std(final_energies, ddof=1) if len(final_energies) > 1 else 0.0],
+            "optimization_steps_mean": [np.mean(optimization_steps)],
+            "optimization_steps_std": [np.std(optimization_steps, ddof=1) if len(optimization_steps) > 1 else 0.0]
+        }
+    '''
+
+    if calc_formation_energy:
+        code += '''
+    formation_energies = [r["formation_energy_eV_per_atom"] for r in successful_results if "formation_energy_eV_per_atom" in r and r["formation_energy_eV_per_atom"] is not None]
+    if formation_energies:
+        stats["formation_energy_mean_eV_per_atom"] = [np.mean(formation_energies)]
+        stats["formation_energy_std_eV_per_atom"] = [np.std(formation_energies, ddof=1) if len(formation_energies) > 1 else 0.0]
+    '''
+
+    code += '''
+    pd.DataFrame(stats).to_csv("results/optimization_statistics.csv", index=False)
+    print(f"💾 Saved statistics to results/optimization_statistics.csv")
+    '''
+    
+    code += '''
     # Generate optimization plots
     print("\\n📊 Generating optimization plots...")
     successful_results = [r for r in results if "error" not in r]
@@ -4102,7 +4129,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     temperature = phonon_params.get('temperature', 300)
     npoints = phonon_params.get('npoints', 100)
 
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
     results = []
     print(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
 
