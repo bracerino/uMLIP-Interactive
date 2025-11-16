@@ -24,6 +24,7 @@ sevenn==0.10.4
 #mattersim
 orb-models==0.5.5
 nequix==0.2.0
+pet-mad==1.4.3
 
 torch-dftd # for mace-mh d3 dispersion corrections
 
