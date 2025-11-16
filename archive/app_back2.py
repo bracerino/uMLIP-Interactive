@@ -1690,13 +1690,23 @@ MACE_MODELS = {
     "MACE-OFF23 (small) - Organic": "small",
     "MACE-OFF23 (medium) - Organic": "medium",
     "MACE-OFF23 (large) - Organic": "large",
+
+    "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
+    "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+
+
+
     # ========== MACE-OFF MODELS (Organic Force Fields) ==========
     "CHGNet-0.3.0 (Latest Universal)": "chgnet-0.3.0",
     "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
 
     # ========== SEVENNET MODELS ==========
-    "SevenNet-0 (Latest Universal)": "7net-0",
+    "SevenNet-0": "7net-0",
+    "SevenNet-MF-OMPA (MPA Modal)": "7net-mf-ompa-mpa",
+    "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
+    "SevenNet-OMAT24": "7net-omat",
     "SevenNet-L3I5": "7net-l3i5",
+
     # ========== MATTERSIM MODELS ==========
     "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
     "MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
@@ -1722,6 +1732,69 @@ MACE_MODELS = {
     #"AlignN-FF (Custom)": "alignn-ff-custom",
 
 }
+
+
+def is_url_model(model_size):
+    """Check if model_size is a URL that needs downloading."""
+    return isinstance(model_size, str) and (model_size.startswith("http://") or model_size.startswith("https://"))
+
+
+def is_multihead_model(selected_model):
+    """Check if the selected model supports multiple heads."""
+    return "Multi-head" in selected_model or "MH-0" in selected_model or "MH-1" in selected_model
+
+
+def download_mace_foundation_model(model_url, log_queue=None):
+    """
+    Download MACE foundation model from GitHub releases and cache it locally.
+
+    Args:
+        model_url: URL to download the model from
+        log_queue: Optional queue for logging messages
+
+    Returns:
+        Path to the downloaded model file
+    """
+    from pathlib import Path
+    import urllib.request
+
+    # Extract model filename from URL
+    model_filename = model_url.split("/")[-1]
+
+    # Create cache directory in user's home
+    cache_dir = Path.home() / ".cache" / "mace_foundation_models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Full path to cached model
+    model_path = cache_dir / model_filename
+
+    # Check if already downloaded
+    if model_path.exists():
+        if log_queue:
+            log_queue.put(f"✅ Using cached model: {model_filename}")
+            log_queue.put(f"   Location: {model_path}")
+        return str(model_path)
+
+    # Download the model
+    if log_queue:
+        log_queue.put(f"📥 Downloading foundation model: {model_filename}")
+        log_queue.put(f"   This may take a few minutes (38-57 MB)...")
+
+    try:
+        urllib.request.urlretrieve(model_url, str(model_path))
+
+        if log_queue:
+            log_queue.put(f"✅ Model downloaded successfully!")
+            log_queue.put(f"   Cached at: {model_path}")
+
+        return str(model_path)
+
+    except Exception as e:
+        if log_queue:
+            log_queue.put(f"❌ Failed to download model: {str(e)}")
+        if model_path.exists():
+            model_path.unlink()
+        raise Exception(f"Failed to download MACE foundation model: {str(e)}")
 
 PHONON_ZERO_THRESHOLD = 0.001  # meV
 
@@ -2176,7 +2249,7 @@ class CellOptimizationLogger:
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
-                         ga_params=None,  neb_initial=None, neb_finals=None):
+                         ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
     import time
     try:
         total_start_time = time.time()
@@ -2356,12 +2429,13 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 original_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.float32)
-
+                print(model_size)
                 if model_size == "7net-mf-ompa-mpa":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
                 elif model_size == "7net-mf-ompa-omat24":
-                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+                    print('here')
+                    calculator = SevenNetCalculator(model='SevenNet-mf-ompa', modal='omat24', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
                 else:
                     calculator = SevenNetCalculator(model=model_size, device=device)
@@ -2390,23 +2464,92 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         else:
             log_queue.put("Setting up MACE calculator...")
             log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
-            log_queue.put(f"Model size: {model_size}")
+            log_queue.put(f"Model identifier: {model_size}")
             log_queue.put(f"Device: {device}")
 
-            if calc_type == "GA Structure Optimization":
-                log_queue.put(f"DEBUG: Substitutions received: {substitutions}")
-                log_queue.put(f"DEBUG: GA params received: {ga_params}")
+            # Get MACE configuration from session state
+            #mace_config = st.session_state.get('mace_config', {})
+            ##mace_head = mace_config.get('head')
+            #mace_dispersion = mace_config.get('dispersion', False)
+            #mace_dispersion_xc = mace_config.get('dispersion_xc', 'pbe')
+
+            # Log configuration
+            if mace_head:
+                log_queue.put(f"📊 Prediction head: {mace_head}")
+            if mace_dispersion:
+                log_queue.put(f"🔬 D3 dispersion: Enabled ({mace_dispersion_xc})")
 
             calculator = None
 
             is_mace_off = "OFF" in selected_model
 
-            if is_mace_off and not MACE_OFF_AVAILABLE:
+            # Check if model needs to be downloaded from URL
+            # Check if model needs to be downloaded from URL
+            if is_url_model(model_size):
+                log_queue.put(f"Model requires download from URL")
+
+                try:
+                    # Download and cache the model
+                    local_model_path = download_mace_foundation_model(model_size, log_queue)
+                    log_queue.put(f"Initializing calculator from: {local_model_path}")
+
+                    # Check if this is a multi-head model
+                    is_mh = is_multihead_model(selected_model)
+
+                    # For multi-head models, head is required
+                    if is_mh and not mace_head:
+                        log_queue.put("❌ Multi-head model requires head selection!")
+                        log_queue.put(
+                            "Available heads: omat_pbe, matpes_r2scan, omol, mp_pbe_refit_add, spice_wB97M, oc20_usemppbe")
+                        return
+
+                    # Try to load with mace_mp first (supports head and dispersion)
+                    if MACE_IMPORT_METHOD == "mace_mp_and_off" or MACE_IMPORT_METHOD == "mace_mp":
+                        try:
+                            # Build calculator arguments
+                            calc_kwargs = {
+                                'model': local_model_path,
+                                'device': device,
+                                'default_dtype': dtype,
+                            }
+
+                            # Add head for multi-head models
+                            if mace_head:
+                                calc_kwargs['head'] = mace_head
+                                log_queue.put(f"Using head: {mace_head}")
+
+                            # Add dispersion if enabled
+                            if mace_dispersion:
+                                calc_kwargs['dispersion'] = True
+                                calc_kwargs['dispersion_xc'] = mace_dispersion_xc
+                                log_queue.put(f"Using D3 dispersion: {mace_dispersion_xc}")
+
+                            calculator = mace_mp(**calc_kwargs)
+                            log_queue.put(f"✅ MACE calculator initialized from downloaded model on {device}")
+
+                        except Exception as e:
+                            log_queue.put(f"❌ mace_mp failed: {str(e)}")
+                            if device == "cuda":
+                                log_queue.put("⚠️ Trying CPU fallback...")
+                                calc_kwargs['device'] = "cpu"
+                                calculator = mace_mp(**calc_kwargs)
+                                log_queue.put("✅ Calculator initialized on CPU (fallback)")
+                            else:
+                                raise
+                    else:
+                        log_queue.put("❌ URL-based models require mace_mp import method")
+                        return
+
+                except Exception as e:
+                    log_queue.put(f"❌ Failed to initialize calculator from URL: {str(e)}")
+                    return
+
+            elif is_mace_off and not MACE_OFF_AVAILABLE:
                 log_queue.put(
                     "❌ MACE-OFF models requested but not available. Please update your MACE installation.")
                 return
 
-            if MACE_IMPORT_METHOD == "mace_mp_and_off":
+            elif MACE_IMPORT_METHOD == "mace_mp_and_off":
                 try:
                     if is_mace_off:
                         log_queue.put(
@@ -2419,7 +2562,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         log_queue.put(
                             f"Initializing MACE-MP calculator on {device}...")
                         calculator = mace_mp(
-                            model=model_size, dispersion=False, default_dtype=dtype, device=device)
+                            model=model_size,
+                            dispersion=mace_dispersion,
+                            dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
+                            default_dtype=dtype,
+                            device=device
+                        )
                         log_queue.put(
                             f"✅ MACE-MP calculator initialized successfully on {device}")
                 except Exception as e:
@@ -2434,7 +2582,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                     model=model_size, default_dtype=dtype, device="cpu")
                             else:
                                 calculator = mace_mp(
-                                    model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
+                                    model=model_size,
+                                    dispersion=mace_dispersion,
+                                    dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
+                                    default_dtype=dtype,
+                                    device="cpu"
+                                )
                             log_queue.put(
                                 "✅ Calculator initialized successfully on CPU (fallback)")
                         except Exception as cpu_error:
@@ -2453,7 +2606,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(
                         f"Initializing mace_mp calculator on {device}...")
                     calculator = mace_mp(
-                        model=model_size, dispersion=False, default_dtype=dtype, device=device)
+                        model=model_size,
+                        dispersion=mace_dispersion,
+                        dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
+                        default_dtype=dtype,
+                        device=device
+                    )
                     log_queue.put(
                         f"✅ mace_mp calculator initialized successfully on {device}")
                 except Exception as e:
@@ -2464,7 +2622,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             "⚠️ GPU initialization failed, falling back to CPU...")
                         try:
                             calculator = mace_mp(
-                                model=model_size, dispersion=False, default_dtype=dtype, device="cpu")
+                                model=model_size,
+                                dispersion=mace_dispersion,
+                                dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
+                                default_dtype=dtype,
+                                device="cpu"
+                            )
                             log_queue.put(
                                 "✅ mace_mp calculator initialized successfully on CPU (fallback)")
                         except Exception as cpu_error:
@@ -3232,7 +3395,16 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 #st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
-st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
+colx1, colx2 = st.columns([2,1])
+with colx1:
+    st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
+with colx2:
+    # to cite the universal MLIPs
+    show_citations = st.checkbox("📚 Show Model **Citations & GitHub** Repositories", value=False)
+if show_citations:
+    from helpers.cite_models import  create_citation_info
+    create_citation_info()
+
 
 if 'structures' not in st.session_state:
     st.session_state.structures = {}
@@ -3364,7 +3536,78 @@ with st.sidebar:
         else:
             st.info("CHGNet uses fixed precision.")
             dtype = "float32"
+    mace_head = None
+    mace_dispersion = False
+    mace_dispersion_xc = "pbe"
 
+    col_mult1, col_mult2 = st.columns([1, 1])
+    # Only show for MACE models (not other calculators)
+
+    if not any(x in selected_model for x in ["CHGNet", "SevenNet", "MatterSim", "ORB", "Nequix"]):
+       # st.markdown("---")
+
+        is_mh_model = is_multihead_model(selected_model)
+
+        if is_mh_model:
+            #st.subheader("🎯 Multi-Head Configuration")
+            #st.success("Multi-head model - head selection required")
+            with col_mult1:
+                mace_head = st.selectbox(
+                    "Select Prediction Head *",
+                    ["omat_pbe", "matpes_r2scan", "omol", "mp_pbe_refit_add", "spice_wB97M", "oc20_usemppbe"],
+                    index=0,  # Default to omat_pbe (recommended)
+                    help="REQUIRED: Select which head to use for predictions"
+                )
+
+            with st.expander("ℹ️ About Prediction Heads"):
+                st.markdown("""
+                **Available Heads** (from model):
+
+                - **omat_pbe** ⭐ (Recommended): State-of-the-art across inorganic, organic, surfaces. Trained on OMAT dataset with PBE.
+
+                - **matpes_r2scan**: MATPES dataset with r2SCAN functional. Good for strongly correlated materials.
+
+                - **omol**: Organic molecules (OMOL dataset). Best for molecular systems and conformations.
+
+                - **mp_pbe_refit_add**: Materials Project PBE refit. Good for general materials.
+
+                - **spice_wB97M**: SPICE dataset with ωB97M-D3. Excellent for small molecules and reactions.
+
+                - **oc20_usemppbe**: Open Catalyst 2020. Optimized for catalysis and surface reactions.
+
+                **Note**: The `omat_pbe` head demonstrates state-of-the-art performance and is recommended for most applications.
+
+                📄 Paper: https://arxiv.org/abs/2510.25380
+                """)
+
+
+
+        # Dispersion correction
+            with col_mult2:
+                st.subheader("🔬 Dispersion Correction")
+                mace_dispersion = st.checkbox(
+                    "Enable D3 Dispersion",
+                    value=False,
+                    help="Add D3 dispersion correction for van der Waals interactions"
+                )
+
+                if mace_dispersion:
+                    mace_dispersion_xc = st.selectbox(
+                        "Functional",
+                        ["pbe", "pbesol", "rpbe", "blyp", "revpbe"],
+                        index=0
+                    )
+                    st.caption(f"D3-{mace_dispersion_xc} will be applied")
+
+    # Store in session state
+    if 'mace_config' not in st.session_state:
+        st.session_state.mace_config = {}
+
+    st.session_state.mace_config = {
+        'head': mace_head,
+        'dispersion': mace_dispersion,
+        'dispersion_xc': mace_dispersion_xc
+    }
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -3957,14 +4200,20 @@ with tab1:
                     current_device = device
                     current_dtype = dtype
                     current_thread_count = st.session_state.thread_count
-
+                    mace_config = st.session_state.get('mace_config', {})
+                    mace_head_for_script = mace_config.get('head')
+                    mace_dispersion_for_script = mace_config.get('dispersion', False)
+                    mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
                     generated_script = generate_md_python_script(
                         md_params,
                         current_selected_model,
                         current_model_size,
                         current_device,
                         current_dtype,
-                        current_thread_count
+                        current_thread_count,
+                        mace_head=mace_head_for_script,
+                        mace_dispersion=mace_dispersion_for_script,
+                        mace_dispersion_xc=mace_dispersion_xc_for_script
                     )
                     st.session_state.generated_md_script = generated_script
                     st.success("✅ MD script generated successfully!")
@@ -4563,7 +4812,10 @@ with tab_st:
                 }
 
             thread_count = st.session_state.get('thread_count', 4)
-
+            mace_config = st.session_state.get('mace_config', {})
+            mace_head_for_script = mace_config.get('head')
+            mace_dispersion_for_script = mace_config.get('dispersion', False)
+            mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
             local_script_content = generate_python_script_local_files(
                 calc_type=calc_type,
                 model_size=model_size,
@@ -4577,7 +4829,10 @@ with tab_st:
                 substitutions=substitutions_for_script,
                 ga_params=ga_params_for_script,
                 supercell_info=supercell_info,
-                thread_count=thread_count
+                thread_count=thread_count,
+                mace_head=mace_head_for_script,
+                mace_dispersion=mace_dispersion_for_script,
+                mace_dispersion_xc=mace_dispersion_xc_for_script
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
@@ -4644,6 +4899,11 @@ with tab_st:
 
             thread_count = st.session_state.get('thread_count', 4)
 
+            mace_config = st.session_state.get('mace_config', {})
+            mace_head_for_script = mace_config.get('head')
+            mace_dispersion_for_script = mace_config.get('dispersion', False)
+            mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
+
             script_content = generate_python_script(
                 structures=st.session_state.structures,
                 calc_type=calc_type,
@@ -4658,7 +4918,10 @@ with tab_st:
                 substitutions=substitutions_for_script,
                 ga_params=ga_params_for_script,
                 supercell_info=supercell_info,
-                thread_count=thread_count
+                thread_count=thread_count,
+                mace_head=mace_head_for_script,
+                mace_dispersion=mace_dispersion_for_script,
+                mace_dispersion_xc=mace_dispersion_xc_for_script
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -4730,7 +4993,7 @@ with tab_st:
                 target=run_mace_calculation,
                 args=(structures_to_pass, calc_type, model_size, device, optimization_params,
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
-                      st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass, neb_finals_to_pass)
+                      st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass, neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc)
             )
             thread.start()
             st.rerun()
@@ -4740,6 +5003,7 @@ with tab_st:
 with st.sidebar:
     st.info(f"**Selected Model:** {selected_model}")
     st.info(f"**Device:** {device}")
+
 
     if MACE_IMPORT_METHOD == "mace_mp":
         st.info("Using mace_mp - models downloaded automatically")
