@@ -193,4 +193,19 @@ def create_citation_info():
                 </a>
             </div>
         </div>
+        
+        <div class="model-section" style="border-left-color: #E91E63;">
+            <div class="model-title">
+                <span class="model-icon">9️⃣</span>
+                <span>PET-MAD</span>
+            </div>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2503.14118" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> arXiv Paper, 2025
+                </a>
+                <a href="https://github.com/lab-cosmo/pet-mad" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+            </div>
+        </div>
         """, unsafe_allow_html=True)
