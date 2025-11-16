@@ -114,6 +114,12 @@ except ImportError:
     ALIGNN_AVAILABLE = False
 
 try:
+    from pet_mad.calculator import PETMADCalculator
+    PETMAD_AVAILABLE = True
+except ImportError:
+    PETMAD_AVAILABLE = False
+
+try:
     from deepmd.calculator import DP
     DEEPMD_AVAILABLE = True
 except ImportError:
@@ -1666,6 +1672,7 @@ def create_xyz_content(trajectory_data, structure_name):
 
 
 MACE_MODELS = {
+    "PET-MAD v1.0.2 (Universal - MAD Dataset)": "petmad-v1.0.2-universal",
     "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
     "MACE-MP-0 (small) - Original": "small",
     "MACE-MP-0 (medium) - Original": "medium",
@@ -2272,7 +2279,52 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_deepmd = selected_model.startswith("DeePMD")
         is_alignn = selected_model.startswith("AlignN")
 
-        if is_nequix:
+        is_petmad = selected_model.startswith("PET-MAD")
+
+
+        if is_petmad:
+            log_queue.put("Setting up PET-MAD calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                is_universal = (model_size == "petmad-v1.0.2-universal")
+
+                if is_universal:
+                    log_queue.put("Loading universal PET-MAD v1.0.2 model...")
+                    log_queue.put("Model will be downloaded automatically if not cached")
+
+                    calculator = PETMADCalculator(
+                        #version="latest",  # or "v1.0.2" for specific version
+                        version="v1.0.2",
+                        device=device
+                    )
+
+                    log_queue.put(f"✅ PET-MAD universal model loaded successfully on {device}")
+                    log_queue.put("   Trained on MAD dataset (95,595 structures)")
+
+            except Exception as e:
+                log_queue.put(f"❌ PET-MAD initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        if is_universal:
+                            calculator = PETMADCalculator(
+                                version="v1.0.2",
+                                device="cpu"
+                            )
+                        else:
+                            calculator = PETMADCalculator(
+                                checkpoint=model_path,
+                                device="cpu"
+                            )
+                        log_queue.put("✅ PET-MAD initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+        elif is_nequix:
             # Nequix setup
             log_queue.put("Setting up Nequix calculator...")
             log_queue.put(f"Selected model: {selected_model}")
@@ -2288,7 +2340,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         elif is_deepmd:
             log_queue.put("Setting up DeePMD calculator...")
             try:
-                # DeepMD uses frozen model files (.pb for TensorFlow, .pth for PyTorch)
                 model_path = model_size  #
                 calculator = DP(model=model_path)
                 log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
@@ -2298,7 +2349,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         elif is_alignn:
             log_queue.put("Setting up AlignN calculator...")
             try:
-                # AlignN provides ASE calculator interface
                 if model_size == "alignn-ff-jarvis":
                     # Use pretrained JARVIS-DFT model
                     calculator = AlignnAtomwiseCalculator(path=default_path())
@@ -3467,20 +3517,28 @@ with st.sidebar:
         default_model_index = model_keys.index(defaults['selected_model'])
 
     selected_model = st.selectbox(
-        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)",
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim, PET-MAD)",
         model_keys,
         index=default_model_index
     )
     model_size = MACE_MODELS[selected_model]
 
+    is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
     is_sevennet = selected_model.startswith("SevenNet")
 
     is_mattersim = selected_model.startswith("MatterSim")
     is_nequix = selected_model.startswith("Nequix")
+    if is_petmad:
+        if not PETMAD_AVAILABLE:
+            st.error("❌ PET-MAD not available! Please install: `pip install pet-mad`")
+            st.stop()
 
-    if is_mattersim:
+        st.info("🧠 **PET-MAD**: Equivariant message-passing neural network potential")
+
+        is_universal_petmad = model_size == "petmad-v1.0.2-universal"
+    elif is_mattersim:
         if not MATTERSIM_AVAILABLE:
             st.error("❌ MatterSim not available! Please install: `pip install mattersim`")
             st.stop()
