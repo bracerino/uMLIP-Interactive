@@ -31,6 +31,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
 - [MatterSim](https://github.com/microsoft/mattersim)
 - [Nequix](https://github.com/atomicarchitects/nequix)
+- [PET-MAD](https://github.com/lab-cosmo/pet-mad)
 
 ---
 ![MACE GUI illustration](images/Mace-1.png)
