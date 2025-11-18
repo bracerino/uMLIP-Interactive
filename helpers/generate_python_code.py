@@ -2175,13 +2175,57 @@ def _generate_energy_only_code(calc_formation_energy):
 
             print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
             energy = atoms.get_potential_energy()
+            
+            # Calculate forces
+            print(f"  🔬 Calculating forces...")
+            forces = atoms.get_forces()
+            max_force = np.max(np.linalg.norm(forces, axis=1))
+            
+            # Get lattice parameters
+            lattice = get_lattice_parameters(atoms)
+            
+            # Save XYZ file with lattice and force information
+            base_name = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR', '').replace('POSCAR_', '')
+            if not base_name:
+                base_name = f"structure_{i+1}"
+            
+            #xyz_filename = f"results/{base_name}_energy.xyz"
+            xyz_filename = f"optimized_structures/{i+1}_{base_name}.xyz"
+            print(f"  💾 Saving XYZ file: {xyz_filename}")
+            
+            with open(xyz_filename, 'w') as xyz_file:
+                num_atoms = len(atoms)
+                cell_matrix = atoms.get_cell()
+                lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
+                
+                # Write number of atoms
+                xyz_file.write(f"{num_atoms}\\n")
+                
+                # Write comment line with all information
+                comment = (f'Energy={energy:.6f} Max_Force={max_force:.6f} '
+                          f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
+                          f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
+                          f'Volume={lattice["volume"]:.6f} '
+                          f'Lattice="{lattice_string}" '
+                          f'Properties=species:S:1:pos:R:3:forces:R:3')
+                xyz_file.write(f"{comment}\\n")
+                
+                # Write atomic positions and forces
+                symbols = atoms.get_chemical_symbols()
+                positions = atoms.get_positions()
+                for j, (symbol, pos, force) in enumerate(zip(symbols, positions, forces)):
+                    xyz_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f} "
+                                 f"{force[0]:12.6f} {force[1]:12.6f} {force[2]:12.6f}\\n")
 
             result = {
                 "structure": filename,
                 "energy_eV": energy,
+                "max_force_eV_per_A": max_force,
                 "calculation_type": "energy_only",
-                "num_atoms": len(atoms)
+                "num_atoms": len(atoms),
+                "xyz_file": xyz_filename
             }'''
+
 
     if calc_formation_energy:
         code += '''
