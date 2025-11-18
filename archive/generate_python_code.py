@@ -52,8 +52,16 @@ try:
 except ImportError:
     NEQUIX_AVAILABLE = False
 
+#MAD-PET
+try:
+    from pet_mad.calculator import PETMADCalculator
+    PETMAD_AVAILABLE = True
+except ImportError:
+    PETMAD_AVAILABLE = False
+
+
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -62,6 +70,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AV
     print("  - MatterSim: pip install mattersim")
     print("  - ORB: pip install orb-models")
     print("  - Nequix: pip install nequix")
+    print("  - PET-MAD: pip install pet-mad")
     exit(1)
 else:
     available_models = []
@@ -77,6 +86,8 @@ else:
         available_models.append("ORB")
     if NEQUIX_AVAILABLE:
         available_models.append("Nequix")
+    if PETMAD_AVAILABLE:
+        available_models.append("PET-MAD")
     print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
 
 
@@ -1765,6 +1776,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     """Generate calculator setup code with support for all MLIP models."""
 
     # Determine model type from selected model key
+    is_petmad = selected_model_key is not None and selected_model_key.startswith("PET-MAD")
     is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
     is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
     is_nequix = selected_model_key is not None and selected_model_key.startswith("Nequix")
@@ -1788,6 +1800,36 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     except Exception as e:
         print(f"❌ Nequix initialization failed: {{e}}")
         raise e'''
+    elif is_petmad:
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing PET-MAD calculator...")
+    try:
+        from pet_mad.calculator import PETMADCalculator
+
+        print(f"🎯 Using PET-MAD v1.0.2 (universal)")
+
+        calculator = PETMADCalculator(
+            version="v1.0.2",
+            device=device
+        )
+        print(f"✅ PET-MAD v1.0.2 initialized successfully on {{device}}")
+        print("   Trained on MAD dataset (95,595 structures)")
+
+    except Exception as e:
+        print(f"❌ PET-MAD initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = PETMADCalculator(
+                    version="v1.0.2",
+                    device="cpu"
+                )
+                print("✅ PET-MAD initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
     elif is_orb:
         # ORB setup
         calc_code = f'''    device = "{device}"
