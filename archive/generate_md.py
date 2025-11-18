@@ -171,6 +171,36 @@ except Exception as e:
 """
 
 
+    elif "PET-MAD" in actual_selected_model:
+        imports_str += """
+try:
+    from pet_mad.calculator import PETMADCalculator
+except ImportError:
+    print("Error: PET-MAD not found. Please install with: pip install pet-mad")
+    exit()
+"""
+        calculator_setup_str = f"""
+print("Setting up PET-MAD calculator...")
+try:
+    calculator = PETMADCalculator(
+        version="v1.0.2",
+        device="{device}"
+    )
+    print(f"✅ PET-MAD v1.0.2 initialized on {device}")
+    print("   Trained on MAD dataset (95,595 structures)")
+except Exception as e:
+    print(f"❌ PET-MAD initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = PETMADCalculator(
+            version="v1.0.2",
+            device="cpu"
+        )
+        print("✅ PET-MAD initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ PET-MAD CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
     elif "MACE-OFF" in actual_selected_model:
         imports_str += """
 try:
