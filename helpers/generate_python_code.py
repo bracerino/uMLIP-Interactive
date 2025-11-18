@@ -2162,7 +2162,23 @@ def _generate_energy_only_code(calc_formation_energy):
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
         atom.calc = calculator
         reference_energies[element] = atom.get_potential_energy()
-        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
+        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")
+        iso_xyz_filename = f"optimized_structures/IsolatedAtom_{element}.xyz"
+        forces = atom.get_forces()
+        with open(iso_xyz_filename, "w") as f:
+            f.write("1\\n")
+            lattice_string = "20.0 0.0 0.0 0.0 20.0 0.0 0.0 0.0 20.0"
+            f.write(
+                f'Lattice="{lattice_string}" '
+                'Properties=species:S:1:pos:R:3:forces:R:3 '
+                f'config_type=IsolatedAtom energy={reference_energies[element]:.6f} pbc="F F F"\\n'
+            )
+            f.write(
+                f"{element}  {0.0:12.6f} {0.0:12.6f} {0.0:12.6f} "
+                f"{forces[0][0]:12.6f} {forces[0][1]:12.6f} {forces[0][2]:12.6f}\\n"
+            )
+        print(f"  💾 Saved isolated atom XYZ: {iso_xyz_filename}")'''
+
 
     code += '''
 
