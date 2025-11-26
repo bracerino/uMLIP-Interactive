@@ -2171,7 +2171,7 @@ def _generate_energy_only_code(calc_formation_energy):
             f.write(
                 f'Lattice="{lattice_string}" '
                 'Properties=species:S:1:pos:R:3:forces:R:3 '
-                f'config_type=IsolatedAtom energy={reference_energies[element]:.6f} pbc="F F F"\\n'
+                f'config_type=IsolatedAtom Energy={reference_energies[element]:.6f} pbc="F F F"\\n'
             )
             f.write(
                 f"{element}  {0.0:12.6f} {0.0:12.6f} {0.0:12.6f} "
