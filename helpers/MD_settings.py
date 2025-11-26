@@ -206,7 +206,7 @@ def setup_md_parameters_ui():
                 "Pressure Time Constant (taup) (fs)",
                 min_value=10.0,
                 max_value=10000.0,
-                value=1000.0,
+                value=400.0,
                 step=100.0,
                 help="Pressure coupling timescale (used for Berendsen taup or NH pfactor calculation)"
             )
@@ -298,7 +298,7 @@ def setup_md_parameters_ui():
                 f"Temp. Time Constant ({'taut' if thermo_type=='Berendsen' else 'ttime'}) (fs)",
                 min_value=10.0,
                 max_value=1000.0,
-                value=100.0,
+                value=40.0,
                 step=10.0,
                 help=f"{thermo_type} temperature coupling time constant"
             )
