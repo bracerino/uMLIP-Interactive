@@ -3646,7 +3646,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         old_b = cellpar[1]
                         cellpar[0] = avg_ab
                         cellpar[1] = avg_ab
-                        cellpar[3:] = 90.0  # Ensure angles stay at 90
+                        # cellpar[3:] = 90.0  # Ensure angles stay at 90
+                        
                         atoms.set_cell(cellpar, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
