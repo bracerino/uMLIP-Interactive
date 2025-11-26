@@ -2050,7 +2050,7 @@ def setup_optimization_constraints(atoms, optimization_params):
 
                 cellpar[0] = avg_ab
                 cellpar[1] = avg_ab
-                cellpar[3:] = 90.0  # Ensure angles stay at 90
+                # cellpar[3:] = 90.0  # Ensure angles stay at 90
 
                 atoms.set_cell(cellpar, scale_atoms=True)
 
@@ -2087,7 +2087,7 @@ def setup_optimization_constraints(atoms, optimization_params):
 
                 cellpar[0] = avg_ab
                 cellpar[1] = avg_ab
-                cellpar[3:] = 90.0  # Ensure angles stay at 90
+                # cellpar[3:] = 90.0  # Ensure angles stay at 90
 
                 atoms.set_cell(cellpar, scale_atoms=True)
 
