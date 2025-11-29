@@ -213,7 +213,8 @@ if __name__ == "__main__":
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
-                                       mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
+                                       mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
+                                       custom_mace_path=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -221,7 +222,9 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
-        mace_dispersion_xc=mace_dispersion_xc)
+        mace_dispersion_xc=mace_dispersion_xc,
+        custom_mace_path=custom_mace_path
+    )
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -1771,10 +1774,74 @@ def _generate_structure_creation_code(structures):
 
 
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
-                                    mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
+                                    mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
+                                    custom_mace_path=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
+    if custom_mace_path:
+        # Custom MACE model setup
+        mace_args = []
+        mace_args.append(f'model="{custom_mace_path}"')
 
+        if mace_head:
+            mace_args.append(f'head="{mace_head}"')
+
+        if mace_dispersion:
+            mace_args.append(f'dispersion=True')
+            mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+        mace_args.append(f'default_dtype="{dtype}"')
+        mace_args.append(f'device=device')
+
+        mace_args_str = ',\n        '.join(mace_args)
+
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing MACE calculator with custom model...")
+    print(f"📁 Custom model path: {custom_mace_path}")
+
+        
+    if not os.path.exists("{custom_mace_path}"):
+        print(f"❌ Custom model file not found: {custom_mace_path}")
+        print(f"Please ensure the model file exists at the specified path.")
+        raise FileNotFoundError(f"Model file not found: {custom_mace_path}")
+
+    try:
+        from mace.calculators import mace_mp
+
+        print(f"⚙️  Device: {{device}}")
+        print(f"⚙️  Dtype: {dtype}")'''
+
+        if mace_head:
+            calc_code += f'''
+        print(f"🎯 Head: {mace_head}")'''
+
+        if mace_dispersion:
+            calc_code += f'''
+        print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")'''
+
+        calc_code += f'''
+
+        calculator = mace_mp(
+            {mace_args_str}
+        )
+        print(f"✅ Custom MACE model initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ Custom MACE initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = mace_mp(
+                    {mace_args_str.replace('device=device', 'device="cpu"')}
+                )
+                print("✅ Custom MACE initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+        return calc_code
     # Determine model type from selected model key
     is_petmad = selected_model_key is not None and selected_model_key.startswith("PET-MAD")
     is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
