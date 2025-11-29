@@ -1673,6 +1673,7 @@ def create_xyz_content(trajectory_data, structure_name):
 
 MACE_MODELS = {
     "PET-MAD v1.0.2 (Universal - MAD Dataset)": "petmad-v1.0.2-universal",
+    "Custom MACE Model 🔧": "custom",
     "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
     "MACE-MP-0 (small) - Original": "small",
     "MACE-MP-0 (medium) - Original": "medium",
@@ -3523,6 +3524,50 @@ with st.sidebar:
     )
     model_size = MACE_MODELS[selected_model]
 
+    is_custom_mace = (selected_model == "Custom MACE Model 🔧")
+    custom_mace_path = None
+
+    if is_custom_mace:
+        st.markdown("---")
+        st.markdown("### 🔧 Custom MACE Model Configuration")
+
+        custom_mace_path = st.text_input(
+            "Path to .model file *",
+            value="",
+            placeholder="/path/to/your/model.model",
+            help="Provide the full path to your custom MACE .model file"
+        )
+
+        # Validate the path
+        if custom_mace_path:
+            import os
+
+            if os.path.exists(custom_mace_path):
+                if os.path.isfile(custom_mace_path):
+                    if custom_mace_path.endswith('.model'):
+                        st.success(f"✅ Model file found")
+                        model_name = os.path.basename(custom_mace_path)
+                        model_dir = os.path.dirname(custom_mace_path)
+                        st.info(f"**Name:** `{model_name}`\n\n**Path:** `{model_dir}`")
+                    else:
+                        st.warning("⚠️ File should have .model extension")
+                elif os.path.isdir(custom_mace_path):
+                    st.error("❌ This is a directory. Please provide the full path to the .model file.")
+                    try:
+                        model_files = [f for f in os.listdir(custom_mace_path) if f.endswith('.model')]
+                        if model_files:
+                            st.info(f"Found {len(model_files)} .model file(s) in this directory:")
+                            for mf in model_files[:5]:
+                                st.code(os.path.join(custom_mace_path, mf))
+                    except:
+                        pass
+                else:
+                    st.error("❌ Path exists but is not a regular file")
+            else:
+                st.error("❌ File not found at this path")
+        else:
+            st.warning("⚠️ Please provide a path to your custom .model file")
+
     is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
@@ -4874,6 +4919,12 @@ with tab_st:
             mace_head_for_script = mace_config.get('head')
             mace_dispersion_for_script = mace_config.get('dispersion', False)
             mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
+
+            custom_mace_path_for_script = custom_mace_path if is_custom_mace else None
+            if is_custom_mace and not custom_mace_path:
+                st.error("❌ Please provide a path to your custom MACE model")
+                st.stop()
+
             local_script_content = generate_python_script_local_files(
                 calc_type=calc_type,
                 model_size=model_size,
@@ -4890,7 +4941,8 @@ with tab_st:
                 thread_count=thread_count,
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
-                mace_dispersion_xc=mace_dispersion_xc_for_script
+                mace_dispersion_xc=mace_dispersion_xc_for_script,
+                custom_mace_path=custom_mace_path_for_script
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
