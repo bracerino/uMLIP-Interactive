@@ -48,7 +48,7 @@ If you are using Windows, please compile the app in WSL (if you do not have WSL,
       **sudo apt install git**    
 
 Currently, certain u-MLIP does not share compatible versions of certain packages (Torch, ...) with each other. Depending on which u-MLIP you want to use, please choose one option: 
-#### To run simulations with **MACE, CHGNet, SevenNet, and Orb-v3**:
+#### To run simulations with **MACE, CHGNet, SevenNet, Orb-v3, and PET-MAD**:
 
   1) Download updates and prerequisites (if you are using WSL, include also 'python3.12-dev'):  
      **sudo apt update**  
