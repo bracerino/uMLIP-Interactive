@@ -9,7 +9,8 @@ py3Dmol==2.5.0
 psutil
 gputil
 
-torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models 
+torch==2.7.1
+#torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models 
 #torchvision==0.22.1
 #torch==2.7.1
 #torchaudio==2.7.1
