@@ -4140,22 +4140,30 @@ with tab1:
     else:
         st.markdown(
             """
-            <div style="
-              background-color: #e8f4fd;
-              border-left: 6px solid #2196f3;
-              padding: 15px;
-              border-radius: 8px;
-              font-family: Arial, sans-serif;
-              color: #0d47a1;
-              max-width: 800px;
-              margin: 10px 0;
-            ">
-              <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
-            </div>
+        <div style="
+          background-color: #e8f4fd;
+          border-left: 6px solid #2196f3;
+          padding: 15px;
+          border-radius: 8px;
+          font-family: Arial, sans-serif;
+          color: #0d47a1;
+          max-width: 800px;
+          margin: 10px 0;
+        ">
+          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).<br><br>
+
+          If you like the uMLIP-Interactive, please
+          <strong><a style="color:#0b63c4;" href="https://arxiv.org/abs/2512.05568" target="_blank">📖 cite this work</a></strong>
+          Please also cite the:
+          <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
+          and the publications corresponding to the employed uMLIPs:
+          <strong><span style="color:#0b63c4;">(see 'Show Model Citations' in the right corner)</span></strong>
+        </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
+
     if True:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
 
@@ -4809,7 +4817,7 @@ with tab_st:
                       margin: 10px 0;
                     ">
                       <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
+                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)..
                     </div>
                     """,
                     unsafe_allow_html=True
