@@ -37,6 +37,9 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 
 ---
 ![MACE GUI illustration](images/Mace-1.png)
+---
+![MACE GUI Console](images/Mace-2.png)
+---
 
 ### **Compile the app**  
 
@@ -109,7 +112,6 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
 
 ### **Workflow**
 
-![MACE GUI Console](images/Mace-2.png)
 
 ---
 
