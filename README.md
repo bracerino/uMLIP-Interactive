@@ -12,12 +12,11 @@ Run basic molecular dynamics/static simulations:
 In an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim / PET-MAD interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
+#### References
 - 📖 If you like the app, **please cite** the following work (arXiv, preprint): [Lebeda, M., Drahokoupil, J., Mazáčová, V., & Vlčák, P. (2025). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials. arXiv preprint.](https://arxiv.org/abs/2512.05568). 
-- 📖 Please also cite the **[Atomic Simulation Environment (ASE)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e/meta?casa_token=ylmp7uEZ-BYAAAAA:SRe2v_QrxXhw5O0ZrwNP5yyNQ8HbaG5vcbvBK98BQ6aZIs-qJ6C_1gjYBQ552Y68eJhnK0vPOheT8-R2gyGlaxCsnhGs)** and the employed uMLIP (you can see the corresponding publications for each model in the right corner of the app). 
+- 📖 Please also cite the **[Atomic Simulation Environment (ASE)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e/meta?casa_token=ylmp7uEZ-BYAAAAA:SRe2v_QrxXhw5O0ZrwNP5yyNQ8HbaG5vcbvBK98BQ6aZIs-qJ6C_1gjYBQ552Y68eJhnK0vPOheT8-R2gyGlaxCsnhGs)** and the employed uMLIP (you can see the corresponding publications for each model in the right corner of the app).  
 
-
-
-
+#### Tutorials
 - 🎥 **Video tutorial for the calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
 - 🎥 **Video tutorial for using the genetic algorithm with MACE to obtain candidates for the lowest energy distributions of point defects in crystal structure [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.   
 - 🎥 **Video tutorial for using the generated Python script for the calculations at [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw).** Make sure that before running the Python code, you activated the virtual Python environment with the installed necessary Python packages (Step 4 in the compilation manual below).
@@ -27,7 +26,7 @@ If you using the app, do not forgot from time to time to **update it with 'git p
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
 Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000**. 
 
-#### Currently supported uMLIP:
+#### Currently supported uMLIP
 - [MACE](https://github.com/ACEsuit/mace)  
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
 - [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
