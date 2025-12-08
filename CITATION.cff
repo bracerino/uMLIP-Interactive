@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software/paper, please cite the following article."
+title: "Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials"
+authors:
+  - family-names: Lebeda
+    given-names: Miroslav
+  - family-names: Drahokoupil
+    given-names: Jan
+  - family-names: Mazáčová
+    given-names: Veronika
+  - family-names: Vlčák
+    given-names: Petr
+version: 1.0.0
+identifiers:
+  - type: arxiv
+    value: 2512.05568
+date-released: 2025-12-05
+type: article
+url: "https://arxiv.org/abs/2512.05568"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Lebeda
+      given-names: Miroslav
+    - family-names: Drahokoupil
+      given-names: Jan
+    - family-names: Mazáčová
+      given-names: Veronika
+    - family-names: Vlčák
+      given-names: Petr
+  title: "Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials"
+  journal: "arXiv preprint"
+  year: 2025
+  arxiv: 2512.05568
+  url: "https://arxiv.org/abs/2512.05568"
