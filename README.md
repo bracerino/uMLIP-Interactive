@@ -12,6 +12,8 @@ Run basic molecular dynamics/static simulations:
 In an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim / PET-MAD interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
+If you like the app, please cite the following work (arXiv, preprint): [Lebeda, M., Drahokoupil, J., Mazáčová, V., & Vlčák, P. (2025). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials. arXiv preprint. https://arxiv.org/abs/2512.05568](https://arxiv.org/abs/2512.05568).
+
 
 
 
