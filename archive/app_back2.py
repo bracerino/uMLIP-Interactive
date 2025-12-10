@@ -114,6 +114,12 @@ except ImportError:
     ALIGNN_AVAILABLE = False
 
 try:
+    from pet_mad.calculator import PETMADCalculator
+    PETMAD_AVAILABLE = True
+except ImportError:
+    PETMAD_AVAILABLE = False
+
+try:
     from deepmd.calculator import DP
     DEEPMD_AVAILABLE = True
 except ImportError:
@@ -1666,6 +1672,8 @@ def create_xyz_content(trajectory_data, structure_name):
 
 
 MACE_MODELS = {
+    "PET-MAD v1.0.2 (Universal - MAD Dataset)": "petmad-v1.0.2-universal",
+    "Custom MACE Model 🔧": "custom",
     "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
     "MACE-MP-0 (small) - Original": "small",
     "MACE-MP-0 (medium) - Original": "medium",
@@ -2043,7 +2051,7 @@ def setup_optimization_constraints(atoms, optimization_params):
 
                 cellpar[0] = avg_ab
                 cellpar[1] = avg_ab
-                cellpar[3:] = 90.0  # Ensure angles stay at 90
+                # cellpar[3:] = 90.0  # Ensure angles stay at 90
 
                 atoms.set_cell(cellpar, scale_atoms=True)
 
@@ -2080,7 +2088,7 @@ def setup_optimization_constraints(atoms, optimization_params):
 
                 cellpar[0] = avg_ab
                 cellpar[1] = avg_ab
-                cellpar[3:] = 90.0  # Ensure angles stay at 90
+                # cellpar[3:] = 90.0  # Ensure angles stay at 90
 
                 atoms.set_cell(cellpar, scale_atoms=True)
 
@@ -2272,7 +2280,52 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_deepmd = selected_model.startswith("DeePMD")
         is_alignn = selected_model.startswith("AlignN")
 
-        if is_nequix:
+        is_petmad = selected_model.startswith("PET-MAD")
+
+
+        if is_petmad:
+            log_queue.put("Setting up PET-MAD calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+
+            try:
+                is_universal = (model_size == "petmad-v1.0.2-universal")
+
+                if is_universal:
+                    log_queue.put("Loading universal PET-MAD v1.0.2 model...")
+                    log_queue.put("Model will be downloaded automatically if not cached")
+
+                    calculator = PETMADCalculator(
+                        #version="latest",  # or "v1.0.2" for specific version
+                        version="v1.0.2",
+                        device=device
+                    )
+
+                    log_queue.put(f"✅ PET-MAD universal model loaded successfully on {device}")
+                    log_queue.put("   Trained on MAD dataset (95,595 structures)")
+
+            except Exception as e:
+                log_queue.put(f"❌ PET-MAD initialization failed on {device}: {str(e)}")
+                if device == "cuda":
+                    log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
+                    try:
+                        if is_universal:
+                            calculator = PETMADCalculator(
+                                version="v1.0.2",
+                                device="cpu"
+                            )
+                        else:
+                            calculator = PETMADCalculator(
+                                checkpoint=model_path,
+                                device="cpu"
+                            )
+                        log_queue.put("✅ PET-MAD initialized successfully on CPU (fallback)")
+                    except Exception as cpu_error:
+                        log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        return
+                else:
+                    return
+        elif is_nequix:
             # Nequix setup
             log_queue.put("Setting up Nequix calculator...")
             log_queue.put(f"Selected model: {selected_model}")
@@ -2288,7 +2341,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         elif is_deepmd:
             log_queue.put("Setting up DeePMD calculator...")
             try:
-                # DeepMD uses frozen model files (.pb for TensorFlow, .pth for PyTorch)
                 model_path = model_size  #
                 calculator = DP(model=model_path)
                 log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
@@ -2298,7 +2350,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         elif is_alignn:
             log_queue.put("Setting up AlignN calculator...")
             try:
-                # AlignN provides ASE calculator interface
                 if model_size == "alignn-ff-jarvis":
                     # Use pretrained JARVIS-DFT model
                     calculator = AlignnAtomwiseCalculator(path=default_path())
@@ -3467,20 +3518,72 @@ with st.sidebar:
         default_model_index = model_keys.index(defaults['selected_model'])
 
     selected_model = st.selectbox(
-        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim)",
+        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim, PET-MAD)",
         model_keys,
         index=default_model_index
     )
     model_size = MACE_MODELS[selected_model]
 
+    is_custom_mace = (selected_model == "Custom MACE Model 🔧")
+    custom_mace_path = None
+
+    if is_custom_mace:
+        st.markdown("---")
+        st.markdown("### 🔧 Custom MACE Model Configuration")
+
+        custom_mace_path = st.text_input(
+            "Path to .model file *",
+            value="",
+            placeholder="/path/to/your/model.model",
+            help="Provide the full path to your custom MACE .model file"
+        )
+
+        # Validate the path
+        if custom_mace_path:
+            import os
+
+            if os.path.exists(custom_mace_path):
+                if os.path.isfile(custom_mace_path):
+                    if custom_mace_path.endswith('.model'):
+                        st.success(f"✅ Model file found")
+                        model_name = os.path.basename(custom_mace_path)
+                        model_dir = os.path.dirname(custom_mace_path)
+                        st.info(f"**Name:** `{model_name}`\n\n**Path:** `{model_dir}`")
+                    else:
+                        st.warning("⚠️ File should have .model extension")
+                elif os.path.isdir(custom_mace_path):
+                    st.error("❌ This is a directory. Please provide the full path to the .model file.")
+                    try:
+                        model_files = [f for f in os.listdir(custom_mace_path) if f.endswith('.model')]
+                        if model_files:
+                            st.info(f"Found {len(model_files)} .model file(s) in this directory:")
+                            for mf in model_files[:5]:
+                                st.code(os.path.join(custom_mace_path, mf))
+                    except:
+                        pass
+                else:
+                    st.error("❌ Path exists but is not a regular file")
+            else:
+                st.error("❌ File not found at this path")
+        else:
+            st.warning("⚠️ Please provide a path to your custom .model file")
+
+    is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
     is_sevennet = selected_model.startswith("SevenNet")
 
     is_mattersim = selected_model.startswith("MatterSim")
     is_nequix = selected_model.startswith("Nequix")
+    if is_petmad:
+        if not PETMAD_AVAILABLE:
+            st.error("❌ PET-MAD not available! Please install: `pip install pet-mad`")
+            st.stop()
 
-    if is_mattersim:
+        st.info("🧠 **PET-MAD**: Equivariant message-passing neural network potential")
+
+        is_universal_petmad = model_size == "petmad-v1.0.2-universal"
+    elif is_mattersim:
         if not MATTERSIM_AVAILABLE:
             st.error("❌ MatterSim not available! Please install: `pip install mattersim`")
             st.stop()
@@ -4037,22 +4140,30 @@ with tab1:
     else:
         st.markdown(
             """
-            <div style="
-              background-color: #e8f4fd;
-              border-left: 6px solid #2196f3;
-              padding: 15px;
-              border-radius: 8px;
-              font-family: Arial, sans-serif;
-              color: #0d47a1;
-              max-width: 800px;
-              margin: 10px 0;
-            ">
-              <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-              (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
-            </div>
+        <div style="
+          background-color: #e8f4fd;
+          border-left: 6px solid #2196f3;
+          padding: 15px;
+          border-radius: 8px;
+          font-family: Arial, sans-serif;
+          color: #0d47a1;
+          max-width: 800px;
+          margin: 10px 0;
+        ">
+          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
+          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).<br><br>
+
+          If you like the uMLIP-Interactive, please
+          <strong><a style="color:#0b63c4;" href="https://arxiv.org/abs/2512.05568" target="_blank">📖 cite this work</a></strong>
+          Please also cite the:
+          <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
+          and the publications corresponding to the employed uMLIPs:
+          <strong><span style="color:#0b63c4;">(see 'Show Model Citations' in the right corner)</span></strong>
+        </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
+
     if True:
         show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
 
@@ -4706,7 +4817,7 @@ with tab_st:
                       margin: 10px 0;
                     ">
                       <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)
+                      (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>)..
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -4816,6 +4927,12 @@ with tab_st:
             mace_head_for_script = mace_config.get('head')
             mace_dispersion_for_script = mace_config.get('dispersion', False)
             mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
+
+            custom_mace_path_for_script = custom_mace_path if is_custom_mace else None
+            if is_custom_mace and not custom_mace_path:
+                st.error("❌ Please provide a path to your custom MACE model")
+                st.stop()
+
             local_script_content = generate_python_script_local_files(
                 calc_type=calc_type,
                 model_size=model_size,
@@ -4832,7 +4949,8 @@ with tab_st:
                 thread_count=thread_count,
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
-                mace_dispersion_xc=mace_dispersion_xc_for_script
+                mace_dispersion_xc=mace_dispersion_xc_for_script,
+                custom_mace_path=custom_mace_path_for_script
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
