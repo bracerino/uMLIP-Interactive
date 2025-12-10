@@ -9,8 +9,8 @@ py3Dmol==2.5.0
 psutil
 gputil
 
-torch==2.7.1
-#torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models 
+#torch==2.7.1  # compatible with MACE, CHGNet, SevenNet, orb-models, PET-MAD
+torch==2.8.0 # compatible with MACE, CHGNet, SevenNet, orb-models 
 #torchvision==0.22.1
 #torch==2.7.1
 #torchaudio==2.7.1
@@ -25,7 +25,7 @@ sevenn==0.10.4
 #mattersim
 orb-models==0.5.5
 nequix==0.2.0
-pet-mad==1.4.3
+#pet-mad==1.4.3
 
 torch-dftd # for mace-mh d3 dispersion corrections
 
