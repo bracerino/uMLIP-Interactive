@@ -34,19 +34,21 @@ from ase.md.nptberendsen import NPTBerendsen
 
 from ase.md.nptberendsen import NPTBerendsen
 
-# Import NPT methods with availability checks
+#Available in 3.25
 try:
     from ase.md.nose_hoover_chain import IsotropicMTKNPT
     NPT_MTK_ISO_AVAILABLE = True
 except ImportError:
     NPT_MTK_ISO_AVAILABLE = False
 
+#Available in 3.26
 try:
     from ase.md.nose_hoover_chain import MTKNPT
     NPT_MTK_FULL_AVAILABLE = True
 except ImportError:
     NPT_MTK_FULL_AVAILABLE = False
 
+#Available only in the development branch of ASE, probably will be in ASE 3.27
 try:
     from ase.md.langevinbaoab import LangevinBAOAB
     NPT_BAOAB_AVAILABLE = True
@@ -59,7 +61,7 @@ try:
 except ImportError:
     NPT_MELCHIONNA_AVAILABLE = False
 
-# Legacy NPT (Nose-Hoover) for backwards compatibility
+
 try:
     from ase.md.npt import NPT as NPTNoseHoover
     NPT_NH_AVAILABLE = True
