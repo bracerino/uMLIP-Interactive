@@ -31,11 +31,41 @@ from ase.build import make_supercell
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.nptberendsen import NPTBerendsen
+
+from ase.md.nptberendsen import NPTBerendsen
+
+# Import NPT methods with availability checks
+try:
+    from ase.md.nose_hoover_chain import IsotropicMTKNPT
+    NPT_MTK_ISO_AVAILABLE = True
+except ImportError:
+    NPT_MTK_ISO_AVAILABLE = False
+
+try:
+    from ase.md.nose_hoover_chain import MTKNPT
+    NPT_MTK_FULL_AVAILABLE = True
+except ImportError:
+    NPT_MTK_FULL_AVAILABLE = False
+
+try:
+    from ase.md.langevinbaoab import LangevinBAOAB
+    NPT_BAOAB_AVAILABLE = True
+except ImportError:
+    NPT_BAOAB_AVAILABLE = False
+
+try:
+    from ase.md.melchionna import MelchionnaNPT
+    NPT_MELCHIONNA_AVAILABLE = True
+except ImportError:
+    NPT_MELCHIONNA_AVAILABLE = False
+
+# Legacy NPT (Nose-Hoover) for backwards compatibility
 try:
     from ase.md.npt import NPT as NPTNoseHoover
     NPT_NH_AVAILABLE = True
 except ImportError:
     NPT_NH_AVAILABLE = False
+    
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.logger import MDLogger
 from collections import deque
@@ -795,7 +825,104 @@ def run_md_simulation(atoms, basename, calculator):
         taut_fs = md_params.get('taut', 100.0) * units.fs
         md = NVTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, taut=taut_fs)
         print(f"  Initialized NVT-Berendsen ensemble (taut={{taut_fs / units.fs:.1f}} fs).")
+    
+    elif ensemble == "NPT (MTK Isotropic)":
+        if not NPT_MTK_ISO_AVAILABLE:
+            print("\\n*** ERROR: NPT (MTK Isotropic) not available. Requires ASE >= 3.22. ***")
+            sys.exit(1)
+        
+        tdamp_fs = md_params.get('taut', 100.0) * units.fs
+        pdamp_fs = md_params.get('taup', 1000.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        pressure_au = pressure_gpa * units.GPa
+        
+        md = IsotropicMTKNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            pressure_au=pressure_au,
+            tdamp=tdamp_fs,
+            pdamp=pdamp_fs
+        )
+        
+        print(f"  Initialized NPT (MTK Isotropic) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+        print(f"    T damping (tdamp): {{tdamp_fs / units.fs:.1f}} fs")
+        print(f"    P damping (pdamp): {{pdamp_fs / units.fs:.1f}} fs")
 
+    elif ensemble == "NPT (MTK Full)":
+        if not NPT_MTK_FULL_AVAILABLE:
+            print("\\n*** ERROR: NPT (MTK Full) not available. Requires ASE >= 3.26. ***")
+            sys.exit(1)
+        
+        tdamp_fs = md_params.get('taut', 100.0) * units.fs
+        pdamp_fs = md_params.get('taup', 1000.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        pressure_au = pressure_gpa * units.GPa
+        
+        md = MTKNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            pressure_au=pressure_au,
+            tdamp=tdamp_fs,
+            pdamp=pdamp_fs
+        )
+        
+        print(f"  Initialized NPT (MTK Full) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+        print(f"    T damping (tdamp): {{tdamp_fs / units.fs:.1f}} fs")
+        print(f"    P damping (pdamp): {{pdamp_fs / units.fs:.1f}} fs")
+
+    elif ensemble == "NPT (BAOAB Langevin)":
+        if not NPT_BAOAB_AVAILABLE:
+            print("\\n*** ERROR: NPT (BAOAB) not available. Requires ASE dev version. ***")
+            sys.exit(1)
+        
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        externalstress = -pressure_gpa * units.GPa
+        T_tau = md_params.get('taut', 100.0) * units.fs
+        P_tau = md_params.get('taup', 1000.0) * units.fs
+        
+        md = LangevinBAOAB(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            externalstress=externalstress,
+            T_tau=T_tau,
+            P_tau=P_tau
+        )
+        
+        print(f"  Initialized NPT (BAOAB Langevin) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+
+    elif ensemble == "NPT (Melchionna)":
+        if not NPT_MELCHIONNA_AVAILABLE:
+            print("\\n*** ERROR: NPT (Melchionna) not available. Requires ASE dev version. ***")
+            sys.exit(1)
+        
+        ttime_fs = md_params.get('taut', 100.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        externalstress = -pressure_gpa * units.GPa
+        bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
+        taup_fs = md_params.get('taup', 1000.0) * units.fs
+        pfactor = (taup_fs ** 2) * bulk_modulus_gpa * units.GPa
+        
+        md = MelchionnaNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            externalstress=externalstress,
+            ttime=ttime_fs,
+            pfactor=pfactor
+        )
+        
+        print(f"  Initialized NPT (Melchionna) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
     elif ensemble == "NPT (Berendsen)":
         taut_fs = md_params.get('taut', 100.0) * units.fs
         taup_fs = md_params.get('taup', 1000.0) * units.fs 
