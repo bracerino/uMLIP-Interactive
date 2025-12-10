@@ -1,0 +1,16 @@
+
+streamlit==1.45.1
+plotly
+pymatgen==2025.6.14
+matscipy==1.2.0 # required for ASE 3.26
+ase==3.26.0
+#ase==3.25.0
+phonopy==2.40.0
+py3Dmol==2.5.0
+
+
+psutil
+gputil
+
+#torch==2.7.1  # compatible with MACE, CHGNet, SevenNet, orb-models, PET-MAD
+pet-mad==1.4.3
