@@ -5,7 +5,7 @@ import copy  # Import copy
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
-                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
+                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",custom_mace_path=None):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -267,11 +267,73 @@ except ImportError:
     print("Error: MACE not found. Please install with: pip install mace-torch")
     exit()
 """
-        # Check if this is a URL-based foundation model
-        is_url_model = actual_model_size.startswith("http://") or actual_model_size.startswith("https://")
+    # Check if this is a custom/local model
+        is_custom_model = custom_mace_path is not None and custom_mace_path.strip() != ""
+        is_url_model = model_size.startswith("http://") or model_size.startswith("https://")
+        print("SSSS")
+        print(custom_mace_path)
+        print("SS")
 
-        if is_url_model:
-            # URL-based foundation model with download support
+        if is_custom_model:
+            print("HE")
+            # Custom local model path
+            calculator_setup_str = f"""
+print("Setting up MACE calculator from local model...")
+
+custom_model_path = "{custom_mace_path}"
+print(f"Loading custom model from: {{custom_model_path}}")
+
+if not os.path.exists(custom_model_path):
+    print(f"❌ Model file not found at: {{custom_model_path}}")
+    exit()
+
+print(f"⚙️  Device: {device}")
+print(f"⚙️  Dtype: {dtype}")"""
+
+            if mace_head:
+                calculator_setup_str += f"""
+print(f"🎯 Head: {mace_head}")"""
+
+            if mace_dispersion:
+                calculator_setup_str += f"""
+print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
+
+        # Build calculator arguments
+            calc_args = [
+                f'model=custom_model_path',
+                f'device="{device}"',
+                f'default_dtype="{dtype}"'
+            ]
+
+            if mace_head:
+                calc_args.append(f'head="{mace_head}"')
+
+            if mace_dispersion:
+                calc_args.append(f'dispersion=True')
+                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+            calc_args_str = ',\n        '.join(calc_args)
+
+            calculator_setup_str += f"""
+try:
+    calculator = mace_mp(
+        {calc_args_str}
+    )
+    print(f"✅ Custom MACE model initialized on {device}")
+except Exception as e:
+    print(f"❌ Custom MACE initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = mace_mp(
+            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+        )
+        print("✅ Custom MACE initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
+        elif is_url_model:
             calculator_setup_str = f"""
 print("Setting up MACE foundation model from URL...")
 
@@ -316,23 +378,23 @@ try:
                 calculator_setup_str += f"""
     print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
 
-            # Build calculator arguments
-            calc_args = [
-                f'model=local_model_path',
-                f'device="{device}"',
-                f'default_dtype="{dtype}"'
-            ]
+                # Build calculator arguments
+                calc_args = [
+                    f'model=local_model_path',
+                    f'device="{device}"',
+                    f'default_dtype="{dtype}"'
+                ]
 
-            if mace_head:
-                calc_args.append(f'head="{mace_head}"')
+                if mace_head:
+                    calc_args.append(f'head="{mace_head}"')
 
-            if mace_dispersion:
-                calc_args.append(f'dispersion=True')
-                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+                if mace_dispersion:
+                    calc_args.append(f'dispersion=True')
+                    calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
 
-            calc_args_str = ',\n        '.join(calc_args)
+                calc_args_str = ',\n        '.join(calc_args)
 
-            calculator_setup_str += f"""
+                calculator_setup_str += f"""
 
     calculator = mace_mp(
         {calc_args_str}
@@ -351,8 +413,8 @@ except Exception as e:
         print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
         exit()
 """
-
         else:
+            print("ALSO_")
             # Standard MACE-MP model
             calc_args = [
                 f'model="{actual_model_size}"',
