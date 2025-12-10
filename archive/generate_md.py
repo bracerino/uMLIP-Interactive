@@ -614,28 +614,30 @@ class XYZTrajectoryWriter:
         try:
             current_atoms = self.atoms
             positions = current_atoms.get_positions()
+            forces = current_atoms.get_forces()  # Add this line to get forces
             symbols = current_atoms.get_chemical_symbols()
             num_atoms = len(current_atoms)
-
+    
             energy = current_atoms.get_potential_energy()
             temp = current_atoms.get_temperature()
             cell = current_atoms.get_cell()
             lattice_str = " ".join(f"{x:.8f}" for x in cell.array.flatten())
-
+    
             comment = (f'Step={self.step_count} Time={self.step_count * md_params["timestep"]:.3f}fs '
                        f'Energy={energy:.6f}eV Temp={temp:.2f}K '
-                       f'Lattice="{lattice_str}" Properties=species:S:1:pos:R:3')
-
+                       f'Lattice="{lattice_str}" Properties=species:S:1:pos:R:3:forces:R:3')
+    
             self.file.write(f"{num_atoms}\\n")
             self.file.write(f"{comment}\\n")
-
+    
             for i in range(num_atoms):
-                self.file.write(f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f}\\n")
-
+                self.file.write(f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f} "
+                              f"{forces[i, 0]:15.8f} {forces[i, 1]:15.8f} {forces[i, 2]:15.8f}\\n")
+    
             self.file.flush()
-
+    
             self.step_count += md_params.get('traj_interval', 1)
-
+    
         except Exception as e:
             print(f"  Error writing XYZ frame at step {self.step_count}: {e}")
 
