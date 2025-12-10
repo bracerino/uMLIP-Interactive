@@ -128,7 +128,7 @@ if not fairchem_task:
     print("  To use Fairchem UMA models, please add `fairchem_task` (e.g., 'oc20', 'omat', 'omol') to md_params.")
     exit()
 
-calc_device = "{device}" # Use the top-level device setting passed to the function
+calc_device = "{device}" 
 
 try:
     print(f"  Loading predictor for model: {fairchem_model_name} on device: {{calc_device}}")
@@ -269,7 +269,6 @@ except ImportError:
     print("Error: MACE not found. Please install with: pip install mace-torch")
     exit()
 """
-    # Check if this is a custom/local model
         is_custom_model = custom_mace_path is not None and custom_mace_path.strip() != ""
         is_url_model = model_size.startswith("http://") or model_size.startswith("https://")
         print("SSSS")
@@ -300,7 +299,6 @@ print(f"🎯 Head: {mace_head}")"""
                 calculator_setup_str += f"""
 print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
 
-        # Build calculator arguments
             calc_args = [
                 f'model=custom_model_path',
                 f'device="{device}"',
@@ -708,7 +706,7 @@ class XYZTrajectoryWriter:
         try:
             current_atoms = self.atoms
             positions = current_atoms.get_positions()
-            forces = current_atoms.get_forces()  # Add this line to get forces
+            forces = current_atoms.get_forces()  
             symbols = current_atoms.get_chemical_symbols()
             num_atoms = len(current_atoms)
     
@@ -1115,7 +1113,6 @@ def run_md_simulation(atoms, basename, calculator):
             print(f"  Initialized NPT-Nose-Hoover (ISOTROPIC) ensemble.")
             print(f"    Target P: {{pressure_gpa}} GPa")
             npt_nh_kwargs['externalstress'] = externalstress
-             # Determine mask based on fix_angles for isotropic
             if fix_angles:
                  mask = np.diag([1, 1, 1]) # Fix shear components
                  print("    Angles fixed (only diagonal strain allowed).")
