@@ -1,9 +1,20 @@
 import pprint
 import textwrap
 from collections import deque
+import copy  # Import copy
 
 
-def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count):
+def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
+                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
+    if md_params.get('use_fairchem'):
+        actual_selected_model = "Fairchem (UMA Override)"
+        actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
+        add_fairchem_imports = True
+    else:
+        actual_selected_model = selected_model
+        actual_model_size = model_size
+        add_fairchem_imports = "Fairchem" in selected_model
+
     calculator_setup_str = ""
     imports_str = f"""
 import os
@@ -20,18 +31,48 @@ from ase.build import make_supercell
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.nptberendsen import NPTBerendsen
+
+from ase.md.nptberendsen import NPTBerendsen
+
+# Import NPT methods with availability checks
+try:
+    from ase.md.nose_hoover_chain import IsotropicMTKNPT
+    NPT_MTK_ISO_AVAILABLE = True
+except ImportError:
+    NPT_MTK_ISO_AVAILABLE = False
+
+try:
+    from ase.md.nose_hoover_chain import MTKNPT
+    NPT_MTK_FULL_AVAILABLE = True
+except ImportError:
+    NPT_MTK_FULL_AVAILABLE = False
+
+try:
+    from ase.md.langevinbaoab import LangevinBAOAB
+    NPT_BAOAB_AVAILABLE = True
+except ImportError:
+    NPT_BAOAB_AVAILABLE = False
+
+try:
+    from ase.md.melchionna import MelchionnaNPT
+    NPT_MELCHIONNA_AVAILABLE = True
+except ImportError:
+    NPT_MELCHIONNA_AVAILABLE = False
+
+# Legacy NPT (Nose-Hoover) for backwards compatibility
 try:
     from ase.md.npt import NPT as NPTNoseHoover
     NPT_NH_AVAILABLE = True
 except ImportError:
     NPT_NH_AVAILABLE = False
+    
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.logger import MDLogger
 from collections import deque
 import io
 
 try:
-    from nequix.ase_calculator import NequixCalculator
+    from nequix.calculator import NequixCalculator
 except ImportError:
     print("Warning: Nequix (from atomicarchitects) not found. Will fail if Nequix model is selected.")
 try:
@@ -57,37 +98,140 @@ os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 torch.set_num_threads({thread_count})
 """
 
-    if "CHGNet" in selected_model:
+    if add_fairchem_imports:
         imports_str += """
 try:
+    from fairchem.core import pretrained_mlip, FAIRChemCalculator
+except ImportError:
+    print("Error: fairchem-core not found. Please install with: pip install fairchem-core")
+    exit()
+"""
+
+    if "Fairchem" in actual_selected_model:
+        fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
+        calculator_setup_str = f"""
+print("Setting up Fairchem/UMA calculator...")
+
+fairchem_key = md_params.get('fairchem_key', None)
+if fairchem_key:
+    print("  Setting HF_TOKEN (Hugging Face) environment variable for UMA models...")
+    os.environ['HF_TOKEN'] = str(fairchem_key)
+else:
+    print("  Warning: 'fairchem_key' not found in md_params. This may be required for gated UMA models.")
+    print("  Proceeding without it (OK if token is already set globally).")
+
+fairchem_task = md_params.get('fairchem_task', None)
+if not fairchem_task:
+    print("❌ ERROR: 'fairchem_task' not found in md_params.")
+    print("  To use Fairchem UMA models, please add `fairchem_task` (e.g., 'oc20', 'omat', 'omol') to md_params.")
+    exit()
+
+calc_device = "{device}" # Use the top-level device setting passed to the function
+
+try:
+    print(f"  Loading predictor for model: {fairchem_model_name} on device: {{calc_device}}")
+    # Use the specific fairchem_model_name from md_params here
+    predictor = pretrained_mlip.get_predict_unit("{fairchem_model_name}", device=calc_device)
+
+    print(f"  Initializing FAIRChemCalculator with task: {{fairchem_task}}")
+    calculator = FAIRChemCalculator(predictor, task_name=fairchem_task)
+
+    print(f"✅ Fairchem/UMA {fairchem_model_name} (task: {{fairchem_task}}) initialized on {{calc_device}}")
+
+except Exception as e:
+    print(f"❌ Fairchem/UMA initialization failed on {{calc_device}}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        predictor_cpu = pretrained_mlip.get_predict_unit("{fairchem_model_name}", device="cpu")
+        calculator = FAIRChemCalculator(predictor_cpu, task_name=fairchem_task)
+        print("✅ Fairchem/UMA initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ Fairchem/UMA CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
+    elif "CHGNet" in actual_selected_model:
+        imports_str += """
+try:
+    actual_model_size_str = "{actual_model_size}"
     from chgnet.model.model import CHGNet
     from chgnet.model.dynamics import CHGNetCalculator
+    chgnet_version = actual_model_size_str.split("-")[1]
 except ImportError:
     print("Error: CHGNet not found. Please install with: pip install chgnet")
+    chgnet_version = actual_model_size_str
     exit()
 """
         calculator_setup_str = f"""
 print("Setting up CHGNet calculator...")
+
+# Parse version from model size string (e.g., "CHGNet-0.3.0" -> "0.3.0")
+actual_model_size_str = "{actual_model_size}"
+try:
+    chgnet_version = actual_model_size_str.split("-")[1]
+except IndexError:
+    print(f"  Warning: Could not parse CHGNet version from '{{actual_model_size_str}}'. Using full string.")
+    chgnet_version = actual_model_size_str
+
+print(f"  CHGNet version: {{chgnet_version}}")
+print(f"  Device: {device}")
+print("  Note: CHGNet requires float32 precision")
+
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    chgnet = CHGNet.load(model_name="{model_size}", use_device="{device}", verbose=False)
+    # Use the parsed 'chgnet_version' variable here
+    chgnet = CHGNet.load(model_name=chgnet_version, use_device="{device}", verbose=False) 
     calculator = CHGNetCalculator(model=chgnet, use_device="{device}")
     torch.set_default_dtype(original_dtype)
-    print(f"✅ CHGNet {model_size} initialized on {device}")
+    # Use the 'chgnet_version' variable in the success message
+    print(f"✅ CHGNet {{chgnet_version}} initialized on {device}")
 except Exception as e:
     print(f"❌ CHGNet initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        chgnet = CHGNet.load(model_name="{model_size}", use_device="cpu", verbose=False)
+        # Also use 'chgnet_version' in the fallback
+        chgnet = CHGNet.load(model_name=chgnet_version, use_device="cpu", verbose=False)
         calculator = CHGNetCalculator(model=chgnet, use_device="cpu")
         torch.set_default_dtype(original_dtype)
-        print("✅ CHGNet initialized on CPU (fallback)")
+        print(f"✅ CHGNet {{chgnet_version}} initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ CHGNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "MACE-OFF" in selected_model:
+
+
+    elif "PET-MAD" in actual_selected_model:
+        imports_str += """
+try:
+    from pet_mad.calculator import PETMADCalculator
+except ImportError:
+    print("Error: PET-MAD not found. Please install with: pip install pet-mad")
+    exit()
+"""
+        calculator_setup_str = f"""
+print("Setting up PET-MAD calculator...")
+try:
+    calculator = PETMADCalculator(
+        version="v1.0.2",
+        device="{device}"
+    )
+    print(f"✅ PET-MAD v1.0.2 initialized on {device}")
+    print("   Trained on MAD dataset (95,595 structures)")
+except Exception as e:
+    print(f"❌ PET-MAD initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = PETMADCalculator(
+            version="v1.0.2",
+            device="cpu"
+        )
+        print("✅ PET-MAD initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ PET-MAD CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+    elif "MACE-OFF" in actual_selected_model:
         imports_str += """
 try:
     from mace.calculators import mace_off
@@ -99,22 +243,23 @@ except ImportError:
 print("Setting up MACE-OFF calculator...")
 try:
     calculator = mace_off(
-        model="{model_size}", default_dtype="{dtype}", device="{device}"
+        model="{actual_model_size}", default_dtype="{dtype}", device="{device}"
     )
-    print(f"✅ MACE-OFF {model_size} initialized on {device}")
+    print(f"✅ MACE-OFF {actual_model_size} initialized on {device}")
 except Exception as e:
     print(f"❌ MACE-OFF initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_off(
-            model="{model_size}", default_dtype="{dtype}", device="cpu"
+            model="{actual_model_size}", default_dtype="{dtype}", device="cpu"
         )
         print("✅ MACE-OFF initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ MACE-OFF CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "MACE" in selected_model:
+
+    elif "MACE" in actual_selected_model:  # Catch MACE after MACE-OFF
         imports_str += """
 try:
     from mace.calculators import mace_mp
@@ -122,27 +267,135 @@ except ImportError:
     print("Error: MACE not found. Please install with: pip install mace-torch")
     exit()
 """
-        calculator_setup_str = f"""
-print("Setting up MACE calculator...")
+        # Check if this is a URL-based foundation model
+        is_url_model = actual_model_size.startswith("http://") or actual_model_size.startswith("https://")
+
+        if is_url_model:
+            # URL-based foundation model with download support
+            calculator_setup_str = f"""
+print("Setting up MACE foundation model from URL...")
+
+def download_mace_model(model_url):
+    \"\"\"Download MACE model from URL and cache it.\"\"\"
+    from pathlib import Path
+    import urllib.request
+
+    model_filename = model_url.split("/")[-1]
+    cache_dir = Path.home() / ".cache" / "mace_foundation_models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    model_path = cache_dir / model_filename
+
+    if model_path.exists():
+        print(f"✅ Using cached model: {{model_filename}}")
+        return str(model_path)
+
+    print(f"📥 Downloading {{model_filename}}... (this may take a few minutes)")
+    try:
+        urllib.request.urlretrieve(model_url, str(model_path))
+        print(f"✅ Model downloaded and cached")
+        return str(model_path)
+    except Exception as e:
+        print(f"❌ Download failed: {{e}}")
+        if model_path.exists():
+            model_path.unlink()
+        raise
+
 try:
+    model_url = "{actual_model_size}"
+    local_model_path = download_mace_model(model_url)
+    print(f"📁 Model path: {{local_model_path}}")
+
+    print(f"⚙️  Device: {device}")
+    print(f"⚙️  Dtype: {dtype}")"""
+
+            if mace_head:
+                calculator_setup_str += f"""
+    print(f"🎯 Head: {mace_head}")"""
+
+            if mace_dispersion:
+                calculator_setup_str += f"""
+    print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
+
+            # Build calculator arguments
+            calc_args = [
+                f'model=local_model_path',
+                f'device="{device}"',
+                f'default_dtype="{dtype}"'
+            ]
+
+            if mace_head:
+                calc_args.append(f'head="{mace_head}"')
+
+            if mace_dispersion:
+                calc_args.append(f'dispersion=True')
+                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+
+            calc_args_str = ',\n        '.join(calc_args)
+
+            calculator_setup_str += f"""
+
     calculator = mace_mp(
-        model="{model_size}", dispersion=False, default_dtype="{dtype}", device="{device}"
+        {calc_args_str}
     )
-    print(f"✅ MACE {model_size} initialized on {device}")
+    print(f"✅ MACE foundation model initialized on {device}")
+
 except Exception as e:
     print(f"❌ MACE initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            model="{model_size}", dispersion=False, default_dtype="{dtype}", device="cpu"
+            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
         )
         print("✅ MACE initialized on CPU (fallback)")
     except Exception as cpu_e:
-        print(f"❌ MACE-OFF CPU fallback failed: {{cpu_e}}")
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "SevenNet" in selected_model:
+
+        else:
+            # Standard MACE-MP model
+            calc_args = [
+                f'model="{actual_model_size}"',
+                f'device="{device}"',
+                f'default_dtype="{dtype}"'
+            ]
+
+            if mace_dispersion:
+                calc_args.append(f'dispersion=True')
+                calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
+            else:
+                calc_args.append(f'dispersion=False')
+
+            calc_args_str = ',\n        '.join(calc_args)
+
+            calculator_setup_str = f"""
+print("Setting up MACE calculator...")
+try:
+    calculator = mace_mp(
+        {calc_args_str}
+    )
+    print(f"✅ MACE {actual_model_size} initialized on {device}")
+except Exception as e:
+    print(f"❌ MACE initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = mace_mp(
+            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+        )
+        print("✅ MACE initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
+    elif "SevenNet" in actual_selected_model:
         imports_str += """
+try:
+    torch.serialization.add_safe_globals([slice])
+except AttributeError:
+    print("  ... running on older torch version, add_safe_globals not needed.")
+    pass
+
 try:
     from sevenn.calculator import SevenNetCalculator
 except ImportError:
@@ -151,30 +404,24 @@ except ImportError:
 """
         calculator_setup_str = f"""
 print("Setting up SevenNet calculator...")
-print("  Applying torch.load workaround for SevenNet (allowlisting 'slice')...")
-try:
-    torch.serialization.add_safe_globals([slice])
-except AttributeError:
-    print("  ... running on older torch version, add_safe_globals not needed.")
-    pass
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    calculator = SevenNetCalculator(model="{model_size}", device="{device}")
+    calculator = SevenNetCalculator(model="{actual_model_size}", device="{device}")
     torch.set_default_dtype(original_dtype)
-    print(f"✅ SevenNet {model_size} initialized on {device}")
+    print(f"✅ SevenNet {actual_model_size} initialized on {device}")
 except Exception as e:
     print(f"❌ SevenNet initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        calculator = SevenNetCalculator(model="{model_size}", device="cpu")
+        calculator = SevenNetCalculator(model="{actual_model_size}", device="cpu")
         torch.set_default_dtype(original_dtype)
         print("✅ SevenNet initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ SevenNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "ORB" in selected_model:
+    elif "ORB" in actual_selected_model:
         imports_str += """
 try:
     from orb_models.forcefield import pretrained
@@ -188,15 +435,15 @@ except ImportError:
 print("Setting up ORB calculator...")
 precision = "{precision}"
 try:
-    model_func = getattr(pretrained, "{model_size}")
+    model_func = getattr(pretrained, "{actual_model_size}")
     orbff = model_func(device="{device}", precision=precision)
     calculator = ORBCalculator(orbff, device="{device}")
-    print(f"✅ ORB {model_size} initialized on {device}")
+    print(f"✅ ORB {actual_model_size} initialized on {device}")
 except Exception as e:
     print(f"❌ ORB initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        model_func = getattr(pretrained, "{model_size}")
+        model_func = getattr(pretrained, "{actual_model_size}")
         orbff = model_func(device="cpu", precision=precision)
         calculator = ORBCalculator(orbff, device="cpu")
         print("✅ ORB initialized on CPU (fallback)")
@@ -204,15 +451,15 @@ except Exception as e:
         print(f"❌ ORB CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "Nequix" in selected_model:
+    elif "Nequix" in actual_selected_model:
         calculator_setup_str = f"""
 print("Setting up Nequix calculator...")
 try:
     calculator = NequixCalculator(
-        model_path="{model_size}",
-        device="{device}"
+       "{actual_model_size}",
+        #device="{device}"
     )
-    print(f"✅ Nequix {model_size} initialized on {device}")
+    print(f"✅ Nequix {actual_model_size} initialized on {device}")
 except NameError:
    print(f"❌ Nequix initialization failed: NequixCalculator class not found. Is nequix installed?")
    exit()
@@ -221,7 +468,7 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = NequixCalculator(
-            model_path="{model_size}",
+            "{actual_model_size}",
             device="cpu"
         )
         print("✅ Nequix initialized on CPU (fallback)")
@@ -229,12 +476,12 @@ except Exception as e:
         print(f"❌ Nequix CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "DeePMD" in selected_model:
+    elif "DeePMD" in actual_selected_model:
         calculator_setup_str = f"""
 print("Setting up DeePMD calculator...")
 try:
-    calculator = DP(model="{model_size}")
-    print(f"✅ DeePMD {model_size} initialized")
+    calculator = DP(model="{actual_model_size}")
+    print(f"✅ DeePMD {actual_model_size} initialized")
 except NameError:
    print(f"❌ DeePMD initialization failed: DP class not found. Is deepmd-kit installed?")
    exit()
@@ -242,21 +489,33 @@ except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
+
     else:
-        calculator_setup_str = "print('Error: Could not determine calculator type.')\ncalculator = None\nexit()"
+        calculator_setup_str = f"print('Error: Could not determine calculator type for {actual_selected_model}.')\ncalculator = None\nexit()"
 
-    taup_val = md_params.get('taup', 1000.0)
+    md_params_for_header = copy.deepcopy(md_params)
+    md_params_for_header.pop('use_fairchem', None)
+    md_params_for_header.pop('fairchem_key', None)
+    md_params_for_header.pop('fairchem_task', None)
+    md_params_for_header.pop('fairchem_model_name', None)
+    taup_val_header = md_params_for_header.get('taup', 1000.0)
+    if 'pressure_damping_time' in md_params_for_header:
+        taup_val_header = md_params_for_header.pop('pressure_damping_time')
+    elif 'taup' in md_params_for_header:
+        taup_val_header = md_params_for_header.pop('taup')
+    md_params_for_header['taup'] = taup_val_header
+    md_params_header_str = pprint.pformat(md_params_for_header, indent=4, width=80)
+
+    taup_val_body = md_params.get('taup', 1000.0)
     if 'pressure_damping_time' in md_params:
-        taup_val = md_params.pop('pressure_damping_time')
+        taup_val_body = md_params.get('pressure_damping_time')
     elif 'taup' in md_params:
-        taup_val = md_params.pop('taup')
+        taup_val_body = md_params.get('taup')
+    md_params['taup'] = taup_val_body
+    md_params.pop('pressure_damping_time', None)
 
-    if 'taup' in md_params: md_params.pop('taup')
-    if 'pressure_damping_time' in md_params: md_params.pop('pressure_damping_time')
+    md_params_script_str = pprint.pformat(md_params, indent=4, width=80)
 
-    md_params['taup'] = taup_val
-
-    md_params_str = pprint.pformat(md_params, indent=4, width=80)
     indented_calculator_setup = textwrap.indent(calculator_setup_str, "    ")
 
     custom_classes_str = """
@@ -282,6 +541,8 @@ class ConsoleMDLogger:
                     calc_device = str(atoms.calc.device)
                 elif hasattr(atoms.calc, 'use_device'): # CHGNet
                     calc_device = str(atoms.calc.use_device)
+                elif hasattr(atoms.calc, 'predictor'): # FAIRChemCalculator
+                    calc_device = str(atoms.calc.predictor.device)
 
                 if calc_device:
                     self.device_str = calc_device
@@ -345,7 +606,7 @@ class ConsoleMDLogger:
                         log_str += f" | GPU Mem: {gpu.memoryUsed:.0f} MB"
                 except Exception:
                     pass # Fail silently if GPU read fails mid-run
-            elif PSUTIL_AVAILABLE and not self.is_cuda:
+            elif PSUTIL_AVAILABLE and (not self.is_cuda or self.device_str == "cpu"):
                 try:
                     mem = psutil.virtual_memory()
                     log_str += f" | RAM Used: {mem.percent:.1f}%"
@@ -383,28 +644,30 @@ class XYZTrajectoryWriter:
         try:
             current_atoms = self.atoms
             positions = current_atoms.get_positions()
+            forces = current_atoms.get_forces()  # Add this line to get forces
             symbols = current_atoms.get_chemical_symbols()
             num_atoms = len(current_atoms)
-
+    
             energy = current_atoms.get_potential_energy()
             temp = current_atoms.get_temperature()
             cell = current_atoms.get_cell()
             lattice_str = " ".join(f"{x:.8f}" for x in cell.array.flatten())
-
+    
             comment = (f'Step={self.step_count} Time={self.step_count * md_params["timestep"]:.3f}fs '
                        f'Energy={energy:.6f}eV Temp={temp:.2f}K '
-                       f'Lattice="{lattice_str}" Properties=species:S:1:pos:R:3')
-
+                       f'Lattice="{lattice_str}" Properties=species:S:1:pos:R:3:forces:R:3')
+    
             self.file.write(f"{num_atoms}\\n")
             self.file.write(f"{comment}\\n")
-
+    
             for i in range(num_atoms):
-                self.file.write(f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f}\\n")
-
+                self.file.write(f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f} "
+                              f"{forces[i, 0]:15.8f} {forces[i, 1]:15.8f} {forces[i, 2]:15.8f}\\n")
+    
             self.file.flush()
-
-            self.step_count += md_params['traj_interval']
-
+    
+            self.step_count += md_params.get('traj_interval', 1)
+    
         except Exception as e:
             print(f"  Error writing XYZ frame at step {self.step_count}: {e}")
 
@@ -494,30 +757,33 @@ class CSVLogger:
             self.file.close()
             self.file = None
             print(f"  Closed CSV log file: {self.filename}")
-
 """
-
+    mace_header_lines = ""
+    if "MACE" in actual_selected_model and mace_head:
+        mace_header_lines += f"\nMACE Head: {mace_head}"
+    if "MACE" in actual_selected_model and mace_dispersion:
+        mace_header_lines += f"\nMACE Dispersion: D3-{mace_dispersion_xc}"
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
 Generated by the uMLIP-Interactive Streamlit app.
 
 --- SETTINGS ---
-MLIP Model: {selected_model}
-Model Key: {model_size}
+MLIP Model: {actual_selected_model}{mace_header_lines}
+Model Key: {actual_model_size}
 Device: {device}
 Precision: {dtype}
 CPU Threads: {thread_count}
 
 MD Parameters:
-{textwrap.indent(md_params_str, '  ')}
+{textwrap.indent(md_params_header_str, '  ')}
 ---
 \"\"\"
 {imports_str}
 
 {custom_classes_str}
 
-md_params = {md_params_str}
+md_params = {md_params_script_str}
 
 def run_md_simulation(atoms, basename, calculator):
     print(f"--- Starting MD for {{basename}} ---")
@@ -532,8 +798,11 @@ def run_md_simulation(atoms, basename, calculator):
 
     try:
         MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
-        Stationary(atoms)
-        print("  Initialized velocities (Maxwell-Boltzmann) and removed CoM motion.")
+        if md_params.get('remove_com_motion', True):
+            Stationary(atoms)
+            print("  Initialized velocities (Maxwell-Boltzmann) and removed CoM motion.")
+        else:
+            print("  Initialized velocities (Maxwell-Boltzmann).")
     except Exception as e:
         print(f"  Warning: Could not set initial velocities. {{e}}")
 
@@ -556,10 +825,107 @@ def run_md_simulation(atoms, basename, calculator):
         taut_fs = md_params.get('taut', 100.0) * units.fs
         md = NVTBerendsen(atoms, timestep=dt, temperature_K=temperature_K, taut=taut_fs)
         print(f"  Initialized NVT-Berendsen ensemble (taut={{taut_fs / units.fs:.1f}} fs).")
+    
+    elif ensemble == "NPT (MTK Isotropic)":
+        if not NPT_MTK_ISO_AVAILABLE:
+            print("\\n*** ERROR: NPT (MTK Isotropic) not available. Requires ASE >= 3.22. ***")
+            sys.exit(1)
+        
+        tdamp_fs = md_params.get('taut', 100.0) * units.fs
+        pdamp_fs = md_params.get('taup', 1000.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        pressure_au = pressure_gpa * units.GPa
+        
+        md = IsotropicMTKNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            pressure_au=pressure_au,
+            tdamp=tdamp_fs,
+            pdamp=pdamp_fs
+        )
+        
+        print(f"  Initialized NPT (MTK Isotropic) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+        print(f"    T damping (tdamp): {{tdamp_fs / units.fs:.1f}} fs")
+        print(f"    P damping (pdamp): {{pdamp_fs / units.fs:.1f}} fs")
 
+    elif ensemble == "NPT (MTK Full)":
+        if not NPT_MTK_FULL_AVAILABLE:
+            print("\\n*** ERROR: NPT (MTK Full) not available. Requires ASE >= 3.26. ***")
+            sys.exit(1)
+        
+        tdamp_fs = md_params.get('taut', 100.0) * units.fs
+        pdamp_fs = md_params.get('taup', 1000.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        pressure_au = pressure_gpa * units.GPa
+        
+        md = MTKNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            pressure_au=pressure_au,
+            tdamp=tdamp_fs,
+            pdamp=pdamp_fs
+        )
+        
+        print(f"  Initialized NPT (MTK Full) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+        print(f"    T damping (tdamp): {{tdamp_fs / units.fs:.1f}} fs")
+        print(f"    P damping (pdamp): {{pdamp_fs / units.fs:.1f}} fs")
+
+    elif ensemble == "NPT (BAOAB Langevin)":
+        if not NPT_BAOAB_AVAILABLE:
+            print("\\n*** ERROR: NPT (BAOAB) not available. Requires ASE dev version. ***")
+            sys.exit(1)
+        
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        externalstress = -pressure_gpa * units.GPa
+        T_tau = md_params.get('taut', 100.0) * units.fs
+        P_tau = md_params.get('taup', 1000.0) * units.fs
+        
+        md = LangevinBAOAB(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            externalstress=externalstress,
+            T_tau=T_tau,
+            P_tau=P_tau
+        )
+        
+        print(f"  Initialized NPT (BAOAB Langevin) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
+
+    elif ensemble == "NPT (Melchionna)":
+        if not NPT_MELCHIONNA_AVAILABLE:
+            print("\\n*** ERROR: NPT (Melchionna) not available. Requires ASE dev version. ***")
+            sys.exit(1)
+        
+        ttime_fs = md_params.get('taut', 100.0) * units.fs
+        pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
+        externalstress = -pressure_gpa * units.GPa
+        bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
+        taup_fs = md_params.get('taup', 1000.0) * units.fs
+        pfactor = (taup_fs ** 2) * bulk_modulus_gpa * units.GPa
+        
+        md = MelchionnaNPT(
+            atoms,
+            timestep=dt,
+            temperature_K=temperature_K,
+            externalstress=externalstress,
+            ttime=ttime_fs,
+            pfactor=pfactor
+        )
+        
+        print(f"  Initialized NPT (Melchionna) ensemble.")
+        print(f"    Target T: {{temperature_K}} K")
+        print(f"    Target P: {{pressure_gpa}} GPa")
     elif ensemble == "NPT (Berendsen)":
         taut_fs = md_params.get('taut', 100.0) * units.fs
-        taup_fs = md_params.get('taup', 1000.0) * units.fs
+        taup_fs = md_params.get('taup', 1000.0) * units.fs 
 
         bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
         if bulk_modulus_gpa <= 0:
@@ -613,7 +979,7 @@ def run_md_simulation(atoms, basename, calculator):
              sys.exit(1)
 
         ttime_fs = md_params.get('taut', 100.0) * units.fs
-        taup_fs_val = md_params.get('taup', 1000.0) * units.fs
+        taup_fs_val = md_params.get('taup', 1000.0) * units.fs 
 
         bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
         if bulk_modulus_gpa <= 0:
@@ -645,10 +1011,10 @@ def run_md_simulation(atoms, basename, calculator):
             print(f"    Target P (xx,yy,zz): {{px_gpa:.2f}}, {{py_gpa:.2f}}, {{pz_gpa:.2f}} GPa")
             npt_nh_kwargs['externalstress'] = externalstress
             if fix_angles:
-                 mask = np.diag([1, 1, 1]) # Fix shear components
+                 mask = np.diag([1, 1, 1])
                  print("    Angles fixed (only diagonal strain allowed).")
             else:
-                 mask = None # Allow all components to couple (default)
+                 mask = None 
                  print("    Angles variable (all strain components allowed).")
             npt_nh_kwargs['mask'] = mask
 
@@ -729,13 +1095,12 @@ def run_md_simulation(atoms, basename, calculator):
 
     console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'])
     md.attach(console_logger, interval=1)
-    # -- Adding this to clean GPU RAM memory
+    # -- CLeaning the GPU RAM during the run
     def clear_torch_cache():
-    	if torch.cuda.is_available():
-        	torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     md.attach(clear_torch_cache, interval=10) 
-    # -- End of GPU RAM clean
-    
+    # -- End of GPU cleaning
     xyz_writer = XYZTrajectoryWriter(atoms, xyz_trajectory_file) 
     md.attach(xyz_writer, interval=md_params['traj_interval'])
 
@@ -953,6 +1318,9 @@ def generate_plots(basename):
     print(f"  ... plots saved to md_results/md_{{basename}}_*.png")
 
 def main():
+    global md_params
+
+
 {indented_calculator_setup} 
 
     if 'calculator' not in locals() or calculator is None:
@@ -960,7 +1328,7 @@ def main():
         exit()
 
     print("\\nSearching for structure files (*.cif, *.vasp, POSCAR*)...")
-    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*")
+    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*") + glob.glob("*.poscar") 
 
     if not structure_files:
         print("No structure files found. Please place .cif or .vasp/POSCAR files in this directory.")
