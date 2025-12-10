@@ -4324,7 +4324,8 @@ with tab1:
                         current_thread_count,
                         mace_head=mace_head_for_script,
                         mace_dispersion=mace_dispersion_for_script,
-                        mace_dispersion_xc=mace_dispersion_xc_for_script
+                        mace_dispersion_xc=mace_dispersion_xc_for_script,
+                        custom_mace_path=custom_mace_path
                     )
                     st.session_state.generated_md_script = generated_script
                     st.success("✅ MD script generated successfully!")
