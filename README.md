@@ -53,7 +53,7 @@ If you are using Windows, please compile the app in WSL (if you do not have WSL,
       **sudo apt install git**    
 
 Currently, certain u-MLIP does not share compatible versions of certain packages (Torch, ...) with each other. Depending on which u-MLIP you want to use, please choose one option: 
-#### To run simulations with **MACE, CHGNet, SevenNet, Orb-v3, and PET-MAD**:
+#### To run simulations with **MACE, CHGNet, SevenNet, Orb-v3**:
 
   1) Download updates and prerequisites (if you are using WSL, include also 'python3.12-dev'):  
      **sudo apt update**  
@@ -73,7 +73,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim**:  
+#### To run simulations with **MatterSim** / **PET-MAD**:  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -82,10 +82,10 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   3) Navigate to the downloaded project folder:  
       **cd mace-md-gui/**  
   4) Create a Python virtual environment to prevent possible conflicts between packages:  
-      **python3 -m venv mattersim_env**
+      **python3 -m venv mace_env_2**
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
-      **source mattersim_env/bin/activate**  
-  6) Install all the necessary Python packages:  
+      **source mace_env_2/bin/activate**  
+  6) Install all the necessary Python packages (for PET-MAD, use requirements-pet-mad.txt):  
    **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU))  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
