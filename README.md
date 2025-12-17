@@ -17,7 +17,7 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 - Please also 📖 cite the **[Atomic Simulation Environment (ASE)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e/meta?casa_token=ylmp7uEZ-BYAAAAA:SRe2v_QrxXhw5O0ZrwNP5yyNQ8HbaG5vcbvBK98BQ6aZIs-qJ6C_1gjYBQ552Y68eJhnK0vPOheT8-R2gyGlaxCsnhGs)** and 📖 the employed uMLIP (you can see the corresponding publications for each model in the right corner of the app).  
 
 #### Tutorials
-- 🎥 **Video tutorial for the calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
+- 🎥 **Video tutorial for calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
 - 🎥 **Video tutorial for using the genetic algorithm with MACE to obtain candidates for the lowest energy distributions of point defects in crystal structure [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.   
 - 🎥 **Video tutorial for using the generated Python script for the calculations at [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw).** Make sure that before running the Python code, you activated the virtual Python environment with the installed necessary Python packages (Step 4 in the compilation manual below).
 
