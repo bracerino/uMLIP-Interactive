@@ -82,7 +82,13 @@ from ase.io import read, write
 from ase import Atoms
 
 try:
-    from ase.optimize import BFGS, LBFGS, FIRE
+    from ase.optimize import (
+        BFGS, LBFGS, FIRE,
+        BFGSLineSearch, LBFGSLineSearch,
+        GoodOldQuasiNewton, MDMin, GPMin,
+        CellAwareBFGS
+    )
+    from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
     from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
     from ase.stress import voigt_6_to_full_3x3_stress
 
@@ -2946,11 +2952,31 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             else:
                                 logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj)
 
-                            if optimization_params['optimizer'] == "LBFGS":
+                            opt_name = optimization_params['optimizer']
+
+                            if opt_name == "LBFGS":
                                 optimizer = LBFGS(optimization_object, logfile=None)
-                            elif optimization_params['optimizer'] == "FIRE":
+                            elif opt_name == "FIRE":
                                 optimizer = FIRE(optimization_object, logfile=None)
-                            else:
+                            elif opt_name == "BFGSLineSearch (QuasiNewton)":
+                                optimizer = BFGSLineSearch(optimization_object, logfile=None)
+                            elif opt_name == "LBFGSLineSearch":
+                                optimizer = LBFGSLineSearch(optimization_object, logfile=None)
+                            elif opt_name == "GoodOldQuasiNewton":
+                                optimizer = GoodOldQuasiNewton(optimization_object, logfile=None)
+                            elif opt_name == "MDMin":
+                                optimizer = MDMin(optimization_object, logfile=None)
+                            elif opt_name == "GPMin":
+                                if len(atoms) > 100:
+                                    log_queue.put("⚠️ GPMin not recommended for >100 atoms. Using BFGS instead.")
+                                    optimizer = BFGS(optimization_object, logfile=None)
+                                else:
+                                    optimizer = GPMin(optimization_object, logfile=None, update_hyperparams=True)
+                            elif opt_name == "SciPyFminBFGS":
+                                optimizer = SciPyFminBFGS(optimization_object, logfile=None)
+                            elif opt_name == "SciPyFminCG":
+                                optimizer = SciPyFminCG(optimization_object, logfile=None)
+                            else:  # Default fallback
                                 optimizer = BFGS(optimization_object, logfile=None)
 
                             optimizer.max_steps = optimization_params['max_steps']
