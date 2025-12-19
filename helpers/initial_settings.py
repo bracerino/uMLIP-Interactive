@@ -35,7 +35,18 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
     col_opt1, col_opt2, col_opt3, col_opt4 = st.columns(4)
 
     with col_opt1:
-        optimizer_options = ["BFGS", "LBFGS", "FIRE"]
+        optimizer_options = [
+            "BFGS",
+            "LBFGS",
+            "FIRE",
+            "BFGSLineSearch (QuasiNewton)",
+            "LBFGSLineSearch",
+            "GoodOldQuasiNewton",
+            "MDMin",
+            "GPMin",
+            "SciPyFminBFGS",
+            "SciPyFminCG"
+        ]
         optimizer_index = 0  # Default to BFGS
         if geom_defaults['optimizer'] in optimizer_options:
             optimizer_index = optimizer_options.index(geom_defaults['optimizer'])
@@ -44,7 +55,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             "Optimizer",
             optimizer_options,
             index=optimizer_index,
-            help="BFGS: More memory but faster convergence. LBFGS: Less memory usage. FIRE: Good for difficult surfaces."
+            help="BFGS: More memory but faster convergence. LBFGS: Less memory usage. FIRE: Good for difficult surfaces. BFGSLineSearch (QuasiNewton): Often optimal, with line search."
         )
 
     with col_opt2:
