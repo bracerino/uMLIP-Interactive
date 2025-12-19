@@ -121,14 +121,16 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
-
+    optimizer_info = ""
+    if calc_type == "Geometry Optimization" and optimization_params:
+        optimizer_info = f"\nOptimizer: {optimization_params.get('optimizer', 'BFGS')}"
     if mace_dispersion:
         config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Calculation Type: {calc_type}
+Calculation Type: {calc_type}{optimizer_info}
 Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}{config_info}
@@ -157,7 +159,12 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS, FIRE
+from ase.optimize import (
+    BFGS, LBFGS, FIRE,
+    BFGSLineSearch, LBFGSLineSearch,
+    GoodOldQuasiNewton, MDMin, GPMin
+)
+from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -245,14 +252,16 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
-
+    optimizer_info = ""
+    if calc_type == "Geometry Optimization" and optimization_params:
+        optimizer_info = f"\nOptimizer: {optimization_params.get('optimizer', 'BFGS')}"
     if mace_dispersion:
         config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Calculation Type: {calc_type}
+Calculation Type: {calc_type}{optimizer_info}
 Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}{config_info}
@@ -284,7 +293,12 @@ torch.set_num_threads({thread_count})
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
-from ase.optimize import BFGS, LBFGS, FIRE
+from ase.optimize import (
+    BFGS, LBFGS, FIRE,
+    BFGSLineSearch, LBFGSLineSearch,
+    GoodOldQuasiNewton, MDMin, GPMin
+)
+from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
 from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
@@ -3761,6 +3775,22 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 
             if optimizer_type == "LBFGS":
                 optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "FIRE":
+                optimizer = FIRE(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "BFGSLineSearch (QuasiNewton)":
+                optimizer = BFGSLineSearch(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "LBFGSLineSearch":
+                optimizer = LBFGSLineSearch(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "GoodOldQuasiNewton":
+                optimizer = GoodOldQuasiNewton(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "MDMin":
+                optimizer = MDMin(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "GPMin":
+                optimizer = GPMin(optimization_object, logfile=f"results/{filename}_opt.log", update_hyperparams=True)
+            elif optimizer_type == "SciPyFminBFGS":
+                optimizer = SciPyFminBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "SciPyFminCG":
+                optimizer = SciPyFminCG(optimization_object, logfile=f"results/{filename}_opt.log")
             else:
                 optimizer = BFGS(optimization_object, logfile=f"results/{filename}_opt.log")
 
