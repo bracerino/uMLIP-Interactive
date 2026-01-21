@@ -1813,7 +1813,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     print(f"🔧 Initializing MACE calculator with custom model...")
     print(f"📁 Custom model path: {custom_mace_path}")
 
-        
+
     if not os.path.exists("{custom_mace_path}"):
         print(f"❌ Custom model file not found: {custom_mace_path}")
         print(f"Please ensure the model file exists at the specified path.")
@@ -2260,7 +2260,6 @@ def _generate_energy_only_code(calc_formation_energy):
             )
         print(f"  💾 Saved isolated atom XYZ: {iso_xyz_filename}")'''
 
-
     code += '''
 
     for i, filename in enumerate(structure_files):
@@ -2272,32 +2271,32 @@ def _generate_energy_only_code(calc_formation_energy):
 
             print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
             energy = atoms.get_potential_energy()
-            
+
             # Calculate forces
             print(f"  🔬 Calculating forces...")
             forces = atoms.get_forces()
             max_force = np.max(np.linalg.norm(forces, axis=1))
-            
+
             # Get lattice parameters
             lattice = get_lattice_parameters(atoms)
-            
+
             # Save XYZ file with lattice and force information
             base_name = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR', '').replace('POSCAR_', '')
             if not base_name:
                 base_name = f"structure_{i+1}"
-            
+
             #xyz_filename = f"results/{base_name}_energy.xyz"
             xyz_filename = f"optimized_structures/{i+1}_{base_name}.xyz"
             print(f"  💾 Saving XYZ file: {xyz_filename}")
-            
+
             with open(xyz_filename, 'w') as xyz_file:
                 num_atoms = len(atoms)
                 cell_matrix = atoms.get_cell()
                 lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
-                
+
                 # Write number of atoms
                 xyz_file.write(f"{num_atoms}\\n")
-                
+
                 # Write comment line with all information
                 comment = (f'Energy={energy:.6f} Max_Force={max_force:.6f} '
                           f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
@@ -2306,7 +2305,7 @@ def _generate_energy_only_code(calc_formation_energy):
                           f'Lattice="{lattice_string}" '
                           f'Properties=species:S:1:pos:R:3:forces:R:3')
                 xyz_file.write(f"{comment}\\n")
-                
+
                 # Write atomic positions and forces
                 symbols = atoms.get_chemical_symbols()
                 positions = atoms.get_positions()
@@ -2322,7 +2321,6 @@ def _generate_energy_only_code(calc_formation_energy):
                 "num_atoms": len(atoms),
                 "xyz_file": xyz_filename
             }'''
-
 
     if calc_formation_energy:
         code += '''
@@ -3584,7 +3582,8 @@ class OptimizationLogger:
                     'max_force': max_force,
                     'positions': atoms.positions.copy(),
                     'cell': atoms.cell.array.copy(),
-                    'lattice': lattice.copy()
+                    'lattice': lattice.copy(),
+                    'forces': forces.copy()
                 })
 
             if len(self.step_times) > 0:
@@ -3728,7 +3727,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         cellpar[0] = avg_ab
                         cellpar[1] = avg_ab
                         # cellpar[3:] = 90.0  # Ensure angles stay at 90
-                        
+
                         atoms.set_cell(cellpar, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
@@ -3971,23 +3970,26 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         max_force = step_data['max_force']
                         lattice = step_data['lattice']
                         step = step_data['step']
-                        cell_matrix = step_data['cell']
+                        forces = step_data.get('forces', np.zeros_like(step_data['positions']))
 
-                        lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
-
-                        traj_file.write(f"{num_atoms}\\n")
-
-                        comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
-                                  f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
-                                  f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
-                                  f'Volume={lattice["volume"]:.6f} '
-                                  f'Lattice="{lattice_string}" '
-                                  f'Properties=species:S:1:pos:R:3')
-                        traj_file.write(f"{comment}\\n")
-
-                        for j, pos in enumerate(step_data['positions']):
-                            symbol = symbols[j] if j < len(symbols) else 'X'
-                            traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}\\n")
+                    lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
+        
+                    traj_file.write(f"{num_atoms}\\n")
+        
+                    comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                              f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
+                              f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
+                              f'Volume={lattice["volume"]:.6f} '
+                              f'Lattice="{lattice_string}" '
+                              f'Properties=species:S:1:pos:R:3:forces:R:3:total_force:R:1')
+                    traj_file.write(f"{comment}\\n")
+        
+                    for j, (pos, force) in enumerate(zip(step_data['positions'], forces)):
+                        symbol = symbols[j] if j < len(symbols) else 'X'
+                        total_force = np.linalg.norm(force)
+                        traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f} "
+                                      f"{force[0]:12.6f} {force[1]:12.6f} {force[2]:12.6f} "
+                                      f"{total_force:12.6f}\\n")
 
                 result["trajectory_file"] = trajectory_filename
                 print(f"  💾 Trajectory saved: {trajectory_filename}")
@@ -4104,7 +4106,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     pd.DataFrame(stats).to_csv("results/optimization_statistics.csv", index=False)
     print(f"💾 Saved statistics to results/optimization_statistics.csv")
     '''
-    
+
     code += '''
     # Generate optimization plots
     print("\\n📊 Generating optimization plots...")
