@@ -706,7 +706,7 @@ class XYZTrajectoryWriter:
         try:
             current_atoms = self.atoms
             positions = current_atoms.get_positions()
-            forces = current_atoms.get_forces()  # Add this line to get forces
+            forces = current_atoms.get_forces()  
             symbols = current_atoms.get_chemical_symbols()
             num_atoms = len(current_atoms)
     
