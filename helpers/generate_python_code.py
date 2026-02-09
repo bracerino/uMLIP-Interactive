@@ -3961,7 +3961,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             if save_trajectory and logger.trajectory is not None:
                 trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
                 print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
-
+            
                 with open(trajectory_filename, 'w') as traj_file:
                     symbols = final_atoms.get_chemical_symbols()
                     for step_data in logger.trajectory:
@@ -3971,25 +3971,26 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         lattice = step_data['lattice']
                         step = step_data['step']
                         forces = step_data.get('forces', np.zeros_like(step_data['positions']))
-
-                    lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row])
-        
-                    traj_file.write(f"{num_atoms}\\n")
-        
-                    comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
-                              f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
-                              f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
-                              f'Volume={lattice["volume"]:.6f} '
-                              f'Lattice="{lattice_string}" '
-                              f'Properties=species:S:1:pos:R:3:forces:R:3:total_force:R:1')
-                    traj_file.write(f"{comment}\\n")
-        
-                    for j, (pos, force) in enumerate(zip(step_data['positions'], forces)):
-                        symbol = symbols[j] if j < len(symbols) else 'X'
-                        total_force = np.linalg.norm(force)
-                        traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f} "
-                                      f"{force[0]:12.6f} {force[1]:12.6f} {force[2]:12.6f} "
-                                      f"{total_force:12.6f}\\n")
+                        cell_matrix = step_data['cell'] 
+            
+                        lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row]) 
+            
+                        traj_file.write(f"{num_atoms}\\n") 
+            
+                        comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
+                                  f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
+                                  f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
+                                  f'Volume={lattice["volume"]:.6f} '
+                                  f'Lattice="{lattice_string}" '
+                                  f'Properties=species:S:1:pos:R:3:forces:R:3:total_force:R:1')
+                        traj_file.write(f"{comment}\\n") 
+            
+                        for j, (pos, force) in enumerate(zip(step_data['positions'], forces)):
+                            symbol = symbols[j] if j < len(symbols) else 'X'
+                            total_force = np.linalg.norm(force)
+                            traj_file.write(f"{symbol} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f} "
+                                          f"{force[0]:12.6f} {force[1]:12.6f} {force[2]:12.6f} "
+                                          f"{total_force:12.6f}\\n")
 
                 result["trajectory_file"] = trajectory_filename
                 print(f"  💾 Trajectory saved: {trajectory_filename}")
