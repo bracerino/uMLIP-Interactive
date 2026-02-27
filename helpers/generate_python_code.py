@@ -165,7 +165,8 @@ from ase.optimize import (
     GoodOldQuasiNewton, MDMin, GPMin
 )
 from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
-from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
+from ase.constraints import FixAtoms
+from ase.filters import ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
 from pymatgen.core import Structure
@@ -299,7 +300,8 @@ from ase.optimize import (
     GoodOldQuasiNewton, MDMin, GPMin
 )
 from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
-from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
+from ase.constraints import FixAtoms
+from ase.filters import ExpCellFilter, UnitCellFilter
 
 # PyMatGen imports
 from pymatgen.core import Structure
