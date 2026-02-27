@@ -89,7 +89,8 @@ try:
         CellAwareBFGS
     )
     from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
-    from ase.constraints import FixAtoms, ExpCellFilter, UnitCellFilter
+    from ase.constraints import FixAtoms
+    from ase.filters import ExpCellFilter, UnitCellFilter
     from ase.stress import voigt_6_to_full_3x3_stress
 
     CELL_OPT_AVAILABLE = True
