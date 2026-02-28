@@ -13,7 +13,13 @@ except ImportError:
         MACE_AVAILABLE = True
     except ImportError:
         MACE_AVAILABLE = False
-
+        
+# UPET imports (successor of PET-MAD)
+try:
+    from upet.calculator import UPETCalculator
+    UPET_AVAILABLE = True
+except ImportError:
+    UPET_AVAILABLE = False
 # CHGNet imports
 try:
     from chgnet.model.model import CHGNet
@@ -61,7 +67,7 @@ except ImportError:
 
 
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -71,6 +77,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AV
     print("  - ORB: pip install orb-models")
     print("  - Nequix: pip install nequix")
     print("  - PET-MAD: pip install pet-mad")
+    print("  - UPET: pip install upet")
     exit(1)
 else:
     available_models = []
@@ -88,6 +95,8 @@ else:
         available_models.append("Nequix")
     if PETMAD_AVAILABLE:
         available_models.append("PET-MAD")
+    if UPET_AVAILABLE:
+        available_models.append("UPET")
     print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
 
 
@@ -1868,7 +1877,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
     is_url_model = isinstance(model_size, str) and (
             model_size.startswith("http://") or model_size.startswith("https://"))
-
+    is_upet = selected_model_key is not None and selected_model_key.startswith("UPET")
     if is_nequix:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing Nequix calculator...")
@@ -1883,6 +1892,55 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     except Exception as e:
         print(f"❌ Nequix initialization failed: {{e}}")
         raise e'''
+    elif is_upet:
+        upet_raw = model_size
+
+        if upet_raw.startswith("upet:"):
+            upet_raw = upet_raw[len("upet:"):]
+
+        if "::" in upet_raw:
+            upet_model_name, upet_version = upet_raw.split("::", 1)
+        elif ":" in upet_raw:
+            upet_model_name, upet_version = upet_raw.split(":", 1)
+        else:
+            upet_model_name = upet_raw
+            upet_version = "latest"
+
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing UPET calculator on {{device}}...")
+    try:
+        from upet.calculator import UPETCalculator
+
+        upet_model_name = "{upet_model_name}"
+        upet_version = "{upet_version}"
+
+        print(f"🎯 Model: {{upet_model_name}}, Version: {{upet_version}}")
+        print(f"⚙️  Device: {{device}}")
+        print(f"⚙️  Dtype: {dtype}")
+
+        calculator = UPETCalculator(
+            model=upet_model_name,
+            version=upet_version,
+            device=device,
+        )
+        print(f"✅ UPET {{upet_model_name}} v{{upet_version}} initialized successfully on {{device}}")
+
+    except Exception as e:
+        print(f"❌ UPET initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = UPETCalculator(
+                    model=upet_model_name,
+                    version=upet_version,
+                    device="cpu",
+                )
+                print("✅ UPET initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
     elif is_petmad:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing PET-MAD calculator...")
