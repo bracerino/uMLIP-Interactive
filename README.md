@@ -1,4 +1,4 @@
-# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim, PET-MAD
+# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim, UPET
 
 Run basic molecular dynamics/static simulations:
 - **single-point energy**
@@ -9,7 +9,7 @@ Run basic molecular dynamics/static simulations:
 - **Basic MD simulations (NVE, NVT, NPT)** with generated Python script
 - *Currently working on: and **Nudge elastic band (NEB) calculations**.*  
 
-In an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim / PET-MAD interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
+In an **interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim / UPET interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 #### References
@@ -33,7 +33,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
 - [MatterSim](https://github.com/microsoft/mattersim)
 - [Nequix](https://github.com/atomicarchitects/nequix)
-- [PET-MAD](https://github.com/lab-cosmo/pet-mad)
+- [UPET](https://github.com/lab-cosmo/pet-mad)
 
 ---
 ![MACE GUI illustration](images/Mace-1.png)
@@ -73,7 +73,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **PET-MAD**:  
+#### To run simulations with **MatterSim** / **UPET**:  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -85,7 +85,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
       **python3 -m venv mace_env_2**
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
-  6) Install all the necessary Python packages (for PET-MAD, use requirements-pet-mad.txt):  
+  6) Install all the necessary Python packages (for UPET, use requirements-pet-mad.txt):  
    **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU))  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
