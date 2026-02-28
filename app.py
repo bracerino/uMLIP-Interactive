@@ -115,6 +115,12 @@ except ImportError:
     ELASTIC_AVAILABLE = False
 
 try:
+    from upet.calculator import UPETCalculator
+    UPET_AVAILABLE = True
+except ImportError:
+    UPET_AVAILABLE = False
+
+try:
     from alignn.ff.ff import AlignnAtomwiseCalculator, default_path
     ALIGNN_AVAILABLE = True
 except ImportError:
@@ -1679,7 +1685,20 @@ def create_xyz_content(trajectory_data, structure_name):
 
 
 MACE_MODELS = {
-    "PET-MAD v1.0.2 (Universal - MAD Dataset)": "petmad-v1.0.2-universal",
+    "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
+    "UPET PET-OMAD (XS) - Materials & Molecules [PBEsol]": "upet:pet-omad-xs:1.0.0",
+    "UPET PET-OMAD (S) - Materials & Molecules [PBEsol]": "upet:pet-omad-s:1.0.0",
+    "UPET PET-OMAD (L) - Materials & Molecules [PBEsol]": "upet:pet-omad-l:1.0.0",
+    "UPET PET-OAM (L) - Materials Discovery [PBE]": "upet:pet-oam-l:1.0.0",
+    "UPET PET-OAM (XL) ⭐ - Materials Discovery [PBE]": "upet:pet-oam-xl:1.0.0",
+    "UPET PET-OMat (XS) - Materials [PBE]": "upet:pet-omat-xs:1.0.0",
+    "UPET PET-OMat (S) - Materials [PBE]": "upet:pet-omat-s:1.0.0",
+    "UPET PET-OMat (M) - Materials [PBE]": "upet:pet-omat-m:1.0.0",
+    "UPET PET-OMat (L) - Materials [PBE]": "upet:pet-omat-l:1.0.0",
+    "UPET PET-OMat (XL) - Materials [PBE]": "upet:pet-omat-xl:1.0.0",
+    "UPET PET-OMATPES (L) - Materials [r2SCAN]": "upet:pet-omatpes-l:0.1.0",
+    "UPET PET-SPICE (S) - Molecules [wB97M-D3]": "upet:pet-spice-s:1.0.0",
+    "UPET PET-SPICE (L) - Molecules [wB97M-D3]": "upet:pet-spice-l:1.0.0",
     "Custom MACE Model 🔧": "custom",
     "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
     "MACE-MP-0 (small) - Original": "small",
@@ -2287,50 +2306,48 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_deepmd = selected_model.startswith("DeePMD")
         is_alignn = selected_model.startswith("AlignN")
 
-        is_petmad = selected_model.startswith("PET-MAD")
+        #PET-MAD
+        is_upet = model_size.startswith("upet:")
 
-
-        if is_petmad:
-            log_queue.put("Setting up PET-MAD calculator...")
+        if is_upet:
+            log_queue.put("Setting up UPET calculator...")
             log_queue.put(f"Selected model: {selected_model}")
             log_queue.put(f"Device: {device}")
 
+            if not UPET_AVAILABLE:
+                log_queue.put("❌ UPET not available! Please install: pip install upet")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+
             try:
-                is_universal = (model_size == "petmad-v1.0.2-universal")
+                _, upet_model_name, upet_version = model_size.split(":")
 
-                if is_universal:
-                    log_queue.put("Loading universal PET-MAD v1.0.2 model...")
-                    log_queue.put("Model will be downloaded automatically if not cached")
+                log_queue.put(f"  Model: {upet_model_name}, Version: {upet_version}")
 
-                    calculator = PETMADCalculator(
-                        #version="latest",  # or "v1.0.2" for specific version
-                        version="v1.0.2",
-                        device=device
-                    )
-
-                    log_queue.put(f"✅ PET-MAD universal model loaded successfully on {device}")
-                    log_queue.put("   Trained on MAD dataset (95,595 structures)")
+                calculator = UPETCalculator(
+                    model=upet_model_name,
+                    version=upet_version,
+                    device=device,
+                )
+                log_queue.put(f"✅ UPET {upet_model_name} v{upet_version} initialized successfully on {device}")
 
             except Exception as e:
-                log_queue.put(f"❌ PET-MAD initialization failed on {device}: {str(e)}")
+                log_queue.put(f"❌ UPET initialization failed on {device}: {str(e)}")
                 if device == "cuda":
                     log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
                     try:
-                        if is_universal:
-                            calculator = PETMADCalculator(
-                                version="v1.0.2",
-                                device="cpu"
-                            )
-                        else:
-                            calculator = PETMADCalculator(
-                                checkpoint=model_path,
-                                device="cpu"
-                            )
-                        log_queue.put("✅ PET-MAD initialized successfully on CPU (fallback)")
+                        calculator = UPETCalculator(
+                            model=upet_model_name,
+                            version=upet_version,
+                            device="cpu",
+                        )
+                        log_queue.put("✅ UPET initialized successfully on CPU (fallback)")
                     except Exception as cpu_error:
                         log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
+                        log_queue.put("CALCULATION_FINISHED")
                         return
                 else:
+                    log_queue.put("CALCULATION_FINISHED")
                     return
         elif is_nequix:
             # Nequix setup
@@ -3522,17 +3539,17 @@ def format_duration(seconds):
 with st.sidebar:
     st.header("Model Selection")
 
-    if not MACE_AVAILABLE and not CHGNET_AVAILABLE and not MATTERSIM_AVAILABLE and not ORB_AVAILABLE:
-        st.error("⚠️ No calculators available!")
-        st.error("Please install MACE: `pip install mace-torch`")
-        st.error("Or install CHGNet: `pip install chgnet`")
-        st.error("Or install MatterSim: `pip install mattersim`")
-        st.error("Or install ORB: `pip install orb-models`")
-        st.error("Or install SevenNet: `pip install sevenn`")
+    #if not MACE_AVAILABLE and not CHGNET_AVAILABLE and not MATTERSIM_AVAILABLE and not ORB_AVAILABLE:
+    #    st.error("⚠️ No calculators available!")
+    #    st.error("Please install MACE: `pip install mace-torch`")
+    #    st.error("Or install CHGNet: `pip install chgnet`")
+    #    st.error("Or install MatterSim: `pip install mattersim`")
+    #    st.error("Or install ORB: `pip install orb-models`")
+    #    st.error("Or install SevenNet: `pip install sevenn`")
     # st.stop()
 
     if MACE_OFF_AVAILABLE:
-        #  st.success("✅ MACE-OFF (organic molecules) available")
+        #  st.success("✅ MACE-OFF (organic molecules) available"
         pass
     else:
         st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
