@@ -2054,7 +2054,6 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             raise e'''
 
     elif is_sevennet:
-        # SevenNet setup
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing SevenNet calculator on {{device}}...")
     try:
@@ -2063,15 +2062,17 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         print(f"🎯 Selected model: {selected_model_key}")
         print(f"🎯 Model function: {model_size}")
 
-        # Parse model and modal from the model_size
         if "{model_size}" == "7net-mf-ompa-mpa":
             calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
             print("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
         elif "{model_size}" == "7net-mf-ompa-omat24":
             calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
             print("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+        elif "{model_size}".startswith("7net-omni-"):
+            modal = "{model_size}".split("7net-omni-")[1]
+            calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device)
+            print(f"✅ SevenNet-Omni ({{modal}}) initialized successfully on {{device}}")
         else:
-            # Standard models without modal parameter
             calculator = SevenNetCalculator(model="{model_size}", device=device)
             print(f"✅ SevenNet {model_size} initialized successfully on {{device}}")
 
@@ -2084,6 +2085,9 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
                 elif "{model_size}" == "7net-mf-ompa-omat24":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                elif "{model_size}".startswith("7net-omni-"):
+                    modal = "{model_size}".split("7net-omni-")[1]
+                    calculator = SevenNetCalculator(model='7net-omni', modal=modal, device="cpu")
                 else:
                     calculator = SevenNetCalculator(model="{model_size}", device="cpu")
                 print("✅ SevenNet initialized successfully on CPU (fallback)")
