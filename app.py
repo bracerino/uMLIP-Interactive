@@ -1685,12 +1685,14 @@ def create_xyz_content(trajectory_data, structure_name):
 
 
 MACE_MODELS = {
+    "UPET PET-MAD-1.5 (XS) ⭐ - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
+    "UPET PET-MAD-1.5 (S) ⭐ - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-s:1.5.0",
     "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
     "UPET PET-OMAD (XS) - Materials & Molecules [PBEsol]": "upet:pet-omad-xs:1.0.0",
     "UPET PET-OMAD (S) - Materials & Molecules [PBEsol]": "upet:pet-omad-s:1.0.0",
     "UPET PET-OMAD (L) - Materials & Molecules [PBEsol]": "upet:pet-omad-l:0.1.0",
     "UPET PET-OAM (L) - Materials Discovery [PBE]": "upet:pet-oam-l:1.0.0",
-    "UPET PET-OAM (XL) ⭐ - Materials Discovery [PBE]": "upet:pet-oam-xl:1.0.0",
+    "UPET PET-OAM (XL) - Materials Discovery [PBE]": "upet:pet-oam-xl:1.0.0",
     "UPET PET-OMat (XS) - Materials [PBE]": "upet:pet-omat-xs:1.0.0",
     "UPET PET-OMat (S) - Materials [PBE]": "upet:pet-omat-s:1.0.0",
     "UPET PET-OMat (M) - Materials [PBE]": "upet:pet-omat-m:1.0.0",
@@ -1893,8 +1895,6 @@ def get_model_type_from_selection(selected_model_name):
         return "ORB", "Universal potential with confidence estimation"
     elif "Nequix" in selected_model_name:
         return "Nequix", "Universal materials potential (foundation model)"
-    else:
-        return "MACE-MP", "General materials (89 elements)"
 
 
 def pymatgen_to_ase(structure):
