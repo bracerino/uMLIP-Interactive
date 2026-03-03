@@ -1740,6 +1740,19 @@ MACE_MODELS = {
     "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
     "SevenNet-OMAT24": "7net-omat",
     "SevenNet-L3I5": "7net-l3i5",
+    "SevenNet-Omni (mpa) ⭐ - PBE(+U)": "7net-omni-mpa",
+    "SevenNet-Omni (omat24) - PBE(+U)": "7net-omni-omat24",
+    "SevenNet-Omni (matpes_pbe) - PBE": "7net-omni-matpes_pbe",
+    "SevenNet-Omni (oc20) - RPBE": "7net-omni-oc20",
+    "SevenNet-Omni (oc22) - PBE(+U)": "7net-omni-oc22",
+    "SevenNet-Omni (odac23) - PBE-D3": "7net-omni-odac23",
+    "SevenNet-Omni (omol25_low) - ωB97M-V": "7net-omni-omol25_low",
+    "SevenNet-Omni (omol25_high) - ωB97M-V*": "7net-omni-omol25_high",
+    "SevenNet-Omni (spice) - ωB97M": "7net-omni-spice",
+    "SevenNet-Omni (qcml) - PBE0": "7net-omni-qcml",
+    "SevenNet-Omni (pet_mad) - PBEsol": "7net-omni-pet_mad",
+    "SevenNet-Omni (mp_r2scan) - r²SCAN": "7net-omni-mp_r2scan",
+    "SevenNet-Omni (matpes_r2scan) - r²SCAN": "7net-omni-matpes_r2scan",
 
     # ========== MATTERSIM MODELS ==========
     "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
@@ -1769,40 +1782,25 @@ MACE_MODELS = {
 
 
 def is_url_model(model_size):
-    """Check if model_size is a URL that needs downloading."""
     return isinstance(model_size, str) and (model_size.startswith("http://") or model_size.startswith("https://"))
 
 
 def is_multihead_model(selected_model):
-    """Check if the selected model supports multiple heads."""
     return "Multi-head" in selected_model or "MH-0" in selected_model or "MH-1" in selected_model
 
 
 def download_mace_foundation_model(model_url, log_queue=None):
-    """
-    Download MACE foundation model from GitHub releases and cache it locally.
-
-    Args:
-        model_url: URL to download the model from
-        log_queue: Optional queue for logging messages
-
-    Returns:
-        Path to the downloaded model file
-    """
     from pathlib import Path
     import urllib.request
 
-    # Extract model filename from URL
+
     model_filename = model_url.split("/")[-1]
 
-    # Create cache directory in user's home
     cache_dir = Path.home() / ".cache" / "mace_foundation_models"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Full path to cached model
     model_path = cache_dir / model_filename
 
-    # Check if already downloaded
     if model_path.exists():
         if log_queue:
             log_queue.put(f"✅ Using cached model: {model_filename}")
@@ -2249,7 +2247,6 @@ class CellOptimizationLogger:
                 self.log_queue.put(f"  Error in optimization step {self.step_count}: {str(e)}")
 
     def _calculate_time_estimates(self, optimizer):
-        """Calculate time estimates based on recent step times"""
         if len(self.step_times) < 2:
             return 0, None, None
 
@@ -2270,7 +2267,6 @@ class CellOptimizationLogger:
         return avg_step_time, estimated_remaining_time, total_estimated_time
 
     def _format_time(self, seconds):
-        """Format time in human-readable format"""
         if seconds < 60:
             return f"{seconds:.0f}s"
         elif seconds < 3600:
@@ -2504,14 +2500,17 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             try:
                 original_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.float32)
-                print(model_size)
+
                 if model_size == "7net-mf-ompa-mpa":
                     calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
                 elif model_size == "7net-mf-ompa-omat24":
-                    print('here')
-                    calculator = SevenNetCalculator(model='SevenNet-mf-ompa', modal='omat24', device=device)
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
+                elif model_size.startswith("7net-omni-"):
+                    modal = model_size.split("7net-omni-")[1]
+                    calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device)
+                    log_queue.put(f"✅ SevenNet-Omni ({modal}) initialized successfully on {device}")
                 else:
                     calculator = SevenNetCalculator(model=model_size, device=device)
                     log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
@@ -2527,6 +2526,9 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device="cpu")
                         elif model_size == "7net-mf-ompa-omat24":
                             calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device="cpu")
+                        elif model_size.startswith("7net-omni-"):
+                            modal = model_size.split("7net-omni-")[1]
+                            calculator = SevenNetCalculator(model='7net-omni', modal=modal, device="cpu")
                         else:
                             calculator = SevenNetCalculator(model=model_size, device="cpu")
                         log_queue.put("✅ SevenNet initialized successfully on CPU (fallback)")
@@ -3627,11 +3629,6 @@ with st.sidebar:
         st.info("🧠 **PET-MAD**: Equivariant message-passing neural network potential")
 
         is_universal_petmad = model_size == "petmad-v1.0.2-universal"
-    elif is_mattersim:
-        if not MATTERSIM_AVAILABLE:
-            st.error("❌ MatterSim not available! Please install: `pip install mattersim`")
-            st.stop()
-        st.info("🧠 **MatterSim**: Universal ML potential for bulk materials")
     elif is_nequix:
         if not NEQUIX_AVAILABLE:
             st.error("❌ Nequix not available! Please install: `pip install nequix`")
@@ -4582,7 +4579,6 @@ with tab1:
                         supercell_structure = first_structure.copy()
                         supercell_structure.make_supercell([supercell_a, supercell_b, supercell_c])
 
-                        # Display supercell info
                         st.success(
                             f"✅ Supercell preview: {supercell_structure.composition.reduced_formula} ({len(supercell_structure)} atoms)")
 
@@ -4698,13 +4694,11 @@ with tab1:
                         st.subheader("✅ GA Configuration Summary")
 
                         total_atoms = len(working_structure)
-                        # Calculate totals based on the new structure
                         total_substitutions = 0
                         total_vacancies = 0
 
                         for element, sub_info in substitutions.items():
                             if 'concentration_list' in sub_info:
-                                # New structure: use first concentration for display
                                 concentration = sub_info['concentration_list'][0]
                                 element_count = sub_info['element_count']
                                 n_substitute = int(element_count * concentration)
@@ -4714,7 +4708,6 @@ with tab1:
                                 else:
                                     total_substitutions += n_substitute
                             else:
-                                # Fallback for old structure (shouldn't happen with new code)
                                 if 'n_substitute' in sub_info:
                                     if sub_info['new_element'] == 'VACANCY':
                                         total_vacancies += sub_info['n_substitute']
@@ -4919,7 +4912,6 @@ with tab_st:
                                  not st.session_state.get('neb_final_structures'))),
             )
 
-            # Add debug info right after the button:
             if calc_type == "NEB Calculation":
                 st.write("**NEB Debug Info:**")
                 st.write(
