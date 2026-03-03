@@ -1895,6 +1895,8 @@ def get_model_type_from_selection(selected_model_name):
         return "ORB", "Universal potential with confidence estimation"
     elif "Nequix" in selected_model_name:
         return "Nequix", "Universal materials potential (foundation model)"
+    else:
+        return "Model", "foundation"
 
 
 def pymatgen_to_ase(structure):
