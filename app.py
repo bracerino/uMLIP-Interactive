@@ -32,6 +32,8 @@ from helpers.monitor_resources import *
 from helpers.mace_cards import *
 from helpers.generate_python_code import *
 
+from helpers.petmad_dos import render_petmad_dos_panel
+
 from helpers.nudge_elastic_band import (
     setup_neb_parameters_ui,
     run_neb_calculation,
@@ -2329,6 +2331,20 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 )
                 log_queue.put(f"✅ UPET {upet_model_name} v{upet_version} initialized successfully on {device}")
 
+                if mace_dispersion:
+                    try:
+                        from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+                        from ase.calculators.mixing import SumCalculator
+                        log_queue.put(f"  Adding D3-BJ dispersion correction ({mace_dispersion_xc})...")
+                        dft_d3 = TorchDFTD3Calculator(device=device, xc=mace_dispersion_xc, damping="bj")
+                        calculator = SumCalculator([calculator, dft_d3])
+                        log_queue.put(f"✅ D3-BJ/{mace_dispersion_xc} dispersion applied successfully on {device}")
+                    except ImportError:
+                        log_queue.put("⚠️ torch-dftd not installed — skipping dispersion correction.")
+                        log_queue.put("   Install with: pip install torch-dftd")
+                    except Exception as d3_err:
+                        log_queue.put(f"⚠️ D3 dispersion setup failed ({d3_err}) — continuing without it")
+
             except Exception as e:
                 log_queue.put(f"❌ UPET initialization failed on {device}: {str(e)}")
                 if device == "cuda":
@@ -2340,6 +2356,22 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             device="cpu",
                         )
                         log_queue.put("✅ UPET initialized successfully on CPU (fallback)")
+
+                        if mace_dispersion:
+                            try:
+                                from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+                                from ase.calculators.mixing import SumCalculator
+                                log_queue.put(f"  Adding D3-BJ dispersion correction ({mace_dispersion_xc}) on CPU...")
+                                dft_d3 = TorchDFTD3Calculator(device="cpu", xc=mace_dispersion_xc, damping="bj")
+                                calculator = SumCalculator([calculator, dft_d3])
+                                log_queue.put(
+                                    f"✅ D3-BJ/{mace_dispersion_xc} dispersion applied successfully on CPU (fallback)")
+                            except ImportError:
+                                log_queue.put("⚠️ torch-dftd not installed — skipping dispersion correction.")
+                                log_queue.put("   Install with: pip install torch-dftd")
+                            except Exception as d3_err:
+                                log_queue.put(f"⚠️ D3 dispersion setup failed ({d3_err}) — continuing without it")
+
                     except Exception as cpu_error:
                         log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
                         log_queue.put("CALCULATION_FINISHED")
@@ -3552,11 +3584,6 @@ with st.sidebar:
     #    st.error("Or install SevenNet: `pip install sevenn`")
     # st.stop()
 
-    if MACE_OFF_AVAILABLE:
-        #  st.success("✅ MACE-OFF (organic molecules) available"
-        pass
-    else:
-        st.warning("⚠️ MACE-OFF not available (only MACE-MP)")
 
     defaults = st.session_state.default_settings
     model_keys = list(MACE_MODELS.keys())
@@ -3623,40 +3650,23 @@ with st.sidebar:
 
     is_mattersim = selected_model.startswith("MatterSim")
     is_nequix = selected_model.startswith("Nequix")
-    if is_petmad:
-        if not PETMAD_AVAILABLE:
-            st.error("❌ PET-MAD not available! Please install: `pip install pet-mad`")
-            st.stop()
-
-        st.info("🧠 **PET-MAD**: Equivariant message-passing neural network potential")
-
-        is_universal_petmad = model_size == "petmad-v1.0.2-universal"
-    elif is_nequix:
-        if not NEQUIX_AVAILABLE:
-            st.error("❌ Nequix not available! Please install: `pip install nequix`")
-            st.stop()
-        st.info("🧠 **Nequix**: Foundation model for materials trained on MPtrj data")
-    elif is_sevennet:
-        if not SEVENNET_AVAILABLE:
-            st.error("❌ SevenNet not available! Please install: `pip install sevenn`")
-            st.stop()
-        st.info("⚡ **SevenNet**: Fast universal ML potential")
-    elif is_chgnet:
-        if not CHGNET_AVAILABLE:
-            st.error("❌ CHGNet not available! Please install: `pip install chgnet`")
-            st.stop()
-        st.info("🔬 **CHGNet**: Universal potential with magnetic moments")
-        st.info("📊 **Coverage**: All elements, 146k compounds from Materials Project")
-    else:
-        model_type, description = get_model_type_from_selection(selected_model)
-        if model_type == "MACE-OFF":
-            st.info(f"🧪 **{model_type}**: {description}")
-            if not MACE_OFF_AVAILABLE:
-                st.error("❌ MACE-OFF models require updated MACE installation!")
-        else:
-            if not MACE_AVAILABLE:
-                st.error("❌ MACE models not available! Please install: 'pip install mace-torch'")
-            st.info(f"🔬 **{model_type}**: {description}")
+    if st.button("🔍 Check available calculators"):
+        availability = {
+            "MACE": MACE_AVAILABLE,
+            "MACE-OFF": MACE_OFF_AVAILABLE,
+            "CHGNet": CHGNET_AVAILABLE,
+            "SevenNet": SEVENNET_AVAILABLE,
+            "MatterSim": MATTERSIM_AVAILABLE,
+            "ORB": ORB_AVAILABLE,
+            "Nequix": NEQUIX_AVAILABLE,
+            "PET-MAD": PETMAD_AVAILABLE,
+            "UPET": UPET_AVAILABLE,
+        }
+        available = [name for name, ok in availability.items() if ok]
+        not_available = [name for name, ok in availability.items() if not ok]
+        st.success(f"✅ Packages installed: {', '.join(available)}")
+        if not_available:
+            st.error(f"❌ Packages not installed: {', '.join(not_available)}")
 
     cols1, cols2 = st.columns([1, 1])
     with cols1:
@@ -3746,6 +3756,25 @@ with st.sidebar:
                     st.caption(f"D3-{mace_dispersion_xc} will be applied")
 
     # Store in session state
+    if model_size.startswith("upet:"):
+        with col_mult2:
+            st.subheader("🔬 Dispersion Correction")
+            mace_dispersion = st.checkbox(
+                "Enable D3 Dispersion (torch-dftd)",
+                value=False,
+                key="upet_dispersion_enable",
+                help="Add D3-BJ correction via torch-dftd. Install with: pip install torch-dftd",
+            )
+            if mace_dispersion:
+                mace_dispersion_xc = st.selectbox(
+                    "Functional",
+                    ["r2scan", "pbe", "pbesol", "blyp", "revpbe"],
+                    index=0,
+                    key="upet_dispersion_xc",
+                    help="r2scan matches PET-MAD-1.5 training functional.",
+                )
+                st.caption(f"D3-BJ/{mace_dispersion_xc} will be applied via torch-dftd")
+
     if 'mace_config' not in st.session_state:
         st.session_state.mace_config = {}
 
@@ -4174,7 +4203,7 @@ with tab1:
     st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
         "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. "
-        "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article (arXiv)](https://arxiv.org/abs/2512.05568)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
+        "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
     )
 
     st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
@@ -4198,7 +4227,7 @@ with tab1:
           (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).<br><br>
 
           If you like the uMLIP-Interactive, please
-          <strong><a style="color:#0b63c4;" href="https://arxiv.org/abs/2512.05568" target="_blank">📖 cite this work</a></strong>
+          <strong><a style="color:#0b63c4;" href="https://www.sciencedirect.com/science/article/pii/S2238785426004540" target="_blank">📖 cite this work</a></strong>
           Please also cite the:
           <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
           and the publications corresponding to the employed uMLIPs:
@@ -4261,7 +4290,7 @@ with tab1:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
-                 "GA Structure Optimization", "Molecular Dynamics", "Virtual Tensile Test",  "NEB Calculation"],
+                 "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics", "Virtual Tensile Test",  "NEB Calculation"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -4397,7 +4426,8 @@ with tab1:
                         4. Ensure necessary libraries are installed (`pip install ase mace-torch ...`).
                         5. Run the script from your terminal: `python run_md_simulation.py`
                         """)
-
+        if calc_type == "PET-MAD-DOS":
+            render_petmad_dos_panel(st.session_state.structures)
         if calc_type == "Virtual Tensile Test":
             st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
             tensile_params = setup_tensile_test_ui(
