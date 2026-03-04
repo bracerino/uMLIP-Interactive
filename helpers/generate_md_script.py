@@ -201,36 +201,7 @@ except Exception as e:
 """
 
 
-    elif "PET-MAD" in actual_selected_model:
-        imports_str += """
-try:
-    from pet_mad.calculator import PETMADCalculator
-except ImportError:
-    print("Error: PET-MAD not found. Please install with: pip install pet-mad")
-    exit()
-"""
-        calculator_setup_str = f"""
-print("Setting up PET-MAD calculator...")
-try:
-    calculator = PETMADCalculator(
-        version="v1.0.2",
-        device="{device}"
-    )
-    print(f"✅ PET-MAD v1.0.2 initialized on {device}")
-    print("   Trained on MAD dataset (95,595 structures)")
-except Exception as e:
-    print(f"❌ PET-MAD initialization failed on {device}: {{e}}")
-    print("Attempting fallback to CPU...")
-    try:
-        calculator = PETMADCalculator(
-            version="v1.0.2",
-            device="cpu"
-        )
-        print("✅ PET-MAD initialized on CPU (fallback)")
-    except Exception as cpu_e:
-        print(f"❌ PET-MAD CPU fallback failed: {{cpu_e}}")
-        exit()
-"""
+
     elif "MACE-OFF" in actual_selected_model:
         imports_str += """
 try:
@@ -551,6 +522,79 @@ except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
+    elif "UPET" in actual_selected_model:
+        imports_str += """
+try:
+    from upet.calculator import UPETCalculator
+except ImportError:
+    print("Error: UPET not found. Please install with: pip install upet")
+    exit()
+"""
+        upet_raw = actual_model_size
+        if upet_raw.startswith("upet:"):
+            upet_raw = upet_raw[len("upet:"):]
+        if "::" in upet_raw:
+            upet_model_name, upet_version = upet_raw.split("::", 1)
+        elif ":" in upet_raw:
+            upet_model_name, upet_version = upet_raw.split(":", 1)
+        else:
+            upet_model_name = upet_raw
+            upet_version = "latest"
+
+        d3_block_gpu = ""
+        d3_block_cpu = ""
+        if mace_dispersion:
+            d3_block_gpu = f"""
+    try:
+        from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+        from ase.calculators.mixing import SumCalculator
+        print("  Adding D3-BJ dispersion ({mace_dispersion_xc})...")
+        dft_d3 = TorchDFTD3Calculator(device="{device}", xc="{mace_dispersion_xc}", damping="bj")
+        calculator = SumCalculator([calculator, dft_d3])
+        print("  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on {device}")
+    except ImportError:
+        print("  ⚠️ torch-dftd not installed — skipping dispersion. Run: pip install torch-dftd")
+    except Exception as d3_err:
+        print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")"""
+
+            d3_block_cpu = f"""
+        try:
+            from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+            from ase.calculators.mixing import SumCalculator
+            print("  Adding D3-BJ dispersion ({mace_dispersion_xc}) on CPU...")
+            dft_d3 = TorchDFTD3Calculator(device="cpu", xc="{mace_dispersion_xc}", damping="bj")
+            calculator = SumCalculator([calculator, dft_d3])
+            print("  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on CPU")
+        except ImportError:
+            print("  ⚠️ torch-dftd not installed — skipping dispersion.")
+        except Exception as d3_err:
+            print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")"""
+
+        calculator_setup_str = f"""
+print("Setting up UPET calculator...")
+try:
+    calculator = UPETCalculator(
+        model="{upet_model_name}",
+        version="{upet_version}",
+        device="{device}",
+    )
+    print(f"✅ UPET {upet_model_name} v{upet_version} initialized on {device}")
+    {d3_block_gpu}
+except Exception as e:
+    print(f"❌ UPET initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = UPETCalculator(
+            model="{upet_model_name}",
+            version="{upet_version}",
+            device="cpu",
+        )
+        print("✅ UPET initialized on CPU (fallback)")
+    {d3_block_cpu}
+    except Exception as cpu_e:
+        print(f"❌ UPET CPU fallback failed: {{cpu_e}}")
+        exit()
+    """
 
     else:
         calculator_setup_str = f"print('Error: Could not determine calculator type for {actual_selected_model}.')\ncalculator = None\nexit()"
@@ -582,7 +626,7 @@ except Exception as e:
 
     custom_classes_str = """
 class ConsoleMDLogger:
-    def __init__(self, atoms, total_steps, log_interval=10, steps_for_avg=10):
+    def __init__(self, atoms, total_steps, log_interval=10, steps_for_avg=10,device=None):
         self.atoms = atoms
         self.total_steps = total_steps
         self.log_interval = log_interval
@@ -593,29 +637,18 @@ class ConsoleMDLogger:
         self.last_log_time = time.perf_counter()
         self.step_start_time = time.perf_counter()
 
-        self.device_str = "cpu"
-        self.is_cuda = False
+        if device is not None:
+            self.device_str = device
+        else:
+            self.device_str = "cpu"
+        self.is_cuda = "cuda" in self.device_str
         self.device_id = 0
-        try:
-            if hasattr(atoms, 'calc') and atoms.calc is not None:
-                calc_device = None
-                if hasattr(atoms.calc, 'device'): # MACE, Nequix, ORB
-                    calc_device = str(atoms.calc.device)
-                elif hasattr(atoms.calc, 'use_device'): # CHGNet
-                    calc_device = str(atoms.calc.use_device)
-                elif hasattr(atoms.calc, 'predictor'): # FAIRChemCalculator
-                    calc_device = str(atoms.calc.predictor.device)
-
-                if calc_device:
-                    self.device_str = calc_device
-                    self.is_cuda = "cuda" in self.device_str
-                    if self.is_cuda and ":" in self.device_str:
-                        try:
-                            self.device_id = int(self.device_str.split(':')[-1])
-                        except (ValueError, TypeError):
-                            self.device_id = 0 # default
-        except Exception:
-            pass # Best effort, default to no GPU logging
+        if self.is_cuda and ":" in self.device_str:
+            try:
+                self.device_id = int(self.device_str.split(':')[-1])
+            except (ValueError, TypeError):
+                self.device_id = 0
+        
 
     def __call__(self):
         self.step_count += 1
@@ -1155,7 +1188,7 @@ def run_md_simulation(atoms, basename, calculator):
         interval=md_params['log_interval']
     )
 
-    console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'])
+    console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'],device="{device}")
     md.attach(console_logger, interval=1)
     # -- CLeaning the GPU RAM during the run
     def clear_torch_cache():
