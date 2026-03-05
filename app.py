@@ -25,7 +25,24 @@ import time
 from ase.constraints import FixAtoms
 from ase.io import read, write
 
-from helpers.phonons_help import *
+#from helpers.phonons_help import *
+#from phonon_calculator import calculate_phonons as calculate_phonons_pymatgen
+from phonon_calculator import (
+    calculate_phonons,
+    render_phonon_results_tab,
+    suggest_supercell_for_structure,
+    create_phonon_data_export,
+    extract_thermodynamics_at_temperatures,
+    format_phonon_summary,
+    extract_element_concentrations,
+    get_common_elements,
+    calculate_phase_diagram_data,
+    find_stable_phases,
+    create_phase_diagram_plot,
+    create_concentration_heatmap,
+    export_phase_diagram_data,
+)
+
 from helpers.generate_python_code import *
 from helpers.phase_diagram import *
 from helpers.monitor_resources import *
@@ -169,25 +186,17 @@ DEFAULT_SETTINGS = {
 
 
 def extract_orb_confidence(atoms, calculator, log_queue, structure_name):
-    """
-    Extract ORB-v3 confidence that was already calculated.
-    The confidence is automatically computed when forces are calculated.
-    """
     try:
         log_queue.put(f"Extracting ORB-v3 confidence for {structure_name}...")
 
-        # Check if confidence is available in calculator results
         if 'confidence' not in calculator.results:
             log_queue.put(f"  ⚠️ No confidence data - not an ORB-v3 model or forces not yet calculated")
             return {'success': False, 'error': 'Confidence not available'}
 
-        # Get confidence from calculator results (already computed!)
         confidences = calculator.results["confidence"]  # Shape: (num_atoms, 50)
 
-        # Find the predicted bin for each atom (highest probability bin)
         predicted_bin_per_atom = np.argmax(confidences, axis=-1)
 
-        # Convert bins to predicted MAE values (0 to 0.4 Å in 50 bins)
         bin_width = 0.4 / 50  # 0.008 Å per bin
         per_atom_predicted_mae = predicted_bin_per_atom * bin_width
 
@@ -969,7 +978,6 @@ def create_elastic_data_export(elastic_results, structure_name):
         'mechanical_stability': elastic_results['mechanical_stability']
     }
 
-
 def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, structure_name):
     try:
         log_queue.put(f"Starting Pymatgen+Phonopy phonon calculation for {structure_name}")
@@ -977,114 +985,138 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         try:
             from phonopy import Phonopy
             from phonopy.structure.atoms import PhonopyAtoms
-            from pymatgen.io.phonopy import get_phonopy_structure
-            from pymatgen.phonon.bandstructure import PhononBandStructure
-            from pymatgen.phonon.dos import PhononDos
             import phonopy.units as units_phonopy
         except ImportError as e:
             log_queue.put(f"❌ Missing dependencies: {str(e)}")
-            log_queue.put("Please install: pip install phonopy")
             return {'success': False, 'error': f'Missing phonopy: {str(e)}'}
 
+
+        imag_tol_mev = float(phonon_params.get('imaginary_mode_tol_mev', -0.1))
+
+
         atoms.calc = calculator
+        n_unit_cell_atoms = len(atoms)
+        log_queue.put(f"  Primitive cell has {n_unit_cell_atoms} atoms")
 
-        num_initial_atoms = len(atoms)
-        log_queue.put(f"  Primitive cell has {num_initial_atoms} atoms")
 
-        log_queue.put("  Running brief pre-phonon optimization...")
-        try:
-            from ase.optimize import LBFGS
-            temp_atoms = atoms.copy()
-            temp_atoms.calc = calculator
-            temp_optimizer = LBFGS(temp_atoms, logfile=None)
-            temp_optimizer.run(fmax=0.01, steps=50)
-            atoms = temp_atoms
-            energy = atoms.get_potential_energy()
-            max_force = np.max(np.linalg.norm(atoms.get_forces(), axis=1))
-            log_queue.put(f"  Pre-optimization: E={energy:.6f} eV, F_max={max_force:.4f} eV/Å")
-        except Exception as opt_error:
-            log_queue.put(f"  ⚠️ Pre-optimization failed: {str(opt_error)}")
+        pre_relax_converged  = None
+        pre_relax_final_fmax = None
+
+        if phonon_params.get('pre_relax', True):
+            log_queue.put("  Running brief pre-phonon optimization...")
+            try:
+                from ase.optimize import LBFGS, FIRE
+                fmax_crit = float(phonon_params.get('pre_relax_fmax', 0.01))
+                max_steps = int(phonon_params.get('pre_relax_steps', 100))
+                opt_name  = str(phonon_params.get('pre_relax_optimizer', 'LBFGS')).upper()
+
+                temp_atoms = atoms.copy()
+                temp_atoms.calc = calculator
+                opt = FIRE(temp_atoms, logfile=None) if opt_name == 'FIRE'\
+                      else LBFGS(temp_atoms, logfile=None)
+                opt.run(fmax=fmax_crit, steps=max_steps)
+
+                atoms = temp_atoms
+                energy = atoms.get_potential_energy()
+                pre_relax_final_fmax = float(
+                    np.max(np.linalg.norm(atoms.get_forces(), axis=1))
+                )
+                pre_relax_converged = pre_relax_final_fmax <= fmax_crit
+
+                status = "✅ converged" if pre_relax_converged\
+                         else f"⚠ did NOT converge (F_max={pre_relax_final_fmax:.4f} > {fmax_crit})"
+                log_queue.put(
+                    f"  Pre-relax {status}: E={energy:.6f} eV  "
+                    f"F_max={pre_relax_final_fmax:.4f} eV/Å"
+                )
+            except Exception as opt_error:
+                log_queue.put(f"  ⚠️ Pre-optimization failed: {str(opt_error)}")
+
 
         from pymatgen.io.ase import AseAtomsAdaptor
-        adaptor = AseAtomsAdaptor()
+        adaptor    = AseAtomsAdaptor()
         pmg_structure = adaptor.get_structure(atoms)
         log_queue.put(f"  Converted to pymatgen structure: {pmg_structure.composition}")
 
         phonopy_atoms = PhonopyAtoms(
             symbols=[str(site.specie) for site in pmg_structure],
             scaled_positions=pmg_structure.frac_coords,
-            cell=pmg_structure.lattice.matrix
+            cell=pmg_structure.lattice.matrix,
         )
+
 
         if phonon_params.get('auto_supercell', True):
             log_queue.put("  Auto-determining supercell size...")
-
-            a, b, c = pmg_structure.lattice.abc
-            target_length = phonon_params.get('target_supercell_length', 15.0)
-            max_multiplier = phonon_params.get('max_supercell_multiplier', 4)
-
-            na = max(1, min(max_multiplier, int(np.ceil(target_length / a))))
-            nb = max(1, min(max_multiplier, int(np.ceil(target_length / b))))
-            nc = max(1, min(max_multiplier, int(np.ceil(target_length / c))))
-
-            if num_initial_atoms > 50:
-                na = max(1, na - 1)
-                nb = max(1, nb - 1)
-                nc = max(1, nc - 1)
-
+            a, b, c      = pmg_structure.lattice.abc
+            target_len   = phonon_params.get('target_supercell_length', 15.0)
+            max_mult     = phonon_params.get('max_supercell_multiplier', 4)
+            na = max(1, min(max_mult, int(np.ceil(target_len / a))))
+            nb = max(1, min(max_mult, int(np.ceil(target_len / b))))
+            nc = max(1, min(max_mult, int(np.ceil(target_len / c))))
+            if n_unit_cell_atoms > 50:
+                na, nb, nc = max(1, na - 1), max(1, nb - 1), max(1, nc - 1)
             supercell_matrix = [[na, 0, 0], [0, nb, 0], [0, 0, nc]]
         else:
             sc = phonon_params.get('supercell_size', (2, 2, 2))
             supercell_matrix = [[sc[0], 0, 0], [0, sc[1], 0], [0, 0, sc[2]]]
 
-        total_atoms = num_initial_atoms * np.prod([supercell_matrix[i][i] for i in range(3)])
-        log_queue.put(f"  Supercell matrix: {supercell_matrix}")
-        log_queue.put(f"  Total atoms in supercell: {total_atoms}")
+        sc_mult           = int(np.prod([supercell_matrix[i][i] for i in range(3)]))
+        n_supercell_atoms = n_unit_cell_atoms * sc_mult
 
         max_atoms = phonon_params.get('max_supercell_atoms', 800)
-        if total_atoms > max_atoms:
-            log_queue.put(f"  ⚠️ Supercell too large ({total_atoms} atoms), using smaller supercell")
-            supercell_matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-            total_atoms = num_initial_atoms
+        if n_supercell_atoms > max_atoms:
+            log_queue.put(
+                f"  ⚠️ Supercell too large ({n_supercell_atoms} atoms), "
+                f"reducing to 1×1×1"
+            )
+            supercell_matrix  = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+            sc_mult           = 1
+            n_supercell_atoms = n_unit_cell_atoms
 
-        log_queue.put("  Initializing Phonopy...")
+        log_queue.put(f"  Supercell: {supercell_matrix[0][0]}×"
+                      f"{supercell_matrix[1][1]}×{supercell_matrix[2][2]}"
+                      f" → {n_supercell_atoms} atoms")
+
+
         phonon = Phonopy(
             phonopy_atoms,
             supercell_matrix=supercell_matrix,
-            primitive_matrix='auto'
+            primitive_matrix='auto',
+            log_level=0,
         )
 
-        displacement_distance = phonon_params.get('delta', 0.01)
+        displacement_distance = phonon_params.get(
+            'displacement_distance',
+            phonon_params.get('delta', 0.01)
+        )
         log_queue.put(f"  Generating displacements (distance={displacement_distance} Å)...")
         phonon.generate_displacements(distance=displacement_distance)
 
-        supercells = phonon.supercells_with_displacements
-        log_queue.put(f"  Generated {len(supercells)} displaced supercells")
+        supercells     = phonon.supercells_with_displacements
+        n_displacements = len(supercells)
+        log_queue.put(f"  Generated {n_displacements} displaced supercells")
+
 
         log_queue.put("  Calculating forces for displaced supercells...")
         forces = []
-
         for i, supercell in enumerate(supercells):
-            log_queue.put(f"    Calculating forces for supercell {i + 1}/{len(supercells)}")
-            ase_supercell = Atoms(
+            ase_sc = Atoms(
                 symbols=supercell.symbols,
                 positions=supercell.positions,
                 cell=supercell.cell,
-                pbc=True
+                pbc=True,
             )
-            ase_supercell.calc = calculator
-
+            ase_sc.calc = calculator
             try:
-                supercell_forces = ase_supercell.get_forces()
-                forces.append(supercell_forces)
-
-                if (i + 1) % max(1, len(supercells) // 10) == 0:
-                    progress = (i + 1) / len(supercells) * 100
-                    log_queue.put(f"    Progress: {progress:.1f}% ({i + 1}/{len(supercells)})")
-
+                forces.append(ase_sc.get_forces())
+                if (i + 1) % max(1, n_displacements // 10) == 0 or i == n_displacements - 1:
+                    log_queue.put(
+                        f"    Forces: {i+1}/{n_displacements} "
+                        f"({(i+1)/n_displacements*100:.0f}%)"
+                    )
             except Exception as force_error:
-                log_queue.put(f"    ❌ Force calculation failed for supercell {i + 1}: {str(force_error)}")
-                return {'success': False, 'error': f'Force calculation failed: {str(force_error)}'}
+                log_queue.put(f"    ❌ Force calculation failed for supercell {i+1}: {force_error}")
+                return {'success': False, 'error': f'Force calculation failed: {force_error}'}
 
         log_queue.put("  ✅ All force calculations completed")
 
@@ -1092,309 +1124,332 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put("  Calculating force constants...")
         phonon.produce_force_constants()
 
-        log_queue.put("  Calculating phonon band structure with enhanced k-point density...")
 
+        log_queue.put("  Calculating phonon band structure with enhanced k-point density...")
         try:
             from pymatgen.symmetry.bandstructure import HighSymmKpath
-            from ase.dft.kpoints import bandpath
+            from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+            import warnings
 
-            kpath = HighSymmKpath(pmg_structure)
-            path = kpath.kpath["path"]
-            kpoints = kpath.kpath["kpoints"]
 
-            ase_cell = atoms.get_cell()
+            sga     = SpacegroupAnalyzer(pmg_structure)
+            pmg_std = sga.get_primitive_standard_structure()
+            log_queue.put(
+                f"  Space group: {sga.get_space_group_symbol()} "
+                f"(#{sga.get_space_group_number()})"
+            )
 
-            npoints_per_segment = phonon_params.get('npoints', 151)
-            total_npoints = phonon_params.get('total_npoints', 501)
+            kpath_convention = phonon_params.get('kpath_convention', 'setyawan_curtarolo')
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning,
+                                        message=".*standard primitive.*")
+                try:
+                    kpath_obj = HighSymmKpath(pmg_std, path_type=kpath_convention)
+                except TypeError:
+                    log_queue.put(
+                        f"  ⚠ This pymatgen version does not support "
+                        f"path_type='{kpath_convention}'; using default"
+                    )
+                    kpath_obj = HighSymmKpath(pmg_std)
 
-            log_queue.put(f"  Using {npoints_per_segment} points per segment")
+            _CONV_DISPLAY = {
+                "setyawan_curtarolo": "Setyawan-Curtarolo 2010",
+                "hinuma":             "SeeK-path / HPKOT (Hinuma 2017)",
+                "latimer_munro":      "Latimer-Munro 2020",
+            }
+            log_queue.put(
+                f"  k-path convention: {_CONV_DISPLAY.get(kpath_convention, kpath_convention)}"
+            )
 
-            path_kpoints = []
-            path_labels = []
-            path_connections = []
-            cumulative_distance = [0.0]
-            current_distance = 0.0
+            path_segs   = kpath_obj.kpath["path"]
+            kpoints_dict = kpath_obj.kpath["kpoints"]
 
-            for segment in path:
-                if len(segment) < 2:
-                    continue
+            pmg_cell = np.array(pmg_std.lattice.matrix)
+            rec_std  = np.linalg.inv(pmg_cell).T * 2 * np.pi
 
-                segment_points = []
-                segment_labels = []
+            npoints_per_segment = int(phonon_params.get(
+                'npoints_per_segment',
+                phonon_params.get('npoints', 101)
+            ))
 
-                for i, point_name in enumerate(segment):
-                    point_coords = kpoints[point_name]
-                    segment_points.append(point_coords)
-                    segment_labels.append(point_name)
+            all_kpts        = []
+            cumul_dist      = [0.0]
+            dist            = 0.0
+            path_labels_raw = []
+            label_positions = []
 
-                for i in range(len(segment_points) - 1):
-                    start_point = np.array(segment_points[i])
-                    end_point = np.array(segment_points[i + 1])
-
+            for seg in path_segs:
+                for i in range(len(seg) - 1):
+                    start = np.array(kpoints_dict[seg[i]],     dtype=float)
+                    end   = np.array(kpoints_dict[seg[i + 1]], dtype=float)
                     for j in range(npoints_per_segment):
-                        t = j / (npoints_per_segment - 1)
-                        interpolated_point = start_point + t * (end_point - start_point)
-                        path_kpoints.append(interpolated_point.tolist())
-
-                        if len(path_kpoints) > 1:
-                            prev_point = np.array(path_kpoints[-2])
-                            curr_point = np.array(path_kpoints[-1])
-                            prev_cart = prev_point @ ase_cell.reciprocal()
-                            curr_cart = curr_point @ ase_cell.reciprocal()
-                            current_distance += np.linalg.norm(curr_cart - prev_cart)
-
-                        cumulative_distance.append(current_distance)
-
+                        t   = j / (npoints_per_segment - 1)
+                        kpt = start + t * (end - start)
+                        all_kpts.append(kpt)
+                        if len(all_kpts) > 1:
+                            dk   = (kpt - all_kpts[-2]) @ rec_std
+                            dist += float(np.linalg.norm(dk))
+                        cumul_dist.append(dist)
                         if j == 0:
-                            path_labels.append(segment_labels[i])
-                        elif j == npoints_per_segment - 1:
-                            path_labels.append(segment_labels[i + 1])
-                        else:
-                            path_labels.append('')
+                            lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
+                            if label_positions and abs(label_positions[-1] - dist) < 1e-8:
+                                path_labels_raw[-1] = path_labels_raw[-1] + "|" + lbl
+                            else:
+                                path_labels_raw.append(lbl)
+                                label_positions.append(dist)
 
-            bands = []
-            current_band = []
+                    lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
+                    if i == len(seg) - 2:
+                        path_labels_raw.append(lbl)
+                        label_positions.append(dist)
 
-            for kpt in path_kpoints:
-                current_band.append(kpt)
 
-            if current_band:
-                bands.append(current_band)
+            seen_pos       = set()
+            unique_labels  = []
+            unique_pos     = []
+            for lbl, pos in zip(path_labels_raw, label_positions):
+                key = round(pos, 8)
+                if key not in seen_pos:
+                    seen_pos.add(key)
+                    unique_labels.append(lbl)
+                    unique_pos.append(pos)
 
-            log_queue.put(f"  Generated enhanced k-point path with {len(path_kpoints)} points")
-
-            unique_label_positions = []
-            unique_labels = []
-            seen_labels = set()
-
-            for i, label in enumerate(path_labels):
-                if label and label not in seen_labels:
-                    unique_label_positions.append(cumulative_distance[i])
-                    unique_labels.append(label)
-                    seen_labels.add(label)
-                elif label and i == len(path_labels) - 1:
-                    unique_label_positions.append(cumulative_distance[i])
-                    if label not in unique_labels:
-                        unique_labels.append(label)
-
-            log_queue.put(f"  High-symmetry path: {' → '.join(unique_labels)}")
+            log_queue.put(
+                f"  High-symmetry path: {' → '.join(unique_labels)}"
+                f"  ({len(all_kpts)} k-points)"
+            )
 
         except Exception as path_error:
-            log_queue.put(f"  ⚠️ High-symmetry path detection failed: {str(path_error)}")
-            log_queue.put("  Using simple Γ-X-M-Γ path with enhanced density")
+            log_queue.put(f"  ⚠️ High-symmetry path detection failed: {path_error}")
+            log_queue.put("  Using simple Γ–X–M–Γ fallback path")
+            npts = int(phonon_params.get('npoints_per_segment',
+                                         phonon_params.get('npoints', 101)))
+            all_kpts, cumul_dist, dist = [], [0.0], 0.0
+            segs = [([0,0,0],[0.5,0,0]), ([0.5,0,0],[0.5,0.5,0]),
+                    ([0.5,0.5,0],[0,0,0])]
+            for start, end in segs:
+                for j in range(npts):
+                    t   = j / (npts - 1)
+                    kpt = [start[k] + t*(end[k]-start[k]) for k in range(3)]
+                    if j > 0:
+                        dk = np.array(kpt) - np.array(all_kpts[-1])
+                        dist += float(np.linalg.norm(dk))
+                    all_kpts.append(kpt)
+                    cumul_dist.append(dist)
+            unique_labels = ["Γ", "X", "M", "Γ"]
+            unique_pos    = [0.0,
+                             cumul_dist[npts - 1],
+                             cumul_dist[2 * npts - 1],
+                             dist]
 
-            npoints_fallback = phonon_params.get('npoints', 151)
-            gamma = [0, 0, 0]
-            x_point = [0.5, 0, 0]
-            m_point = [0.5, 0.5, 0]
 
-            path_kpoints = []
-            cumulative_distance = [0.0]
-            current_distance = 0.0
+        n_per  = int(phonon_params.get('npoints_per_segment',
+                                       phonon_params.get('npoints', 101)))
+        bands  = []
+        for start_idx in range(0, len(all_kpts), n_per):
+            seg = all_kpts[start_idx: start_idx + n_per]
+            if len(seg) >= 2:
+                bands.append(seg)
+        if not bands:
+            bands = [all_kpts]
 
-            # Γ to X
-            for i in range(npoints_fallback):
-                t = i / (npoints_fallback - 1)
-                kpt = [t * 0.5, 0, 0]
-                path_kpoints.append(kpt)
-                if i > 0:
-                    current_distance += 0.5 / (npoints_fallback - 1)
-                cumulative_distance.append(current_distance)
-
-            # X to M
-            for i in range(1, npoints_fallback):
-                t = i / (npoints_fallback - 1)
-                kpt = [0.5, t * 0.5, 0]
-                path_kpoints.append(kpt)
-                current_distance += 0.5 / (npoints_fallback - 1)
-                cumulative_distance.append(current_distance)
-
-            # M to Γ
-            for i in range(1, npoints_fallback):
-                t = i / (npoints_fallback - 1)
-                kpt = [0.5 * (1 - t), 0.5 * (1 - t), 0]
-                path_kpoints.append(kpt)
-                current_distance += np.sqrt(2) * 0.5 / (npoints_fallback - 1)
-                cumulative_distance.append(current_distance)
-
-            bands = [path_kpoints]
-            unique_labels = ['Γ', 'X', 'M', 'Γ']
-            unique_label_positions = [0, cumulative_distance[npoints_fallback - 1],
-                                      cumulative_distance[2 * npoints_fallback - 2],
-                                      cumulative_distance[-1]]
-
-        # Run phonon calculation
         phonon.run_band_structure(
             bands,
             is_band_connection=False,
             with_eigenvectors=False,
-            is_legacy_plot=False
+            is_legacy_plot=False,
         )
 
-        log_queue.put("  Processing enhanced band structure data...")
+        log_queue.put("  Processing band structure data...")
         band_dict = phonon.get_band_structure_dict()
 
-        raw_frequencies = band_dict['frequencies']
-        log_queue.put(f"  Raw frequencies type: {type(raw_frequencies)}")
-        log_queue.put(f"  Raw frequencies length: {len(raw_frequencies)}")
-
-        if isinstance(raw_frequencies, list):
-            freq_arrays = []
-            max_bands = 0
-            for i, freq_array in enumerate(raw_frequencies):
-                freq_np = np.array(freq_array)
-                freq_arrays.append(freq_np)
-                if freq_np.ndim == 1:
-                    max_bands = max(max_bands, len(freq_np))
-                elif freq_np.ndim == 2:
-                    max_bands = max(max_bands, freq_np.shape[1])
-
-            log_queue.put(f"  Found {len(freq_arrays)} k-point groups with max {max_bands} bands")
-
-            total_kpoints = sum(len(freq_array) if freq_array.ndim > 0 else 1 for freq_array in freq_arrays)
-            frequencies = np.full((total_kpoints, max_bands), np.nan)
-
-            kpoint_idx = 0
-            for freq_array in freq_arrays:
-                freq_np = np.array(freq_array)
-                if freq_np.ndim == 1:
-                    n_bands = len(freq_np)
-                    frequencies[kpoint_idx, :n_bands] = freq_np
-                    kpoint_idx += 1
-                elif freq_np.ndim == 2:
-                    n_kpts, n_bands = freq_np.shape
-                    frequencies[kpoint_idx:kpoint_idx + n_kpts, :n_bands] = freq_np
-                    kpoint_idx += n_kpts
+        raw_freq = band_dict['frequencies']
+        if isinstance(raw_freq, np.ndarray):
+            frequencies = raw_freq
         else:
-            frequencies = np.array(raw_frequencies)
+            frequencies = np.concatenate(
+                [np.atleast_2d(np.array(s)) for s in raw_freq], axis=0
+            )
+        if frequencies.ndim == 1:
+            frequencies = frequencies[:, np.newaxis]
 
-        # Convert units: THz to meV
-        frequencies = frequencies * units_phonopy.THzToEv * 1000  # Convert to meV
+        frequencies = frequencies * units_phonopy.THzToEv * 1000
 
-        valid_frequencies = frequencies[~np.isnan(frequencies)]
-        log_queue.put(
-            f"  ✅ Enhanced band structure calculated: {frequencies.shape} (valid points: {len(valid_frequencies)})")
 
-        # Process k-points
-        raw_kpoints = band_dict['qpoints']
-        log_queue.put(f"  Raw k-points type: {type(raw_kpoints)}")
-        log_queue.put(f"  Raw k-points length: {len(raw_kpoints)}")
+        frequencies = np.where(np.abs(frequencies) < 0.5, 0.0, frequencies)
 
-        if isinstance(raw_kpoints, list):
-            kpoints_band = []
-            for kpt_group in raw_kpoints:
-                kpt_array = np.array(kpt_group)
-                if kpt_array.ndim == 1:
-                    kpoints_band.append(kpt_array)
-                elif kpt_array.ndim == 2:
-                    for kpt in kpt_array:
-                        kpoints_band.append(kpt)
-                else:
-                    log_queue.put(f"  ⚠️ Unexpected k-point dimension: {kpt_array.ndim}")
-            kpoints_band = np.array(kpoints_band)
+        raw_kpts = band_dict['qpoints']
+        if isinstance(raw_kpts, np.ndarray):
+            kpoints_band = raw_kpts
         else:
-            kpoints_band = np.array(raw_kpoints)
+            kpoints_band = np.concatenate(
+                [np.atleast_2d(np.array(s)) for s in raw_kpts], axis=0
+            )
 
-        log_queue.put(f"  Processed k-points shape: {kpoints_band.shape}")
-        if len(kpoints_band) != frequencies.shape[0]:
-            log_queue.put(f"  ⚠️ K-point count mismatch: {len(kpoints_band)} vs {frequencies.shape[0]}")
-            min_len = min(len(kpoints_band), frequencies.shape[0])
+
+        min_len = min(len(kpoints_band), len(frequencies))
+        if len(kpoints_band) != len(frequencies):
+            log_queue.put(
+                f"  ⚠️ Length mismatch: kpoints={len(kpoints_band)}, "
+                f"frequencies={len(frequencies)} → trimming to {min_len}"
+            )
             kpoints_band = kpoints_band[:min_len]
-            frequencies = frequencies[:min_len]
-            cumulative_distance = cumulative_distance[:min_len + 1]
-            log_queue.put(f"  Adjusted to consistent length: {min_len}")
+            frequencies  = frequencies[:min_len]
+
+        dist_array = np.array(cumul_dist[:min_len])
+        log_queue.put(
+            f"  ✅ Band structure: {frequencies.shape[0]} k-points, "
+            f"{frequencies.shape[1]} bands"
+        )
+
 
         log_queue.put("  Calculating phonon DOS...")
         try:
-            if total_atoms > 100:
-                mesh = [20, 20, 20]
-            else:
-                mesh = [30, 30, 30]
-
+            mesh = (phonon_params.get('dos_mesh', None)
+                    or ([20,20,20] if n_supercell_atoms > 100 else [30,30,30]))
             log_queue.put(f"  Using DOS mesh: {mesh}")
-            phonon.run_mesh(mesh)
+            phonon.run_mesh(mesh, with_eigenvectors=False)
             phonon.run_total_dos()
-
-            dos_dict = phonon.get_total_dos_dict()
-            dos_frequencies = dos_dict['frequency_points'] * units_phonopy.THzToEv * 1000  # Convert to meV
-            dos_values = dos_dict['total_dos']
-
+            dos_dict       = phonon.get_total_dos_dict()
+            dos_frequencies = (np.array(dos_dict['frequency_points'])
+                               * units_phonopy.THzToEv * 1000)
+            dos_values      = np.array(dos_dict['total_dos'])
             log_queue.put(f"  ✅ DOS calculated with {len(dos_frequencies)} points")
-
         except Exception as dos_error:
-            log_queue.put(f"  ⚠️ DOS calculation failed: {str(dos_error)}")
-            freq_flat = valid_frequencies[valid_frequencies > 0]
-
-            if len(freq_flat) > 0:
-                dos_frequencies = np.linspace(0, np.max(freq_flat) * 1.2, 500)
-                dos_values = np.zeros_like(dos_frequencies)
-                sigma = 2.0  # meV
-                for f in freq_flat:
-                    dos_values += np.exp(-0.5 * ((dos_frequencies - f) / sigma) ** 2)
-                dos_values /= len(freq_flat) * sigma * np.sqrt(2 * np.pi)
+            log_queue.put(f"  ⚠️ DOS calculation failed: {dos_error}")
+            pos = frequencies[~np.isnan(frequencies)]
+            pos = pos[pos > 0]
+            if len(pos):
+                dos_frequencies = np.linspace(0, pos.max() * 1.2, 500)
+                dos_values      = np.zeros(500)
+                sigma = 2.0
+                for f in pos:
+                    dos_values += np.exp(-0.5 * ((dos_frequencies - f) / sigma)**2)
+                dos_values /= len(pos) * sigma * np.sqrt(2 * np.pi)
             else:
                 dos_frequencies = np.linspace(0, 50, 500)
-                dos_values = np.zeros_like(dos_frequencies)
+                dos_values      = np.zeros(500)
 
-        filtered_frequencies = filter_near_zero_frequencies(valid_frequencies)
-        imaginary_count = np.sum(filtered_frequencies < 0)
-        min_frequency = np.min(filtered_frequencies) if len(filtered_frequencies) > 0 else 0
-        frequencies = filter_near_zero_frequencies(frequencies)
 
-        if imaginary_count > 0:
-            log_queue.put(f"  ⚠️ Found {imaginary_count} imaginary modes")
-            log_queue.put(f"    Most negative frequency: {min_frequency:.3f} meV")
+        valid = frequencies[~np.isnan(frequencies)]
+        imaginary_count = int(np.sum(valid < imag_tol_mev))
+        min_frequency   = float(np.min(valid)) if len(valid) else 0.0
+        is_stable       = imaginary_count == 0
+
+        if is_stable:
+            if min_frequency < 0:
+                stability_notes = (
+                    f"✅ Dynamically stable (most negative mode: {min_frequency:.3f} meV, "
+                    f"within tolerance of {imag_tol_mev:.2f} meV)"
+                )
+            else:
+                stability_notes = "✅ Dynamically stable (no imaginary modes)"
         else:
-            log_queue.put("  ✅ No imaginary modes found")
+            stability_notes = (
+                f"⚠ {imaginary_count} imaginary mode(s) below {imag_tol_mev:.2f} meV "
+                f"(most negative: {min_frequency:.3f} meV)"
+            )
+        log_queue.put(f"  {stability_notes}")
 
-        temp = phonon_params.get('temperature', 300)
+
+        temp = float(phonon_params.get('temperature', 300))
         log_queue.put(f"  Calculating thermodynamics at {temp} K...")
+        thermal_dict = None
+        thermo_props = None
 
         try:
             phonon.run_thermal_properties(
-                t_step=10,
-                t_max=1500,
-                t_min=0
+                t_step=float(phonon_params.get('t_step', 10)),
+                t_max =float(phonon_params.get('t_max', 1500)),
+                t_min =float(phonon_params.get('t_min', 0)),
             )
+            td    = phonon.get_thermal_properties_dict()
+            temps = np.array(td['temperatures'])
 
-            thermal_dict = phonon.get_thermal_properties_dict()
-            temps = np.array(thermal_dict['temperatures'])
-            temp_idx = np.argmin(np.abs(temps - temp))
+            def _gv(key, alts=()):
+                v = td.get(key)
+                if v is not None:
+                    return np.array(v)
+                for k in alts:
+                    v = td.get(k)
+                    if v is not None:
+                        return np.array(v)
+                return None
 
-            thermo_props = {
-                'temperature': float(temps[temp_idx]),
-                'zero_point_energy': float(thermal_dict['zero_point_energy']),  # eV
-                'internal_energy': float(thermal_dict['internal_energy'][temp_idx]),  # eV
-                'heat_capacity': float(thermal_dict['heat_capacity'][temp_idx]),  # eV/K
-                'entropy': float(thermal_dict['entropy'][temp_idx]),  # eV/K
-                'free_energy': float(thermal_dict['free_energy'][temp_idx])  # eV
+            free_e   = _gv('free_energy',  ('helmholtz_free_energy',))
+            entropy  = _gv('entropy',       ('entropies',))
+            heat_cap = _gv('heat_capacity', ('cv', 'heat_capacities'))
+
+
+            if 'zero_point_energy' in td:
+                zpe = float(td['zero_point_energy'])
+            elif free_e is not None and len(free_e):
+
+                zpe = float(free_e[0])
+            else:
+                zpe = 0.0
+
+            thermal_dict = {
+                'temperatures':      temps.tolist(),
+                'free_energy':       free_e.tolist()   if free_e   is not None else [],
+                'entropy':           entropy.tolist()  if entropy  is not None else [],
+                'heat_capacity':     heat_cap.tolist() if heat_cap is not None else [],
+                'zero_point_energy': zpe,
+                '_units': {
+                    'free_energy':       'kJ/mol',
+                    'entropy':           'J/K/mol',
+                    'heat_capacity':     'J/K/mol',
+                    'zero_point_energy': 'kJ/mol',
+                },
             }
 
-            log_queue.put(f"  Zero-point energy: {thermo_props['zero_point_energy']:.6f} eV")
-            log_queue.put(f"  Heat capacity: {thermo_props['heat_capacity']:.6f} eV/K")
+            idx = int(np.argmin(np.abs(temps - temp)))
+            thermo_props = {
+                'temperature':       float(temps[idx]),
+                'zero_point_energy': zpe,
+                'free_energy':       float(free_e[idx])   if free_e   is not None else None,
+                'entropy':           float(entropy[idx])  if entropy  is not None else None,
+                'heat_capacity':     float(heat_cap[idx]) if heat_cap is not None else None,
+                '_units': thermal_dict['_units'],
+            }
+
+            def _fv(v):
+                return f"{v:.4f}" if v is not None else "N/A"
+            log_queue.put(
+                f"  Thermodynamics at {thermo_props['temperature']:.0f} K: "
+                f"ZPE={_fv(zpe)} kJ/mol  "
+                f"F={_fv(thermo_props.get('free_energy'))} kJ/mol  "
+                f"S={_fv(thermo_props.get('entropy'))} J/K/mol  "
+                f"Cv={_fv(thermo_props.get('heat_capacity'))} J/K/mol"
+            )
 
         except Exception as thermo_error:
-            log_queue.put(f"  ⚠️ Thermodynamics calculation failed: {str(thermo_error)}")
+            log_queue.put(f"  ⚠️ Thermodynamics calculation failed: {thermo_error}")
 
-            positive_freqs = valid_frequencies[valid_frequencies > 0] * 1e-3  # Convert to eV
-            if len(positive_freqs) > 0:
-                kB = 8.617e-5  # eV/K
-                E_zp = 0.5 * np.sum(positive_freqs)
-
-                x = positive_freqs / (kB * temp)
-                x = np.minimum(x, 50)  # Prevent overflow
-                exp_x = np.exp(x)
-
-                U = np.sum(positive_freqs * exp_x / (exp_x - 1 + 1e-10))
-                Cv = np.sum(kB * x ** 2 * exp_x / (exp_x - 1 + 1e-10) ** 2)
+            pos_mev = valid[valid > 0]
+            if len(pos_mev):
+                kB       = 8.617333e-5
+                hbar_mev = 1.0
+                pos_ev   = pos_mev * 1e-3
+                zpe_ev   = 0.5 * float(np.sum(pos_ev))
+                zpe_kj   = zpe_ev * 96.485
+                x        = np.minimum(pos_ev / (kB * max(temp, 1.0)), 700)
+                ex       = np.exp(x)
+                Cv_ev    = float(np.sum(kB * x**2 * ex / (ex - 1 + 1e-10)**2))
+                Cv_jkmol = Cv_ev * 96485.0
 
                 thermo_props = {
-                    'temperature': temp,
-                    'zero_point_energy': E_zp,
-                    'internal_energy': U,
-                    'heat_capacity': Cv,
-                    'entropy': 0.0,
-                    'free_energy': U
+                    'temperature':       temp,
+                    'zero_point_energy': zpe_kj,
+                    'free_energy':       None,
+                    'entropy':           None,
+                    'heat_capacity':     Cv_jkmol,
+                    '_units': {
+                        'free_energy':       'kJ/mol',
+                        'entropy':           'J/K/mol',
+                        'heat_capacity':     'J/K/mol',
+                        'zero_point_energy': 'kJ/mol',
+                    },
                 }
             else:
                 thermo_props = None
@@ -1402,33 +1457,44 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put(f"✅ Pymatgen+Phonopy calculation completed for {structure_name}")
 
         return {
-            'success': True,
-            'frequencies': frequencies,
-            'kpoints': kpoints_band,
-            'kpoint_distances': np.array(cumulative_distance[:-1]) if len(cumulative_distance) > len(
-                kpoints_band) else np.array(cumulative_distance),
-            'kpoint_labels': unique_labels,
-            'kpoint_label_positions': unique_label_positions,
-            'dos_energies': dos_frequencies,  # meV
-            'dos': dos_values,
-            'thermodynamics': thermo_props,
-            'thermal_properties_dict': thermal_dict,  # Full temperature data
-            'supercell_size': tuple([supercell_matrix[i][i] for i in range(3)]),
-            'imaginary_modes': int(imaginary_count),
-            'min_frequency': float(min_frequency),
-            'method': 'Pymatgen+Phonopy',
-            'enhanced_kpoints': True
+
+            'success':              True,
+            'method':               'Pymatgen+Phonopy',
+            'enhanced_kpoints':     True,
+
+            'frequencies':          frequencies,
+            'kpoints':              kpoints_band,
+            'kpoint_distances':     dist_array,
+            'kpoint_labels':        unique_labels,
+            'kpoint_label_positions': unique_pos,
+
+            'dos_energies':         dos_frequencies,
+            'dos':                  dos_values,
+
+            'supercell_size':       tuple(supercell_matrix[i][i] for i in range(3)),
+            'n_unit_cell_atoms':    n_unit_cell_atoms,
+            'n_supercell_atoms':    n_supercell_atoms,
+            'n_displacements':      n_displacements,
+
+            'pre_relax_converged':  pre_relax_converged,
+            'pre_relax_final_fmax': pre_relax_final_fmax,
+
+            'imaginary_modes':      imaginary_count,
+            'min_frequency':        min_frequency,
+            'is_stable':            is_stable,
+            'stability_notes':      stability_notes,
+            'imaginary_mode_tol_mev': imag_tol_mev,
+            'kpath_convention':     phonon_params.get('kpath_convention', 'setyawan_curtarolo'),
+
+            'thermodynamics':       thermo_props,
+            'thermal_properties_dict': thermal_dict,
         }
 
     except Exception as e:
-        log_queue.put(f"❌ Pymatgen+Phonopy phonon calculation failed for {structure_name}: {str(e)}")
-        log_queue.put(f"Error type: {type(e).__name__}")
-        import traceback
-        log_queue.put(f"Traceback: {traceback.format_exc()}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+        import traceback as _tb
+        log_queue.put(f"❌ Pymatgen+Phonopy calculation failed for {structure_name}: {e}")
+        log_queue.put(f"Traceback: {_tb.format_exc()}")
+        return {'success': False, 'error': str(e)}
 
 
 def check_and_install_phonopy():
@@ -4771,84 +4837,227 @@ with tab1:
 
         elif calc_type == "Phonon Calculation":
             st.subheader("Phonon Calculation Parameters")
-            st.info(
-                "A brief pre-optimization (fmax=0.01 eV/Å, max 100 steps) will be performed for stability before phonon calculations.")
 
-            st.write("**Supercell Configuration**")
-            auto_supercell = st.checkbox("Automatic supercell size estimation", value=True,
-                                         help="Automatically estimate appropriate supercell size based on structure")
+            try:
+                from phonon_calculator import suggest_supercell_for_structure
+
+                _suggest_available = True
+            except ImportError:
+                _suggest_available = False
+
+            phonon_params: dict = {}
+
+            st.write("### 🔲 Supercell")
+
+            auto_supercell = st.checkbox(
+                "Automatic supercell size estimation", value=True,
+                help="Automatically estimate the supercell so each dimension is at least "
+                     "'target length' Å long.")
+            phonon_params["auto_supercell"] = auto_supercell
+
             if auto_supercell:
-                col_auto1, col_auto2, col_auto3 = st.columns(3)
-                with col_auto1:
-                    target_length = st.number_input("Target supercell length (Å)", min_value=8.0, max_value=150.0,
-                                                    value=15.0, step=1.0,
-                                                    help="Minimum length for each supercell dimension")
-                with col_auto2:
-                    max_multiplier = st.number_input("Max supercell multiplier", min_value=1, max_value=50,
-                                                     value=4, step=1,
-                                                     help="Maximum allowed multiplier for any dimension")
-                with col_auto3:
-                    max_atoms = st.number_input("Max supercell atoms", min_value=100, max_value=200000,
-                                                value=800, step=100,
-                                                help="Maximum total atoms in supercell")
-                phonon_params = {
-                    'auto_supercell': True,
-                    'target_supercell_length': target_length,
-                    'max_supercell_multiplier': max_multiplier,
-                    'max_supercell_atoms': max_atoms,
-                    'delta': 0.01,
-                    'auto_kpath': True,
-                    'npoints': 100,
-                    'dos_points': 1000,
-                    'dos_sigma': 1.0,
-                    'temperature': 300
-                }
-                st.info(
-                    f"Supercell will be automatically estimated to achieve ~{target_length} Å minimum length per dimension")
+                col_a1, col_a2, col_a3 = st.columns(3)
+                with col_a1:
+                    target_length = st.number_input(
+                        "Target supercell length (Å)",
+                        min_value=8.0, max_value=150.0, value=15.0, step=1.0,
+                        help="Minimum supercell length per Cartesian direction")
+                with col_a2:
+                    max_multiplier = st.number_input(
+                        "Max multiplier per axis",
+                        min_value=1, max_value=50, value=4, step=1,
+                        help="Cap on any single supercell expansion factor")
+                with col_a3:
+                    max_atoms = st.number_input(
+                        "Max supercell atoms",
+                        min_value=50, max_value=200_000, value=800, step=50,
+                        help="Hard cap on total atoms in the supercell")
+
+                phonon_params.update({
+                    "target_supercell_length": target_length,
+                    "max_supercell_multiplier": int(max_multiplier),
+                    "max_supercell_atoms": int(max_atoms),
+                })
+                st.info(f"Supercell will be sized automatically to achieve ≥ {target_length:.0f} Å per dimension.")
 
             else:
                 st.write("**Manual supercell specification**")
-                col_ph1, col_ph2, col_ph3 = st.columns(3)
-                with col_ph1:
-                    supercell_x = st.number_input("Supercell X", min_value=1, value=2)
-                with col_ph2:
-                    supercell_y = st.number_input("Supercell Y", min_value=1, value=2)
-                with col_ph3:
-                    supercell_z = st.number_input("Supercell Z", min_value=1, value=2)
-                phonon_params = {
-                    'auto_supercell': False,
-                    'supercell_size': (supercell_x, supercell_y, supercell_z),
-                    'delta': 0.01,
-                    'auto_kpath': True,
-                    'npoints': 100,
-                    'dos_points': 1000,
-                    'dos_sigma': 1.0,
-                    'temperature': 300
-                }
 
-            col_ph4, col_ph5 = st.columns(2)
-            with col_ph4:
-                phonon_params['delta'] = st.number_input("Displacement Delta (Å)", min_value=0.001, max_value=0.1,
-                                                         value=phonon_params['delta'], step=0.001, format="%.3f")
-            with col_ph5:
-                phonon_params['temperature'] = st.number_input("Temperature for Thermodynamics (K)", min_value=0,
-                                                               value=phonon_params['temperature'], step=10)
-            st.write("**k-point path for dispersion**")
-            phonon_params['auto_kpath'] = st.checkbox("Use Automatic High-Symmetry k-path",
-                                                      value=phonon_params['auto_kpath'])
-            if phonon_params['auto_kpath']:
-                phonon_params['npoints'] = st.number_input("Number of points per segment", min_value=10,
-                                                           value=phonon_params['npoints'], step=10)
+                _default_sc = (2, 2, 2)
+                if _suggest_available:
+                    _atoms_for_suggest = st.session_state.get("atoms") or st.session_state.get("selected_atoms")
+                    if _atoms_for_suggest is not None:
+                        try:
+                            _default_sc = suggest_supercell_for_structure(_atoms_for_suggest)
+                        except Exception:
+                            pass
+
+                col_m1, col_m2, col_m3 = st.columns(3)
+                with col_m1:
+                    supercell_x = st.number_input("Supercell Na", min_value=1, value=int(_default_sc[0]), step=1)
+                with col_m2:
+                    supercell_y = st.number_input("Supercell Nb", min_value=1, value=int(_default_sc[1]), step=1)
+                with col_m3:
+                    supercell_z = st.number_input("Supercell Nc", min_value=1, value=int(_default_sc[2]), step=1)
+
+                phonon_params["supercell_size"] = (int(supercell_x), int(supercell_y), int(supercell_z))
+
+            st.write("### ⚡ Displacement & Thermodynamics")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                phonon_params["displacement_distance"] = st.number_input(
+                    "Displacement distance (Å)",
+                    min_value=0.001, max_value=0.1, value=0.01, step=0.001, format="%.3f",
+                    help="Finite-displacement amplitude for force constant evaluation")
+            with col_d2:
+                phonon_params["temperature"] = st.number_input(
+                    "Temperature for thermodynamics (K)",
+                    min_value=0, max_value=5000, value=300, step=10,
+                    help="Single temperature at which F, S, Cv snapshot is reported")
+
+            st.write("### 📐 k-point path for dispersion")
+
+            auto_kpath = st.checkbox(
+                "Use automatic high-symmetry k-path (recommended)", value=True,
+                help="Uses Pymatgen + SpacegroupAnalyzer to detect the correct "
+                     "high-symmetry path for the crystal's Bravais lattice")
+            phonon_params["use_auto_kpath"] = auto_kpath
+
+            if auto_kpath:
+                col_kp1, col_kp2 = st.columns(2)
+                with col_kp1:
+                    phonon_params["npoints_per_segment"] = st.number_input(
+                        "k-points per segment", min_value=10, max_value=500, value=101, step=10,
+                        help="Sampling density along each high-symmetry segment")
+                with col_kp2:
+                    _CONVENTION_OPTIONS = {
+                        "Setyawan-Curtarolo (2010)": "setyawan_curtarolo",
+                        "SeeK-path / HPKOT (Hinuma 2017)": "hinuma",
+                        "Latimer-Munro (2020)": "latimer_munro",
+                    }
+                    _CONVENTION_HELP = (
+                        "**Setyawan-Curtarolo** — original widely-used convention; "
+                        "default in most phonon codes.\n\n"
+                        "**SeeK-path / HPKOT** — Hinuma et al. 2017; used by VESTA, "
+                        "AiiDA, and many DFT tutorials. "
+                        "For HCP this gives Γ→K→M instead of Γ→M→K.\n\n"
+                        "**Latimer-Munro** — newer convention optimised for "
+                        "minimal path length."
+                    )
+                    chosen_label = st.selectbox(
+                        "k-path convention",
+                        options=list(_CONVENTION_OPTIONS.keys()),
+                        index=0,
+                        help=_CONVENTION_HELP,
+                    )
+                    phonon_params["kpath_convention"] = _CONVENTION_OPTIONS[chosen_label]
+                phonon_params["manual_kpath"] = None
             else:
-                st.warning("Manual k-point path not yet implemented in GUI. Automatic path will be used as fallback.")
-            st.write("**DOS parameters**")
-            col_dos1, col_dos2 = st.columns(2)
+                st.info(
+                    "Define each segment of the k-path below. "
+                    "Coordinates are in **fractional reciprocal** units (0–0.5). "
+                    "Leave the table empty to fall back to the automatic path.")
+
+                phonon_params["npoints_per_segment"] = st.number_input(
+                    "k-points per segment", min_value=10, max_value=500, value=101, step=10)
+
+                import pandas as pd
+
+                if "phonon_kpath_segments" not in st.session_state:
+                    st.session_state["phonon_kpath_segments"] = [
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "M", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
+                        {"start_label": "M", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
+                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
+                    ]
+
+                seg_df = pd.DataFrame(st.session_state["phonon_kpath_segments"])
+                edited_df = st.data_editor(
+                    seg_df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    column_config={
+                        "start_label": st.column_config.TextColumn("Start label", width="small"),
+                        "start_x": st.column_config.NumberColumn("Start kx", format="%.4f", step=0.05),
+                        "start_y": st.column_config.NumberColumn("Start ky", format="%.4f", step=0.05),
+                        "start_z": st.column_config.NumberColumn("Start kz", format="%.4f", step=0.05),
+                        "end_label": st.column_config.TextColumn("End label", width="small"),
+                        "end_x": st.column_config.NumberColumn("End kx", format="%.4f", step=0.05),
+                        "end_y": st.column_config.NumberColumn("End ky", format="%.4f", step=0.05),
+                        "end_z": st.column_config.NumberColumn("End kz", format="%.4f", step=0.05),
+                    },
+                    key="kpath_editor",
+                )
+                st.session_state["phonon_kpath_segments"] = edited_df.to_dict("records")
+
+                manual_segs = []
+                for row in edited_df.to_dict("records"):
+                    try:
+                        manual_segs.append({
+                            "start_label": str(row.get("start_label", "?")),
+                            "start_coords": [float(row["start_x"]), float(row["start_y"]), float(row["start_z"])],
+                            "end_label": str(row.get("end_label", "?")),
+                            "end_coords": [float(row["end_x"]), float(row["end_y"]), float(row["end_z"])],
+                        })
+                    except (KeyError, TypeError, ValueError):
+                        pass
+
+                phonon_params["manual_kpath"] = manual_segs if manual_segs else None
+                if not manual_segs:
+                    st.warning("No valid segments defined — automatic path will be used as fallback.")
+
+            st.write("### 📊 Density of States")
+            col_dos1, col_dos2, col_dos3 = st.columns(3)
             with col_dos1:
-                phonon_params['dos_points'] = st.number_input("DOS points", min_value=100,
-                                                              value=phonon_params['dos_points'], step=100)
+                dos_nx = st.number_input("DOS mesh Nx", min_value=5, max_value=100, value=30, step=5)
             with col_dos2:
-                phonon_params['dos_sigma'] = st.number_input("DOS Broadening (meV)", min_value=0.1,
-                                                             value=phonon_params['dos_sigma'], step=0.1, format="%.1f")
+                dos_ny = st.number_input("DOS mesh Ny", min_value=5, max_value=100, value=30, step=5)
+            with col_dos3:
+                dos_nz = st.number_input("DOS mesh Nz", min_value=5, max_value=100, value=30, step=5)
+            phonon_params["dos_mesh"] = (int(dos_nx), int(dos_ny), int(dos_nz))
+
+            st.write("### 🔧 Brief pre-optimisation")
+            pre_relax = st.checkbox(
+                "Perform brief geometry pre-optimisation before phonons", value=True,
+                help="Reduces residual forces so force constants are cleaner. "
+                     "Recommended unless the structure is already well-relaxed.")
+            phonon_params["pre_relax"] = pre_relax
+
+            if pre_relax:
+                col_r1, col_r2, col_r3 = st.columns(3)
+                with col_r1:
+                    phonon_params["pre_relax_optimizer"] = st.selectbox(
+                        "Optimiser", options=["LBFGS", "FIRE"], index=0,
+                        help="LBFGS is faster for most systems; FIRE can handle highly disordered ones better")
+                with col_r2:
+                    phonon_params["pre_relax_fmax"] = st.number_input(
+                        "Force convergence (eV/Å)",
+                        min_value=0.0001, max_value=1.0, value=0.01, step=0.001, format="%.4f",
+                        help="Optimisation stops when max atomic force is below this value")
+                with col_r3:
+                    phonon_params["pre_relax_steps"] = st.number_input(
+                        "Max steps",
+                        min_value=1, max_value=2000, value=100, step=10,
+                        help="Hard cap on optimisation steps — convergence may not be reached")
+
+
+            st.write("### ⚖️ Stability tolerance")
+            phonon_params["imaginary_mode_tol_mev"] = st.number_input(
+                "Imaginary mode tolerance (meV)",
+                min_value=-10.0, max_value=0.0, value=-0.1, step=0.05, format="%.2f",
+                help="Modes more negative than this value are counted as genuinely imaginary. "
+                     "Small negatives between this threshold and 0 are treated as numerical noise "
+                     "and the structure is still reported as dynamically stable.")
+
+            with st.expander("📋 Full parameter summary", expanded=False):
+                st.json({k: (list(v) if isinstance(v, tuple) else v)
+                         for k, v in phonon_params.items()
+                         if k != "manual_kpath"})
+                if phonon_params.get("manual_kpath"):
+                    st.write(f"Manual k-path: {len(phonon_params['manual_kpath'])} segment(s)")
+
         elif calc_type == "Elastic Properties":
             if not ELASTIC_AVAILABLE:
                 st.error(
@@ -6535,1052 +6744,10 @@ with tab3:
                            r.get('elastic_results') and r['elastic_results'].get('success')]
         with results_tab4:
             if phonon_results:
-                st.subheader("🎵 Phonon Properties")
-
-                if len(phonon_results) == 1:
-                    selected_phonon = phonon_results[0]
-                    st.write(f"**Structure:** {selected_phonon['name']}")
-                else:
-                    phonon_names = [r['name'] for r in phonon_results]
-                    selected_name = st.selectbox("Select structure for phonon analysis:", phonon_names,
-                                                 key="phonon_selector")
-                    selected_phonon = next(r for r in phonon_results if r['name'] == selected_name)
-
-                phonon_data = selected_phonon['phonon_results']
-
-                col_ph1, col_ph2 = st.columns(2)
-
-                with col_ph1:
-                    st.write("**Phonon Dispersion**")
-
-                    frequencies = np.array(phonon_data['frequencies'])
-                    nkpts, nbands = frequencies.shape
-
-                    if phonon_data.get('enhanced_kpoints') and 'kpoint_distances' in phonon_data:
-                        x_axis = phonon_data['kpoint_distances']
-                        x_title = "Distance along k-path"
-                        use_labels = True
-                    else:
-                        x_axis = list(range(nkpts))
-                        x_title = "k-point index"
-                        use_labels = False
-
-                    fig_disp = go.Figure()
-
-                    for band in range(nbands):
-                        fig_disp.add_trace(go.Scatter(
-                            x=x_axis,
-                            y=frequencies[:, band],
-                            mode='lines',
-                            name=f'Branch {band + 1}',
-                            line=dict(width=1.5),
-                            showlegend=False,
-                            hovertemplate='Frequency: %{y:.3f} meV<extra></extra>'
-                        ))
-
-                    if phonon_data['imaginary_modes'] > 0:
-                        imaginary_mask = frequencies < 0
-                        for band in range(nbands):
-                            imaginary_points = np.where(imaginary_mask[:, band])[0]
-                            if len(imaginary_points) > 0:
-                                fig_disp.add_trace(go.Scatter(
-                                    x=[x_axis[i] for i in imaginary_points],
-                                    y=frequencies[imaginary_points, band],
-                                    mode='markers',
-                                    marker=dict(color='red', size=4),
-                                    name='Imaginary modes',
-                                    showlegend=band == 0,
-                                    hovertemplate='Imaginary mode: %{y:.3f} meV<extra></extra>'
-                                ))
-
-                    if use_labels and 'kpoint_labels' in phonon_data and 'kpoint_label_positions' in phonon_data:
-                        labels = phonon_data['kpoint_labels']
-                        positions = phonon_data['kpoint_label_positions']
-
-                        display_labels = []
-                        for label in labels:
-                            if label.upper() == 'GAMMA':
-                                display_labels.append('Γ')
-                            else:
-                                display_labels.append(label)
-
-                        for pos in positions:
-                            fig_disp.add_vline(
-                                x=pos,
-                                line_dash="dash",
-                                line_color="gray",
-                                opacity=0.7,
-                                line_width=1
-                            )
-
-                        fig_disp.update_layout(
-                            xaxis=dict(
-                                tickmode='array',
-                                tickvals=positions,
-                                ticktext=display_labels,
-                                title=x_title,
-                                title_font=dict(size=20),
-                                tickfont=dict(size=18)
-                            )
-                        )
-                    else:
-                        fig_disp.update_layout(
-                            xaxis=dict(
-                                title=x_title,
-                                title_font=dict(size=20),
-                                tickfont=dict(size=18)
-                            )
-                        )
-
-                    fig_disp.update_layout(
-                        title=dict(text="Phonon Dispersion", font=dict(size=24)),
-                        yaxis_title="Frequency (meV)",
-                        height=750,
-                        font=dict(size=20),
-                        hoverlabel=dict(
-                            bgcolor="white",
-                            bordercolor="black",
-                            font_size=20,
-                            font_family="Arial"
-                        ),
-                        yaxis=dict(
-                            title_font=dict(size=20),
-                            tickfont=dict(size=20)
-                        ),
-                        hovermode='closest'
-                    )
-
-                    fig_disp.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
-
-                    st.plotly_chart(fig_disp, use_container_width=True)
-
-                    if use_labels and 'kpoint_labels' in phonon_data:
-                        st.info(f"🎯 **Enhanced k-point sampling**: {len(x_axis)} points along path")
-                        st.info(f"🗺️ **High-symmetry path**: {' → '.join(phonon_data['kpoint_labels'])}")
-
-                with col_ph2:
-                    st.write("**Phonon Density of States**")
-
-                    dos_energies = phonon_data['dos_energies']
-                    dos = phonon_data['dos']
-
-                    fig_dos = go.Figure()
-                    fig_dos.add_trace(go.Scatter(
-                        x=dos,
-                        y=dos_energies,
-                        mode='lines',
-                        fill='tozerox',
-                        name='DOS',
-                        line=dict(color='blue', width=2)
-                    ))
-
-                    fig_dos.update_layout(
-                        title=dict(text="Phonon Density of States", font=dict(size=24)),
-                        xaxis_title="DOS (states/meV)",
-                        yaxis_title="Frequency (meV)",
-                        height=750,
-                        font=dict(size=20),
-                        hoverlabel=dict(
-                            bgcolor="white",
-                            bordercolor="black",
-                            font_size=20,
-                            font_family="Arial"
-                        ),
-                        xaxis=dict(
-                            title_font=dict(size=20),
-                            tickfont=dict(size=20)
-                        ),
-                        yaxis=dict(
-                            title_font=dict(size=20),
-                            tickfont=dict(size=20)
-                        ),
-                        showlegend=False
-                    )
-
-                    fig_dos.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
-
-                    st.plotly_chart(fig_dos, use_container_width=True)
-
-                st.write("**Phonon Analysis Summary**")
-
-                phonon_summary = {
-                    'Property': [
-                        'Supercell size',
-                        'Number of k-points',
-                        'Number of imaginary modes',
-                        'Minimum frequency (meV)',
-                        'Maximum frequency (meV)',
-                    ],
-                    'Value': [
-                        f"{phonon_data['supercell_size']}",
-                        f"{len(phonon_data['kpoints'])}",
-                        f"{phonon_data['imaginary_modes']}",
-                        f"{phonon_data['min_frequency']:.3f}",
-                        f"{np.max(phonon_data['frequencies']):.3f}",
-                    ]
-                }
-
-                if phonon_data.get('thermodynamics'):
-                    thermo = phonon_data['thermodynamics']
-                    phonon_summary['Property'].extend([
-                        f"Temperature (K)",
-                        "Zero-point energy (eV)",
-                        "Heat capacity (eV/K)",
-                        "Entropy (eV/K)",
-                        "Free energy (eV)"
-                    ])
-                    phonon_summary['Value'].extend([
-                        f"{thermo['temperature']}",
-                        f"{thermo['zero_point_energy']:.6f}",
-                        f"{thermo['heat_capacity']:.6f}",
-                        f"{thermo['entropy']:.6f}",
-                        f"{thermo['free_energy']:.6f}"
-                    ])
-
-                df_phonon_summary = pd.DataFrame(phonon_summary)
-                st.dataframe(df_phonon_summary, use_container_width=True, hide_index=True)
-
-                if phonon_data['imaginary_modes'] > 0:
-                    st.warning(
-                        f"⚠️ Structure has {phonon_data['imaginary_modes']} imaginary phonon modes, indicating potential instability.")
-                else:
-                    st.success("✅ No imaginary modes found - structure appears dynamically stable.")
-
-                phonon_export_data = create_phonon_data_export(phonon_data, selected_phonon['name'])
-                if phonon_export_data:
-                    phonon_json = json.dumps(phonon_export_data, indent=2)
-                    st.download_button(
-                        label="📥 Download Phonon Data (JSON)",
-                        data=phonon_json,
-                        file_name=f"phonon_data_{selected_phonon['name'].replace('.', '_')}.json",
-                        mime="application/json", type='primary'
-                    )
-                if phonon_data.get('thermal_properties_dict'):
-                    st.write("**Temperature-Dependent Analysis**")
-
-                    col_temp1, col_temp2, col_temp3 = st.columns(3)
-                    with col_temp1:
-                        min_temp = st.number_input("Min Temperature (K)", min_value=0, max_value=2000, value=0, step=10,
-                                                   key=f"min_temp_{selected_phonon['name']}")
-                    with col_temp2:
-                        max_temp = st.number_input("Max Temperature (K)", min_value=100, max_value=2000, value=1000,
-                                                   step=50, key=f"max_temp_{selected_phonon['name']}")
-                    with col_temp3:
-                        temp_step = st.number_input("Temperature Step (K)", min_value=1, max_value=100, value=10,
-                                                    step=1,
-                                                    key=f"temp_step_{selected_phonon['name']}")
-
-                    if st.button("Generate Temperature Analysis", key=f"temp_analysis_{selected_phonon['name']}"):
-                        with st.spinner("Calculating thermodynamics over temperature range..."):
-                            fig_temp, thermo_data = add_entropy_vs_temperature_plot(
-                                phonon_data,
-                                temp_range=(min_temp, max_temp, temp_step)
-                            )
-
-                            if fig_temp is not None:
-                                st.plotly_chart(fig_temp, use_container_width=True)
-
-                                if isinstance(thermo_data, dict) and 'error' not in thermo_data:
-                                    import json
-
-                                    thermo_json = json.dumps({
-                                        'structure_name': selected_phonon['name'],
-                                        'temperature_dependent_properties': thermo_data
-                                    }, indent=2)
-
-                                    st.download_button(
-                                        label="📥 Download Temperature-Dependent Data (JSON)",
-                                        data=thermo_json,
-                                        file_name=f"thermodynamics_vs_temp_{selected_phonon['name'].replace('.', '_')}.json",
-                                        mime="application/json",
-                                        key=f"download_temp_{selected_phonon['name']}",
-                                        type='primary'
-                                    )
-                            else:
-                                st.error(f"Error generating analysis: {thermo_data}")
-
-                    st.write("**Quick Temperature Comparison**")
-                    target_temps = st.multiselect(
-                        "Select specific temperatures (K):",
-                        options=[0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
-                        default=[300, 600, 1000],
-                        key=f"target_temps_{selected_phonon['name']}"
-                    )
-
-                    if target_temps:
-                        specific_data = extract_thermodynamics_at_temperatures(phonon_data, target_temps)
-
-                        if 'error' not in specific_data:
-                            comparison_data = []
-                            for temp in target_temps:
-                                if temp in specific_data:
-                                    data = specific_data[temp]
-                                    comparison_data.append({
-                                        'Temperature (K)': data['temperature'],
-                                        'Entropy (eV/K)': f"{data['entropy']:.6f}",
-                                        'Heat Capacity (eV/K)': f"{data['heat_capacity']:.6f}",
-                                        'Free Energy (eV)': f"{data['free_energy']:.6f}",
-                                        'Internal Energy (eV)': f"{data['internal_energy']:.6f}"
-                                    })
-
-                            if comparison_data:
-                                df_temp_compare = pd.DataFrame(comparison_data)
-                                st.dataframe(df_temp_compare, use_container_width=True, hide_index=True)
-
-                if phonon_results and len(phonon_results) > 1:
-                    st.subheader("🗺️ Computational Phase Diagram Analysis")
-
-                    structures_dict = {result['name']: result['structure'] for result in st.session_state.results
-                                       if result.get('phonon_results') and result['phonon_results'].get('success')}
-
-                    if len(structures_dict) > 1:
-                        compositions = extract_element_concentrations(structures_dict)
-                        common_elements = get_common_elements(compositions)
-
-                        if common_elements:
-                            st.write("**Phase Diagram Parameters**")
-
-                            col_phase1, col_phase2, col_phase3, col_phase4 = st.columns(4)
-
-                            with col_phase1:
-                                selected_element = st.selectbox(
-                                    "Select element for concentration axis:",
-                                    common_elements,
-                                    key="phase_element_selector"
-                                )
-
-                            with col_phase2:
-                                min_temp_phase = st.number_input(
-                                    "Min Temperature (K):",
-                                    min_value=0, max_value=2000, value=0, step=50,
-                                    key="phase_min_temp"
-                                )
-
-                            with col_phase3:
-                                max_temp_phase = st.number_input(
-                                    "Max Temperature (K):",
-                                    min_value=100, max_value=3000, value=1000, step=50,
-                                    key="phase_max_temp"
-                                )
-
-                            with col_phase4:
-                                temp_step_phase = st.number_input(
-                                    "Temperature Step (K):",
-                                    min_value=10, max_value=100, value=25, step=5,
-                                    key="phase_temp_step"
-                                )
-
-                            col_analysis1, col_analysis2 = st.columns([1, 3])
-
-                            with col_analysis1:
-                                if st.button("🔬 Generate Phase Diagram (", type="primary", key="generate_phase_diagram",
-                                             disabled=True):
-                                    with st.spinner("Calculating phase diagram..."):
-                                        element_concentrations = {name: comp[selected_element]
-                                                                  for name, comp in compositions.items()}
-
-                                        temp_range = list(range(min_temp_phase, max_temp_phase + 1, temp_step_phase))
-
-                                        phase_df = calculate_phase_diagram_data(phonon_results, element_concentrations,
-                                                                                temp_range)
-
-                                        if not phase_df.empty:
-                                            stable_df = find_stable_phases(phase_df)
-
-                                            st.session_state.phase_diagram_data = {
-                                                'phase_df': phase_df,
-                                                'stable_df': stable_df,
-                                                'selected_element': selected_element,
-                                                'element_concentrations': element_concentrations
-                                            }
-
-                                            st.success("✅ Phase diagram calculated successfully!")
-                                        else:
-                                            st.error("❌ No valid phase data calculated")
-
-                            with col_analysis2:
-                                if 'phase_diagram_data' in st.session_state:
-                                    display_options = st.multiselect(
-                                        "Select analysis to display:",
-                                        ["Phase Stability Map", "Concentration Heatmaps", "Phase Transition Summary"],
-                                        default=["Phase Stability Map"],
-                                        key="phase_display_options"
-                                    )
-
-                            if 'phase_diagram_data' in st.session_state:
-                                phase_data = st.session_state.phase_diagram_data
-                                phase_df = phase_data['phase_df']
-                                stable_df = phase_data['stable_df']
-                                selected_element = phase_data['selected_element']
-                                element_concentrations = phase_data['element_concentrations']
-
-                                if "Phase Stability Map" in st.session_state.get('phase_display_options', []):
-                                    st.write("**Phase Stability Analysis**")
-
-                                    fig_phase, phase_transitions = create_phase_diagram_plot(
-                                        phase_df, stable_df, selected_element
-                                    )
-                                    st.plotly_chart(fig_phase, use_container_width=True)
-
-                                    col_summary1, col_summary2 = st.columns(2)
-
-                                    with col_summary1:
-                                        st.write("**Structure Concentrations**")
-                                        conc_summary = []
-                                        for name, conc in element_concentrations.items():
-                                            conc_summary.append({
-                                                'Structure': name,
-                                                f'{selected_element} (%)': f"{conc:.1f}"
-                                            })
-                                        df_conc_summary = pd.DataFrame(conc_summary)
-                                        st.dataframe(df_conc_summary, use_container_width=True, hide_index=True)
-
-                                    with col_summary2:
-                                        if phase_transitions:
-                                            st.write("**Phase Transitions Detected**")
-                                            transitions_df = pd.DataFrame(phase_transitions)
-                                            st.dataframe(transitions_df, use_container_width=True, hide_index=True)
-                                        else:
-                                            st.info("No phase transitions detected in temperature range")
-
-                                if "Concentration Heatmaps" in st.session_state.get('phase_display_options', []):
-                                    st.write("**Property Heatmaps**")
-
-                                    property_selector = st.selectbox(
-                                        "Select property for heatmap:",
-                                        ["free_energy", "entropy", "heat_capacity", "internal_energy"],
-                                        key="heatmap_property"
-                                    )
-
-                                    fig_heatmap = create_concentration_heatmap(phase_df, selected_element,
-                                                                               property_selector)
-                                    st.plotly_chart(fig_heatmap, use_container_width=True)
-
-                                if "Phase Transition Summary" in st.session_state.get('phase_display_options', []):
-                                    st.write("**Thermodynamic Analysis Summary**")
-
-                                    summary_stats = []
-                                    for structure in phase_df['structure'].unique():
-                                        struct_data = phase_df[phase_df['structure'] == structure]
-
-                                        summary_stats.append({
-                                            'Structure': structure,
-                                            f'{selected_element} (%)': f"{element_concentrations[structure]:.1f}",
-                                            'Min Free Energy (eV)': f"{struct_data['free_energy'].min():.6f}",
-                                            'Max Free Energy (eV)': f"{struct_data['free_energy'].max():.6f}",
-                                            # 'Avg Entropy (eV/K)': f"{struct_data['entropy'].mean():.6f}",
-                                            'Max Heat Capacity (eV/K)': f"{struct_data['heat_capacity'].max():.6f}",
-                                            'Stable at T_min':
-                                                stable_df[stable_df['temperature'] == stable_df['temperature'].min()][
-                                                    'stable_structure'].iloc[0] == structure,
-                                            'Stable at T_max':
-                                                stable_df[stable_df['temperature'] == stable_df['temperature'].max()][
-                                                    'stable_structure'].iloc[0] == structure
-                                        })
-
-                                    df_summary = pd.DataFrame(summary_stats)
-                                    st.dataframe(df_summary, use_container_width=True, hide_index=True)
-
-
-                        else:
-                            st.warning("⚠️ No common elements with varying concentrations found across structures")
-
-                    else:
-                        st.info(
-                            "Need at least 2 structures with successful phonon calculations for phase diagram analysis")
-
-
-                def extract_phase_and_composition_from_filename(filename):
-                    try:
-                        base_name = filename.replace('.vasp', '').replace('POSCAR', '').replace('.', '')
-                        parts = base_name.split('_')
-
-                        if len(parts) < 5:
-                            return None
-
-                        phase = parts[0].lower()
-
-                        element1_part = parts[1]
-                        element1 = ''.join([c for c in element1_part if c.isalpha()])
-                        n1 = int(''.join([c for c in element1_part if c.isdigit()]))
-
-                        element2_part = parts[2]
-                        element2 = ''.join([c for c in element2_part if c.isalpha()])
-                        n2 = int(''.join([c for c in element2_part if c.isdigit()]))
-
-                        conc1 = float(parts[3].replace('c', ''))
-                        conc2 = float(parts[4])
-
-                        return phase, element1, element2, n1, n2, conc1, conc2
-                    except:
-                        return None
-
-
-                def identify_binary_system_from_results(phonon_results):
-                    phase_data = []
-                    elements_found = set()
-                    phases_found = set()
-
-                    for result in phonon_results:
-                        filename = result['name']
-                        phase_info = extract_phase_and_composition_from_filename(filename)
-
-                        if phase_info:
-                            phase, elem1, elem2, n1, n2, conc1, conc2 = phase_info
-
-                            phase_data.append({
-                                'structure_name': filename,
-                                'phase': phase,
-                                'element1': elem1,
-                                'element2': elem2,
-                                'n1': n1,
-                                'n2': n2,
-                                'concentration1': conc1,
-                                'concentration2': conc2,
-                                'total_atoms': n1 + n2,
-                                'phonon_results': result['phonon_results']
-                            })
-
-                            elements_found.add(elem1)
-                            elements_found.add(elem2)
-                            phases_found.add(phase)
-
-                    if len(elements_found) == 2 and len(phases_found) > 1:
-                        return phase_data, list(elements_found), list(phases_found)
-                    else:
-                        return None, None, None
-
-
-                def calculate_normal_phase_diagram(phase_data, temp_range):
-                    diagram_data = []
-
-                    for data in phase_data:
-                        phonon_results = data['phonon_results']
-
-                        if not phonon_results['success']:
-                            continue
-                        temp_thermo = extract_thermodynamics_at_temperatures(phonon_results, temp_range)
-
-                        if 'error' in temp_thermo:
-                            continue
-
-                        for temp in temp_range:
-                            if temp in temp_thermo:
-                                thermo = temp_thermo[temp]
-
-                                diagram_data.append({
-                                    'structure_name': data['structure_name'],
-                                    'phase': data['phase'],
-                                    'element1': data['element1'],
-                                    'element2': data['element2'],
-                                    'concentration1': data['concentration1'],
-                                    'concentration2': data['concentration2'],
-                                    'temperature': temp,
-                                    'free_energy': thermo['free_energy'],
-                                    'entropy': thermo['entropy'],
-                                    'heat_capacity': thermo['heat_capacity']
-                                })
-
-                    return pd.DataFrame(diagram_data)
-
-
-                def find_stable_phase_at_each_point(diagram_df):
-                    stable_points = []
-                    for (conc1, temp), group in diagram_df.groupby(['concentration1', 'temperature']):
-                        min_idx = group['free_energy'].idxmin()
-                        stable_phase_data = group.loc[min_idx]
-
-                        stable_points.append({
-                            'concentration1': conc1,
-                            'concentration2': 100 - conc1,
-                            'temperature': temp,
-                            'stable_phase': stable_phase_data['phase'],
-                            'free_energy': stable_phase_data['free_energy'],
-                            'structure_name': stable_phase_data['structure_name']
-                        })
-
-                    return pd.DataFrame(stable_points)
-
-
-                def create_normal_phase_diagram_plot(stable_df, phase_data, element1, element2):
-                    fig = make_subplots(
-                        rows=2, cols=2,
-                        subplot_titles=(
-                            f'Phase Stability Diagram ({element1}-{element2})',
-                            'Phase Boundaries (3D)',
-                            'Free Energy Contours',
-                            'Phase Fraction vs Temperature'
-                        ),
-                        specs=[[{"type": "xy"}, {"type": "scatter3d"}],
-                               [{"type": "xy"}, {"type": "xy"}]]
-                    )
-
-                    phases = stable_df['stable_phase'].unique()
-                    phase_colors = {
-                        'fcc': '#FF6B6B',  # Red
-                        'hcp': '#4ECDC4',  # Teal
-                        'bcc': '#45B7D1',  # Blue
-                        'liquid': '#FFA07A',  # Light salmon
-                        'solid': '#98D8E8',  # Light blue
-                        'gas': '#F7DC6F'  # Light yellow
-                    }
-
-                    colors = px.colors.qualitative.Set1
-                    for i, phase in enumerate(phases):
-                        if phase not in phase_colors:
-                            phase_colors[phase] = colors[i % len(colors)]
-                    for phase in phases:
-                        phase_data_filtered = stable_df[stable_df['stable_phase'] == phase]
-
-                        if not phase_data_filtered.empty:
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=phase_data_filtered['concentration1'],
-                                    y=phase_data_filtered['temperature'],
-                                    mode='markers',
-                                    marker=dict(
-                                        color=phase_colors[phase],
-                                        size=8,
-                                        opacity=0.8
-                                    ),
-                                    name=f'{phase.upper()}',
-                                    hovertemplate=f'<b>{phase.upper()}</b><br>' +
-                                                  f'{element1}: %{{x:.1f}}%<br>' +
-                                                  'T: %{y}K<br>' +
-                                                  'F: %{customdata:.4f} eV<extra></extra>',
-                                    customdata=phase_data_filtered['free_energy']
-                                ),
-                                row=1, col=1
-                            )
-
-                    conc_range = np.linspace(stable_df['concentration1'].min(),
-                                             stable_df['concentration1'].max(), 20)
-                    temp_range = np.linspace(stable_df['temperature'].min(),
-                                             stable_df['temperature'].max(), 20)
-
-                    conc_mesh, temp_mesh = np.meshgrid(conc_range, temp_range)
-
-                    from scipy.interpolate import griddata
-
-                    points = stable_df[['concentration1', 'temperature']].values
-                    values = stable_df['free_energy'].values
-
-                    free_energy_mesh = griddata(points, values, (conc_mesh, temp_mesh), method='linear')
-
-                    fig.add_trace(
-                        go.Surface(
-                            x=conc_mesh,
-                            y=temp_mesh,
-                            z=free_energy_mesh,
-                            colorscale='RdYlBu_r',
-                            showscale=False,
-                            opacity=0.8,
-                            name='Free Energy Surface'
-                        ),
-                        row=1, col=2
-                    )
-                    fig.add_trace(
-                        go.Contour(
-                            x=conc_range,
-                            y=temp_range,
-                            z=free_energy_mesh,
-                            colorscale='RdYlBu_r',
-                            showscale=True,
-                            colorbar=dict(title="Free Energy (eV)", x=0.45),
-                            contours=dict(
-                                coloring='heatmap',
-                                showlabels=True,
-                                labelfont=dict(size=10)
-                            ),
-                            name='Free Energy Contours'
-                        ),
-                        row=2, col=1
-                    )
-                    selected_compositions = [0, 25, 50, 75, 100]
-
-                    for conc in selected_compositions:
-                        closest_conc = stable_df['concentration1'].iloc[
-                            (stable_df['concentration1'] - conc).abs().argsort()[:1]
-                        ].iloc[0]
-
-                        conc_data = stable_df[stable_df['concentration1'] == closest_conc]
-
-                        if not conc_data.empty:
-                            temps = sorted(conc_data['temperature'].unique())
-                            phase_fractions = []
-
-                            for temp in temps:
-                                temp_data = conc_data[conc_data['temperature'] == temp]
-                                if not temp_data.empty:
-                                    dominant_phase = temp_data.iloc[0]['stable_phase']
-                                    phase_fractions.append(1 if dominant_phase == phases[0] else 0)
-                                else:
-                                    phase_fractions.append(0)
-
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=temps,
-                                    y=phase_fractions,
-                                    mode='lines+markers',
-                                    name=f'{element1} {closest_conc:.0f}%',
-                                    line=dict(width=2),
-                                    showlegend=False
-                                ),
-                                row=2, col=2
-                            )
-
-                    fig.update_xaxes(title_text=f"{element1} Concentration (%)", row=1, col=1)
-                    fig.update_xaxes(title_text=f"{element1} Concentration (%)", row=2, col=1)
-                    fig.update_xaxes(title_text="Temperature (K)", row=2, col=2)
-
-                    fig.update_yaxes(title_text="Temperature (K)", row=1, col=1)
-                    fig.update_yaxes(title_text="Temperature (K)", row=2, col=1)
-                    fig.update_yaxes(title_text="Phase Indicator", row=2, col=2)
-
-                    fig.update_layout(
-                        height=900,
-                        title_text=f"Binary Phase Diagram: {element1}-{element2} System",
-                        showlegend=True,
-                        legend=dict(x=1.02, y=1),
-                        scene=dict(
-                            xaxis_title=f"{element1} Concentration (%)",
-                            yaxis_title="Temperature (K)",
-                            zaxis_title="Free Energy (eV)"
-                        )
-                    )
-
-                    return fig
-
-
-                def create_phase_region_plot(stable_df, element1, element2):
-                    phase_pivot = stable_df.pivot_table(
-                        values='stable_phase',
-                        index='temperature',
-                        columns='concentration1',
-                        aggfunc='first'
-                    )
-
-                    phases = stable_df['stable_phase'].unique()
-                    phase_to_num = {phase: i for i, phase in enumerate(phases)}
-                    num_to_phase = {i: phase for phase, i in phase_to_num.items()}
-
-                    Z = np.zeros(phase_pivot.shape)
-                    for i, temp in enumerate(phase_pivot.index):
-                        for j, conc in enumerate(phase_pivot.columns):
-                            phase = phase_pivot.loc[temp, conc]
-                            if pd.notna(phase):
-                                Z[i, j] = phase_to_num[phase]
-                            else:
-                                Z[i, j] = -1  # No data
-
-                    phase_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8E8', '#F7DC6F']
-                    colorscale = []
-                    n_phases = len(phases)
-
-                    for i, phase in enumerate(phases):
-                        color_val = i / (n_phases - 1) if n_phases > 1 else 0
-                        colorscale.extend([
-                            [color_val, phase_colors[i % len(phase_colors)]],
-                            [color_val, phase_colors[i % len(phase_colors)]]
-                        ])
-
-                    fig = go.Figure(data=go.Heatmap(
-                        z=Z,
-                        x=phase_pivot.columns,
-                        y=phase_pivot.index,
-                        colorscale=colorscale,
-                        showscale=False,
-                        hovertemplate=f'{element1}: %{{x:.1f}}%<br>' +
-                                      'T: %{y}K<br>' +
-                                      'Phase: %{customdata}<extra></extra>',
-                        customdata=[[num_to_phase.get(Z[i, j], 'Unknown') for j in range(Z.shape[1])]
-                                    for i in range(Z.shape[0])]
-                    ))
-                    from scipy import ndimage
-
-                    boundaries = ndimage.sobel(Z)
-                    boundary_y, boundary_x = np.where(np.abs(boundaries) > 0.5)
-
-                    if len(boundary_x) > 0:
-                        fig.add_trace(go.Scatter(
-                            x=[phase_pivot.columns[x] for x in boundary_x],
-                            y=[phase_pivot.index[y] for y in boundary_y],
-                            mode='markers',
-                            marker=dict(size=1, color='black'),
-                            name='Phase Boundaries',
-                            showlegend=False
-                        ))
-
-                    for i, phase in enumerate(phases):
-                        fig.add_trace(go.Scatter(
-                            x=[None], y=[None],
-                            mode='markers',
-                            marker=dict(
-                                size=15,
-                                color=phase_colors[i % len(phase_colors)],
-                                symbol='square'
-                            ),
-                            name=f'{phase.upper()}',
-                            showlegend=True
-                        ))
-
-                    fig.update_layout(
-                        title=f"Phase Regions: {element1}-{element2} Binary System",
-                        xaxis_title=f"{element1} Concentration (%)",
-                        yaxis_title="Temperature (K)",
-                        height=600,
-                        legend=dict(x=1.02, y=1)
-                    )
-
-                    return fig
-
-
-                def export_phase_diagram_data(stable_df, phase_data, element1, element2):
-
-                    export_data = {
-                        'metadata': {
-                            'system_type': 'binary_alloy',
-                            'element1': element1,
-                            'element2': element2,
-                            'phases_analyzed': list(stable_df['stable_phase'].unique()),
-                            'temperature_range': [float(stable_df['temperature'].min()),
-                                                  float(stable_df['temperature'].max())],
-                            'composition_range': [float(stable_df['concentration1'].min()),
-                                                  float(stable_df['concentration1'].max())],
-                            'total_data_points': len(stable_df)
-                        },
-                        'phase_boundaries': [],
-                        'stable_phases': stable_df.to_dict('records'),
-                        'phase_transitions': []
-                    }
-
-                    for conc in stable_df['concentration1'].unique():
-                        conc_data = stable_df[stable_df['concentration1'] == conc].sort_values('temperature')
-
-                        transitions = []
-                        for i in range(len(conc_data) - 1):
-                            if conc_data.iloc[i]['stable_phase'] != conc_data.iloc[i + 1]['stable_phase']:
-                                transitions.append({
-                                    'composition': float(conc),
-                                    'temperature': float(conc_data.iloc[i + 1]['temperature']),
-                                    'from_phase': conc_data.iloc[i]['stable_phase'],
-                                    'to_phase': conc_data.iloc[i + 1]['stable_phase']
-                                })
-
-                        export_data['phase_transitions'].extend(transitions)
-
-                    return json.dumps(export_data, indent=2)
-
-
-                if phonon_results and len(phonon_results) > 1:
-
-                    phase_data, elements, phases = identify_binary_system_from_results(phonon_results)
-
-                    if phase_data and len(elements) == 2 and len(phases) > 1:
-                        st.subheader("🔬 Binary Alloy Phase Diagram Analysis")
-
-                        element1, element2 = elements
-                        st.info(
-                            f"Detected binary system: **{element1}-{element2}** with phases: **{', '.join(phases).upper()}**")
-
-                        st.write("**Phase Diagram Parameters**")
-                        col_normal1, col_normal2, col_normal3 = st.columns(3)
-
-                        with col_normal1:
-                            min_temp_normal = st.number_input(
-                                "Min Temperature (K):",
-                                min_value=0, max_value=2000, value=300, step=50,
-                                key="normal_min_temp"
-                            )
-
-                        with col_normal2:
-                            max_temp_normal = st.number_input(
-                                "Max Temperature (K):",
-                                min_value=100, max_value=3000, value=1200, step=50,
-                                key="normal_max_temp"
-                            )
-
-                        with col_normal3:
-                            temp_step_normal = st.number_input(
-                                "Temperature Step (K):",
-                                min_value=10, max_value=100, value=50, step=10,
-                                key="normal_temp_step"
-                            )
-
-                        col_calc1, col_calc2 = st.columns([1, 3])
-
-                        with col_calc1:
-                            if st.button("🗺️ Calculate Phase Diagram", type="primary", key="calc_normal_phase"):
-                                with st.spinner("Calculating binary phase diagram..."):
-                                    temp_range = list(range(min_temp_normal, max_temp_normal + 1, temp_step_normal))
-
-                                    diagram_df = calculate_normal_phase_diagram(phase_data, temp_range)
-
-                                    if not diagram_df.empty:
-                                        stable_df = find_stable_phase_at_each_point(diagram_df)
-
-                                        st.session_state.normal_phase_data = {
-                                            'diagram_df': diagram_df,
-                                            'stable_df': stable_df,
-                                            'element1': element1,
-                                            'element2': element2,
-                                            'phases': phases
-                                        }
-
-                                        st.success("✅ Phase diagram calculated successfully!")
-                                    else:
-                                        st.error("❌ No valid phase diagram data calculated")
-
-                        with col_calc2:
-                            if 'normal_phase_data' in st.session_state:
-                                plot_options = st.multiselect(
-                                    "Select visualizations:",
-                                    ["Complete Phase Diagram", "Phase Regions", "Thermodynamic Analysis"],
-                                    default=["Complete Phase Diagram"],
-                                    key="normal_plot_options"
-                                )
-                        if 'normal_phase_data' in st.session_state:
-                            normal_data = st.session_state.normal_phase_data
-                            diagram_df = normal_data['diagram_df']
-                            stable_df = normal_data['stable_df']
-                            element1 = normal_data['element1']
-                            element2 = normal_data['element2']
-                            phases = normal_data['phases']
-
-                            if "Complete Phase Diagram" in st.session_state.get('normal_plot_options', []):
-                                st.write("**Complete Phase Diagram Analysis**")
-
-                                fig_normal = create_normal_phase_diagram_plot(stable_df, phase_data, element1, element2)
-                                st.plotly_chart(fig_normal, use_container_width=True)
-
-                            if "Phase Regions" in st.session_state.get('normal_plot_options', []):
-                                st.write("**Phase Stability Regions**")
-
-                                fig_regions = create_phase_region_plot(stable_df, element1, element2)
-                                st.plotly_chart(fig_regions, use_container_width=True)
-
-                            if "Thermodynamic Analysis" in st.session_state.get('normal_plot_options', []):
-                                st.write("**Phase Statistics and Transitions**")
-
-                                col_stats1, col_stats2 = st.columns(2)
-
-                                with col_stats1:
-                                    st.write("**Phase Stability Statistics**")
-                                    phase_stats = stable_df['stable_phase'].value_counts()
-                                    stats_df = pd.DataFrame({
-                                        'Phase': phase_stats.index,
-                                        'Stable Points': phase_stats.values,
-                                        'Percentage': (phase_stats.values / len(stable_df) * 100).round(1)
-                                    })
-                                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-                                with col_stats2:
-                                    st.write("**Temperature Ranges by Phase**")
-                                    temp_ranges = []
-                                    for phase in phases:
-                                        phase_temps = stable_df[stable_df['stable_phase'] == phase]['temperature']
-                                        if not phase_temps.empty:
-                                            temp_ranges.append({
-                                                'Phase': phase.upper(),
-                                                'Min Temp (K)': int(phase_temps.min()),
-                                                'Max Temp (K)': int(phase_temps.max()),
-                                                'Range (K)': int(phase_temps.max() - phase_temps.min())
-                                            })
-
-                                    if temp_ranges:
-                                        temp_df = pd.DataFrame(temp_ranges)
-                                        st.dataframe(temp_df, use_container_width=True, hide_index=True)
-
-                                transitions = []
-                                for conc in sorted(stable_df['concentration1'].unique()):
-                                    conc_data = stable_df[stable_df['concentration1'] == conc].sort_values(
-                                        'temperature')
-
-                                    for i in range(len(conc_data) - 1):
-                                        if conc_data.iloc[i]['stable_phase'] != conc_data.iloc[i + 1]['stable_phase']:
-                                            transitions.append({
-                                                f'{element1} (%)': conc,
-                                                f'{element2} (%)': 100 - conc,
-                                                'Transition T (K)': conc_data.iloc[i + 1]['temperature'],
-                                                'From Phase': conc_data.iloc[i]['stable_phase'].upper(),
-                                                'To Phase': conc_data.iloc[i + 1]['stable_phase'].upper()
-                                            })
-
-                                if transitions:
-                                    st.write("**Detected Phase Transitions**")
-                                    transitions_df = pd.DataFrame(transitions)
-                                    st.dataframe(transitions_df, use_container_width=True, hide_index=True)
-                                else:
-                                    st.info("No phase transitions detected in the analyzed temperature range")
-
-                            st.write("**Export Phase Diagram Data**")
-                            col_export1, col_export2, col_export3 = st.columns(3)
-
-                            with col_export1:
-                                phase_diagram_json = export_phase_diagram_data(stable_df, phase_data, element1,
-                                                                               element2)
-                                st.download_button(
-                                    label="📥 Download Phase Diagram (JSON)",
-                                    data=phase_diagram_json,
-                                    file_name=f"phase_diagram_{element1}_{element2}.json",
-                                    mime="application/json",
-                                    key="download_normal_phase_json"
-                                )
-
-                            with col_export2:
-                                stable_csv = stable_df.to_csv(index=False)
-                                st.download_button(
-                                    label="📊 Download Stable Phases (CSV)",
-                                    data=stable_csv,
-                                    file_name=f"stable_phases_{element1}_{element2}.csv",
-                                    mime="text/csv",
-                                    key="download_stable_csv"
-                                )
-
-                            with col_export3:
-                                full_data_csv = diagram_df.to_csv(index=False)
-                                st.download_button(
-                                    label="📈 Download Full Data (CSV)",
-                                    data=full_data_csv,
-                                    file_name=f"full_phase_data_{element1}_{element2}.csv",
-                                    mime="text/csv",
-                                    key="download_full_csv"
-                                )
-
-                    else:
-                        if phonon_results:
-                            st.info("💡 **Binary Phase Diagram Analysis**")
-                            st.write("""
-                            To generate binary alloy phase diagrams, upload structures with naming convention:
-                            - `{phase}_{Element1}{count1}_{Element2}{count2}_c{conc1}_{conc2}.vasp`
-                            - Example: `fcc_Ti7_Ag1_c87_13.vasp`
-
-                            **Supported phases**: FCC, HCP, BCC, Liquid
-
-                            Use the separate structure generator script to create these automatically!
-                            """)
-
-                            with st.expander("📖 Understanding Binary Phase Diagrams"):
-                                st.markdown("""
-                                **What you'll see:**
-
-                                🔴 **Phase Stability Map**: Shows which crystal structure (FCC/HCP/BCC/Liquid) is thermodynamically stable at each composition and temperature
-
-                                🔵 **Phase Regions**: Colored areas showing where each phase dominates
-
-                                🟢 **Phase Boundaries**: Lines separating different stable regions
-
-                                🟡 **Phase Transitions**: Temperature points where one phase becomes more stable than another
-
-                                **Real-world applications:**
-                                - Alloy design and processing conditions
-                                - Understanding why certain phases form during synthesis
-                                - Predicting material properties at operating temperatures
-                                - Optimizing heat treatment procedures
-                                """)
-                else:
-                    st.info(
-                        "Binary phase diagram analysis requires multiple structures with successful phonon calculations")
+                render_phonon_results_tab(
+                    phonon_results,
+                    add_entropy_vs_temperature_plot=add_entropy_vs_temperature_plot,
+                )
 
         with results_tab3:
             if elastic_results:
@@ -8531,113 +7698,7 @@ with tab3:
                     st.info(
                         "No completed geometry optimizations found. Results will appear here after geometry optimization calculations finish.")
 
-        with results_tab4:
-            if len(phonon_results) > 1:
-                st.subheader("🎵 Phonon Properties Comparison")
 
-                phonon_comparison_data = []
-                for result in phonon_results:
-                    phonon_data = result['phonon_results']
-                    row = {
-                        'Structure': result['name'],
-                        'Imaginary Modes': phonon_data['imaginary_modes'],
-                        'Min Frequency (meV)': f"{phonon_data['min_frequency']:.3f}",
-                        'Max Frequency (meV)': f"{np.max(phonon_data['frequencies']):.3f}",
-                    }
-
-                    if phonon_data.get('thermodynamics'):
-                        thermo = phonon_data['thermodynamics']
-                        row.update({
-                            'Zero-point Energy (eV)': f"{thermo['zero_point_energy']:.6f}",
-                            'Heat Capacity (eV/K)': f"{thermo['heat_capacity']:.6f}",
-                            # 'Entropy (eV/K)': f"{thermo['entropy']:.6f}"
-                        })
-
-                    phonon_comparison_data.append(row)
-
-                df_phonon_compare = pd.DataFrame(phonon_comparison_data)
-                st.dataframe(df_phonon_compare, use_container_width=True, hide_index=True)
-
-                if len(phonon_comparison_data) > 1:
-                    col_ph_comp1, col_ph_comp2 = st.columns(2)
-
-                    with col_ph_comp1:
-                        structures = [r['name'] for r in phonon_results]
-                        imaginary_counts = [r['phonon_results']['imaginary_modes'] for r in phonon_results]
-
-                        fig_img = go.Figure(data=go.Bar(
-                            x=structures,
-                            y=imaginary_counts,
-                            marker_color='red',
-                            text=imaginary_counts,
-                            textposition='auto'
-                        ))
-
-                        fig_img.update_layout(
-                            title=dict(text="Imaginary Modes Comparison", font=dict(size=24)),
-                            xaxis_title="Structure",
-                            yaxis_title="Number of Imaginary Modes",
-                            height=750,
-                            font=dict(size=20),
-                            hoverlabel=dict(
-                                bgcolor="white",
-                                bordercolor="black",
-                                font_size=20,
-                                font_family="Arial"
-                            ),
-                            xaxis=dict(
-                                tickangle=45,
-                                title_font=dict(size=20),
-                                tickfont=dict(size=20)
-                            ),
-                            yaxis=dict(
-                                title_font=dict(size=20),
-                                tickfont=dict(size=20)
-                            )
-                        )
-
-                        st.plotly_chart(fig_img, use_container_width=True)
-
-                    with col_ph_comp2:
-                        min_freqs = [r['phonon_results']['min_frequency'] for r in phonon_results]
-
-                        fig_min_freq = go.Figure(data=go.Bar(
-                            x=structures,
-                            y=min_freqs,
-                            marker_color='blue',
-                            text=[f"{f:.3f}" for f in min_freqs],
-                            textposition='auto'
-                        ))
-
-                        fig_min_freq.update_layout(
-                            title=dict(text="Minimum Frequency Comparison", font=dict(size=24)),
-                            xaxis_title="Structure",
-                            yaxis_title="Minimum Frequency (meV)",
-                            height=750,
-                            font=dict(size=20),
-                            hoverlabel=dict(
-                                bgcolor="white",
-                                bordercolor="black",
-                                font_size=20,
-                                font_family="Arial"
-                            ),
-                            xaxis=dict(
-                                tickangle=45,
-                                title_font=dict(size=20),
-                                tickfont=dict(size=20)
-                            ),
-                            yaxis=dict(
-                                title_font=dict(size=20),
-                                tickfont=dict(size=20)
-                            )
-                        )
-
-                        fig_min_freq.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.7)
-
-                        st.plotly_chart(fig_min_freq, use_container_width=True)
-            else:
-                st.info(
-                    "No completed phonons calculations found. Results will appear here after the phonons compputations are finish.")
 
         with results_tab3:
             if len(elastic_results) > 1:
