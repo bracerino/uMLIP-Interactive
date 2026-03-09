@@ -11,7 +11,8 @@ DEFAULT_GEOMETRY_SETTINGS = {
     'optimize_lattice': {'a': True, 'b': True, 'c': True},
     'pressure': 0.0,
     'hydrostatic_strain': False,
-    'stress_threshold': 0.1
+    'stress_threshold': 0.1,
+    'fix_symmetry': False,
 }
 
 
@@ -185,6 +186,13 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
                 format="%.3f",
                 help="Maximum stress for convergence"
             )
+    fix_symmetry = st.checkbox(
+        "Fix symmetry during optimization (ASE FixSymmetry)",
+        value=geom_defaults.get('fix_symmetry', False),
+        help=(
+            "Applies ASE's FixSymmetry constraint so the space group is preserved "
+        )
+    )
     save_trajectory = st.checkbox(
         "Save optimization trajectory (.xyz) (⚠️ Currently, do not turn it off for calculations within GUI)",
         value=True,
@@ -203,7 +211,8 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'pressure': pressure,
         'hydrostatic_strain': hydrostatic_strain,
         'stress_threshold': stress_threshold,
-        'save_trajectory': save_trajectory
+        'save_trajectory': save_trajectory,
+        'fix_symmetry': fix_symmetry
     }
 
     if st.button("💾 Save Geometry Optimization Defaults", key="save_geom_defaults"):
