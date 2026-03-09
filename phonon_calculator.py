@@ -136,7 +136,7 @@ class PhononResult:
 
 
     thermal_properties: Optional[dict] = None
-
+    band_yaml_content: Optional[str] = None
     method: str = "Phonopy"
     kpath_convention: str = "setyawan_curtarolo"
 
@@ -497,7 +497,7 @@ class PhononCalculator:
 
 
         kpts, labels, label_positions, dist_array = self._build_kpath(atoms)
-        freq_thz, _ = self._run_band_structure(phonon, kpts)
+        freq_thz, _, band_yaml = self._run_band_structure(phonon, kpts)
         freq_mev = _zero_near_acoustic(freq_thz * THZ_TO_MEV)
 
 
@@ -550,6 +550,8 @@ class PhononCalculator:
             stability_notes=stability_notes,
             thermodynamics=thermo_at_T,
             thermal_properties=thermal_dict,
+            band_yaml_content=band_yaml,
+            method="Phonopy (updated API)",
             kpath_convention=p.kpath_convention,
         )
 
@@ -638,13 +640,23 @@ class PhononCalculator:
 
         phonon.run_band_structure(
             paths,
-            with_eigenvectors=False,
+            with_eigenvectors=True,
             is_band_connection=False,
         )
-
+        band_yaml_content: Optional[str] = None
+        try:
+            import tempfile, os
+            with tempfile.TemporaryDirectory() as tmpdir:
+                yaml_path = os.path.join(tmpdir, "band.yaml")
+                phonon.write_yaml_band_structure(filename=yaml_path)
+                with open(yaml_path, "r") as fh:
+                    band_yaml_content = fh.read()
+            self._log("  ✅ band.yaml with eigenvectors written")
+        except Exception as exc:
+            self._log(f"  ⚠ Could not capture band.yaml: {exc}")
         band_dict = phonon.get_band_structure_dict()
         freq_thz, _ = _parse_phonopy_band_dict(band_dict, self._log)
-        return freq_thz, band_dict
+        return freq_thz, band_dict, band_yaml_content
 
     def _run_dos(self, phonon: "Phonopy", freq_mev_ref: np.ndarray):
         p = self.params
@@ -832,6 +844,7 @@ def calculate_phonons(
         "pre_relax_final_fmax":     result.pre_relax_final_fmax,
         "method":                   "Phonopy (updated API)",
         "enhanced_kpoints":         True,
+        "band_yaml_content": result.band_yaml_content,
         "kpath_convention":         result.kpath_convention,
     }
 
@@ -1273,7 +1286,15 @@ def render_phonon_results_tab(
             type="primary",
         )
 
-
+    band_yaml = phonon_data.get("band_yaml_content")
+    if band_yaml:
+        st.download_button(
+            label="📥 Download band.yaml",
+            data=band_yaml,
+            file_name=f"band_{selected_phonon['name'].replace('.', '_')}.yaml",
+            mime="text/plain",
+            type="primary",
+        )
     if phonon_data.get("thermal_properties_dict"):
         st.write("**Temperature-Dependent Analysis**")
 
