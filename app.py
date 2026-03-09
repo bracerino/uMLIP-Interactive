@@ -159,7 +159,6 @@ except ImportError:
 
 import torch
 
-# Add this after the existing THREAD_COUNT_FILE definition
 SETTINGS_FILE = "default_settings.json"
 
 DEFAULT_SETTINGS = {
@@ -1256,10 +1255,20 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         phonon.run_band_structure(
             bands,
             is_band_connection=False,
-            with_eigenvectors=False,
+            with_eigenvectors=True,
             is_legacy_plot=False,
         )
-
+        band_yaml_content = None
+        try:
+            import tempfile, os as _os
+            with tempfile.TemporaryDirectory() as tmpdir:
+                yaml_path = _os.path.join(tmpdir, "band.yaml")
+                phonon.write_yaml_band_structure(filename=yaml_path)
+                with open(yaml_path, "r") as fh:
+                    band_yaml_content = fh.read()
+            log_queue.put("  ✅ band.yaml with eigenvectors captured")
+        except Exception as _exc:
+            log_queue.put(f"  ⚠️ Could not capture band.yaml: {_exc}")
         log_queue.put("  Processing band structure data...")
         band_dict = phonon.get_band_structure_dict()
 
@@ -1470,7 +1479,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
             'dos_energies':         dos_frequencies,
             'dos':                  dos_values,
-
+            'band_yaml_content': band_yaml_content,
             'supercell_size':       tuple(supercell_matrix[i][i] for i in range(3)),
             'n_unit_cell_atoms':    n_unit_cell_atoms,
             'n_supercell_atoms':    n_supercell_atoms,
@@ -2119,9 +2128,8 @@ def setup_optimization_constraints(atoms, optimization_params):
 
     elif opt_type == "Cell only (fixed atoms)":
         # For cell-only optimization, we want to keep atoms fixed
-        # If there are already selective dynamics, they're redundant (all atoms will be fixed anyway)
-        # But we should preserve them for consistency
-        atoms.set_constraint(FixAtoms(indices=list(range(len(atoms)))))
+        existing = list(atoms.constraints) if atoms.constraints else []
+        atoms.set_constraint(existing + [FixAtoms(indices=list(range(len(atoms))))])
 
         cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
 
@@ -2157,8 +2165,6 @@ def setup_optimization_constraints(atoms, optimization_params):
             return cell_filter, "cell_only", None
 
     else:  # Both atoms and cell
-        # Keep existing selective dynamics constraints
-        # They will restrict which atoms can move during optimization
 
         cell_constraint = optimization_params.get('cell_constraint', 'Lattice parameters only (fix angles)')
 
@@ -2170,7 +2176,6 @@ def setup_optimization_constraints(atoms, optimization_params):
 
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
-            # Create callback to enforce a=b after each step
             def enforce_tetragonal():
                 cell = atoms.get_cell()
                 cellpar = cell.cellpar()
@@ -2680,22 +2685,18 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             "Available heads: omat_pbe, matpes_r2scan, omol, mp_pbe_refit_add, spice_wB97M, oc20_usemppbe")
                         return
 
-                    # Try to load with mace_mp first (supports head and dispersion)
                     if MACE_IMPORT_METHOD == "mace_mp_and_off" or MACE_IMPORT_METHOD == "mace_mp":
                         try:
-                            # Build calculator arguments
                             calc_kwargs = {
                                 'model': local_model_path,
                                 'device': device,
                                 'default_dtype': dtype,
                             }
 
-                            # Add head for multi-head models
                             if mace_head:
                                 calc_kwargs['head'] = mace_head
                                 log_queue.put(f"Using head: {mace_head}")
 
-                            # Add dispersion if enabled
                             if mace_dispersion:
                                 calc_kwargs['dispersion'] = True
                                 calc_kwargs['dispersion_xc'] = mace_dispersion_xc
@@ -3026,7 +3027,21 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                         atoms = pymatgen_to_ase(structure)
                         atoms.calc = calculator
-
+                        if optimization_params.get('fix_symmetry', False):
+                            try:
+                                from ase.constraints import FixSymmetry
+                                from ase.spacegroup.symmetrize import check_symmetry
+                                spg_info = check_symmetry(atoms, symprec=1e-2, verbose=False)
+                                spg_symbol = spg_info.get("international", "unknown")
+                                spg_number = spg_info.get("number", "?")
+                                existing = list(atoms.constraints) if atoms.constraints else []
+                                atoms.set_constraint(existing + [FixSymmetry(atoms)])
+                                log_queue.put(
+                                    f"  🔷 FixSymmetry applied — preserving space group {spg_symbol} (#{spg_number})")
+                            except ImportError:
+                                log_queue.put("  ⚠️ FixSymmetry not available")
+                            except Exception as _sym_err:
+                                log_queue.put(f"  ⚠️ FixSymmetry failed ({_sym_err}), continuing without it")
                         has_constraints, fixed_atoms, total_atoms = check_selective_dynamics(atoms)
 
                         if has_constraints:
