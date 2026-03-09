@@ -85,7 +85,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
       **python3 -m venv mace_env_2**
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
-  6) Install all the necessary Python packages (for UPET, use requirements-pet-mad.txt):  
+  6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
    **pip install -r requirements-mattersim.txt** (with CUDA for calculations on GPU))  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
