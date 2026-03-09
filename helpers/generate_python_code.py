@@ -13,7 +13,7 @@ except ImportError:
         MACE_AVAILABLE = True
     except ImportError:
         MACE_AVAILABLE = False
-        
+
 # UPET imports (successor of PET-MAD)
 try:
     from upet.calculator import UPETCalculator
@@ -3722,6 +3722,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     hydrostatic_strain = optimization_params.get('hydrostatic_strain', False)
     optimize_lattice = optimization_params.get(
         'optimize_lattice', {'a': True, 'b': True, 'c': True})
+    fix_symmetry = optimization_params.get('fix_symmetry', False)
 
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
@@ -3740,12 +3741,15 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     hydrostatic_strain = {hydrostatic_strain}
     optimize_lattice = {optimize_lattice}
     is_tetragonal = {is_tetragonal}
-
+    fix_symmetry = {fix_symmetry}
+    
     print(f"⚙️ Optimization settings:")
     print(f"  - Optimizer: {{optimizer_type}}")
     print(f"  - Force threshold: {{fmax}} eV/Å")
     print(f"  - Max steps: {{max_steps}}")
     print(f"  - Type: {{optimization_type}}")
+    if fix_symmetry:
+        print(f"  - 🔷 FixSymmetry: space group will be preserved")
     if pressure > 0:
         print(f"  - Pressure: {{pressure}} GPa")
     if is_tetragonal:
@@ -3781,6 +3785,20 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             atoms, selective_dynamics = read_poscar_with_selective_dynamics(filename)
             atoms.calc = calculator
             print(f"  📊 Structure has {len(atoms)} atoms")
+            if fix_symmetry:
+                try:
+                    from ase.constraints import FixSymmetry
+                    from ase.spacegroup.symmetrize import check_symmetry
+                    spg_info = check_symmetry(atoms, symprec=1e-2, verbose=False)
+                    spg_symbol = spg_info.get("international", "unknown")
+                    spg_number = spg_info.get("number", "?")
+                    existing = list(atoms.constraints) if atoms.constraints else []
+                    atoms.set_constraint(existing + [FixSymmetry(atoms)])
+                    print(f"  🔷 FixSymmetry applied — preserving space group {spg_symbol} (#{spg_number})")
+                except ImportError:
+                    print(f"  ⚠️ FixSymmetry not available")
+                except Exception as _sym_err:
+                    print(f"  ⚠️ FixSymmetry failed ({_sym_err}), continuing without it")
             initial_atoms_copy = atoms.copy()
             # Apply selective dynamics constraints if present
             if selective_dynamics is not None:
@@ -4055,7 +4073,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             if save_trajectory and logger.trajectory is not None:
                 trajectory_filename = f"optimized_structures/trajectory_{base_name}.xyz"
                 print(f"  📈 Saving optimization trajectory to {trajectory_filename}")
-            
+
                 with open(trajectory_filename, 'w') as traj_file:
                     symbols = final_atoms.get_chemical_symbols()
                     for step_data in logger.trajectory:
@@ -4066,11 +4084,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         step = step_data['step']
                         forces = step_data.get('forces', np.zeros_like(step_data['positions']))
                         cell_matrix = step_data['cell'] 
-            
+
                         lattice_string = " ".join([f"{x:.6f}" for row in cell_matrix for x in row]) 
-            
+
                         traj_file.write(f"{num_atoms}\\n") 
-            
+
                         comment = (f'Step={step} Energy={energy:.6f} Max_Force={max_force:.6f} '
                                   f'a={lattice["a"]:.6f} b={lattice["b"]:.6f} c={lattice["c"]:.6f} '
                                   f'alpha={lattice["alpha"]:.3f} beta={lattice["beta"]:.3f} gamma={lattice["gamma"]:.3f} '
@@ -4078,7 +4096,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                                   f'Lattice="{lattice_string}" '
                                   f'Properties=species:S:1:pos:R:3:forces:R:3:total_force:R:1')
                         traj_file.write(f"{comment}\\n") 
-            
+
                         for j, (pos, force) in enumerate(zip(step_data['positions'], forces)):
                             symbol = symbols[j] if j < len(symbols) else 'X'
                             total_force = np.linalg.norm(force)
