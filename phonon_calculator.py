@@ -1206,6 +1206,143 @@ def render_phonon_results_tab(
         )
         st.plotly_chart(fig_dos, use_container_width=True)
 
+        st.write("**Phonon Entropy from DOS**")
+        try:
+            _kB_eV   = 8.617333e-5    # eV/K
+            _kB_meV  = 8.617333e-2    # meV/K
+            _NA      = 6.02214076e23
+            _R       = 8.314462       # J/K/mol  (= kB * NA)
+
+            dos_e_mev = np.array(phonon_data["dos_energies"])   # meV
+            dos_v     = np.array(phonon_data["dos"])
+
+            mask = dos_e_mev > 0.1
+            g    = dos_v[mask]
+            e    = dos_e_mev[mask]     # meV
+
+            norm = np.trapz(g, e)
+            if norm <= 0:
+                raise ValueError("DOS norm is zero – cannot integrate")
+            g = g / norm
+
+            n_atoms = int(phonon_data.get("n_unit_cell_atoms") or 1)
+            n_atoms = max(n_atoms, 1)
+
+            # ── Unit selector ─────────────────────────────────────────────
+            _s_unit = st.radio(
+                "Entropy units:",
+                options=["J K⁻¹ mol⁻¹", "eV K⁻¹ atom⁻¹", "kB atom⁻¹"],
+                index=1 if freq_unit == "THz" else 0,
+                horizontal=True,
+                key=f"{key_prefix}_entropy_unit",
+                help=(
+                    "J K⁻¹ mol⁻¹  — Phonopy native (per mole of formula units)\n"
+                    "eV K⁻¹ atom⁻¹ — divide by 96 485 × N_atoms\n"
+                    "kB atom⁻¹    — dimensionless, in units of Boltzmann constant"
+                ),
+            )
+
+            _default_T = float(
+                (phonon_data.get("thermodynamics") or {}).get("temperature") or 300.0
+            )
+            _highlight_T = st.number_input(
+                "Show entropy at temperature (K):",
+                min_value=10, max_value=2000,
+                value=int(_default_T), step=10,
+                key=f"{key_prefix}_entropy_T",
+            )
+
+            _temps_S = np.arange(10, 1510, 10, dtype=float)
+            S_JKmol  = []
+
+            for _T in _temps_S:
+                x = e / (_kB_meV * _T)
+                safe = x < 500
+                integrand = np.zeros_like(x)
+                ex = np.exp(x[safe])
+                integrand[safe] = (
+                    x[safe] * ex / (ex - 1.0) - np.log(ex - 1.0)
+                )
+                S_mode = _R * np.trapz(integrand * g, e) / np.trapz(g, e)
+                S_JKmol.append(S_mode)
+
+            S_JKmol = np.array(S_JKmol)
+
+            if _s_unit == "eV K⁻¹ atom⁻¹":
+                S_plot  = S_JKmol / (96485.0 * n_atoms)
+                y_label = "S (eV K⁻¹ atom⁻¹)"
+            elif _s_unit == "kB atom⁻¹":
+                S_plot  = S_JKmol / (_R * n_atoms)
+                y_label = "S (kB atom⁻¹)"
+            else:
+                S_plot  = S_JKmol
+                y_label = "S (J K⁻¹ mol⁻¹)"
+
+            _idx_h = int(np.argmin(np.abs(_temps_S - _highlight_T)))
+            _S_h   = S_plot[_idx_h]
+            _T_h   = _temps_S[_idx_h]
+
+            fig_S = go.Figure()
+            fig_S.add_trace(go.Scatter(
+                x=_temps_S, y=S_plot,
+                mode="lines", line=dict(color="crimson", width=2),
+                name="S_ph",
+                hovertemplate=f"T: %{{x:.0f}} K<br>S: %{{y:.6f}} {_s_unit}<extra></extra>",
+            ))
+            fig_S.add_trace(go.Scatter(
+                x=[_T_h], y=[_S_h],
+                mode="markers",
+                marker=dict(color="navy", size=10, symbol="diamond"),
+                name=f"S({_T_h:.0f} K)",
+                hovertemplate=f"T: %{{x:.0f}} K<br>S: %{{y:.6f}} {_s_unit}<extra></extra>",
+            ))
+            fig_S.add_vline(
+                x=_T_h, line_dash="dot", line_color="navy", opacity=0.6,
+                annotation_text=f"{_T_h:.0f} K",
+                annotation_position="top right",
+                annotation_font_size=13,
+            )
+            fig_S.update_layout(
+                title=dict(text="Phonon Entropy S(T)", font=dict(size=18)),
+                xaxis=dict(title="Temperature (K)", title_font=dict(size=15),
+                           tickfont=dict(size=13)),
+                yaxis=dict(title=y_label, title_font=dict(size=15),
+                           tickfont=dict(size=13)),
+                height=340, margin=dict(t=45, b=40),
+                legend=dict(font=dict(size=13)),
+                hoverlabel=dict(bgcolor="white", font_size=14),
+            )
+            st.plotly_chart(fig_S, use_container_width=True)
+            st.caption(
+                f"**S_ph({_T_h:.0f} K) = {_S_h:.6f} {_s_unit}**  "
+                f"({n_atoms} atom{'s' if n_atoms != 1 else ''}/unit cell)  "
+                f"— harmonic Bose–Einstein integral over normalised phonon DOS "
+            )
+            _dl_col1, _dl_col2 = st.columns(2)
+            with _dl_col1:
+                csv_dos = pd.DataFrame({
+                    f"frequency_{freq_unit}": dos_energies,
+                    f"dos_states_per_{freq_unit}": dos_values,
+                }).to_csv(index=False)
+                st.download_button(
+                    label="📥 Download DOS (CSV)",
+                    data=csv_dos,
+                    file_name=f"phonon_dos_{selected_phonon['name'].replace('.', '_')}.csv",
+                    mime="text/csv",
+                )
+            with _dl_col2:
+                csv_S = pd.DataFrame({
+                    "temperature_K": _temps_S,
+                    f"entropy_{_s_unit.replace(' ', '_').replace('⁻¹', '-1')}": S_plot,
+                }).to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Entropy vs T (CSV)",
+                    data=csv_S,
+                    file_name=f"phonon_entropy_{selected_phonon['name'].replace('.', '_')}.csv",
+                    mime="text/csv",
+                )
+        except Exception as _exc_S:
+            st.warning(f"Could not compute phonon entropy from DOS: {_exc_S}")
 
     st.write("**Phonon Analysis Summary**")
 
