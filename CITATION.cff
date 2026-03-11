@@ -12,11 +12,12 @@ authors:
     given-names: Petr
 version: 1.0.0
 identifiers:
-  - type: arxiv
-    value: 2512.05568
-date-released: 2025-12-05
+  - type: doi
+    value: 10.1016/j.jmrt.2026.02.204
+date-released: 2026-03
 type: article
-url: "https://arxiv.org/abs/2512.05568"
+url: "https://doi.org/10.1016/j.jmrt.2026.02.204"
+
 preferred-citation:
   type: article
   authors:
@@ -29,7 +30,10 @@ preferred-citation:
     - family-names: Vlčák
       given-names: Petr
   title: "Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials"
-  journal: "arXiv preprint"
-  year: 2025
-  arxiv: 2512.05568
-  url: "https://arxiv.org/abs/2512.05568"
+  journal: "Journal of Materials Research and Technology"
+  volume: 41
+  start: 6766
+  end: 6774
+  year: 2026
+  doi: 10.1016/j.jmrt.2026.02.204
+  url: "https://doi.org/10.1016/j.jmrt.2026.02.204"
