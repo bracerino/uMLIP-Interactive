@@ -641,7 +641,7 @@ class PhononCalculator:
         phonon.run_band_structure(
             paths,
             with_eigenvectors=True,
-            is_band_connection=False,
+            is_band_connection=True,
         )
         band_yaml_content: Optional[str] = None
         try:
