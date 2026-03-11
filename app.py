@@ -1123,123 +1123,169 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put("  Calculating force constants...")
         phonon.produce_force_constants()
 
-
         log_queue.put("  Calculating phonon band structure with enhanced k-point density...")
-        try:
-            from pymatgen.symmetry.bandstructure import HighSymmKpath
-            from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-            import warnings
 
+        npoints_per_segment = int(phonon_params.get(
+            'npoints_per_segment', phonon_params.get('npoints', 101)
+        ))
+        manual_kpath = phonon_params.get('manual_kpath')
+        use_auto_kpath = phonon_params.get('use_auto_kpath', True)
 
-            sga     = SpacegroupAnalyzer(pmg_structure)
-            pmg_std = sga.get_primitive_standard_structure()
-            log_queue.put(
-                f"  Space group: {sga.get_space_group_symbol()} "
-                f"(#{sga.get_space_group_number()})"
-            )
+        # Manual k-path
+        if manual_kpath and not use_auto_kpath:
+            log_queue.put(f"  Using manual k-path ({len(manual_kpath)} segments)")
+            from ase.cell import Cell as AseCell
 
-            kpath_convention = phonon_params.get('kpath_convention', 'setyawan_curtarolo')
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning,
-                                        message=".*standard primitive.*")
-                try:
-                    kpath_obj = HighSymmKpath(pmg_std, path_type=kpath_convention)
-                except TypeError:
-                    log_queue.put(
-                        f"  ⚠ This pymatgen version does not support "
-                        f"path_type='{kpath_convention}'; using default"
-                    )
-                    kpath_obj = HighSymmKpath(pmg_std)
+            cell_obj = AseCell(pmg_structure.lattice.matrix)
+            rec_mat = cell_obj.reciprocal()
 
-            _CONV_DISPLAY = {
-                "setyawan_curtarolo": "Setyawan-Curtarolo 2010",
-                "hinuma":             "SeeK-path / HPKOT (Hinuma 2017)",
-                "latimer_munro":      "Latimer-Munro 2020",
-            }
-            log_queue.put(
-                f"  k-path convention: {_CONV_DISPLAY.get(kpath_convention, kpath_convention)}"
-            )
+            all_kpts = []
+            dist = 0.0
+            unique_labels = []
+            unique_pos = []
 
-            path_segs   = kpath_obj.kpath["path"]
-            kpoints_dict = kpath_obj.kpath["kpoints"]
+            cumul_dist = []
 
-            pmg_cell = np.array(pmg_std.lattice.matrix)
-            rec_std  = np.linalg.inv(pmg_cell).T * 2 * np.pi
+            for seg_idx, seg in enumerate(manual_kpath):
+                start = np.array(seg["start_coords"], dtype=float)
+                end = np.array(seg["end_coords"], dtype=float)
+                s_lbl = seg.get("start_label", f"P{seg_idx}")
+                e_lbl = seg.get("end_label", f"P{seg_idx + 1}")
 
-            npoints_per_segment = int(phonon_params.get(
-                'npoints_per_segment',
-                phonon_params.get('npoints', 101)
-            ))
+                if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                    if unique_labels[-1] != s_lbl:
+                        unique_labels[-1] = unique_labels[-1] + "|" + s_lbl
+                else:
+                    unique_labels.append(s_lbl)
+                    unique_pos.append(dist)
 
-            all_kpts        = []
-            cumul_dist      = [0.0]
-            dist            = 0.0
-            path_labels_raw = []
-            label_positions = []
-
-            for seg in path_segs:
-                for i in range(len(seg) - 1):
-                    start = np.array(kpoints_dict[seg[i]],     dtype=float)
-                    end   = np.array(kpoints_dict[seg[i + 1]], dtype=float)
-                    for j in range(npoints_per_segment):
-                        t   = j / (npoints_per_segment - 1)
-                        kpt = start + t * (end - start)
-                        all_kpts.append(kpt)
-                        if len(all_kpts) > 1:
-                            dk   = (kpt - all_kpts[-2]) @ rec_std
-                            dist += float(np.linalg.norm(dk))
-                        cumul_dist.append(dist)
-                        if j == 0:
-                            lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
-                            if label_positions and abs(label_positions[-1] - dist) < 1e-8:
-                                path_labels_raw[-1] = path_labels_raw[-1] + "|" + lbl
-                            else:
-                                path_labels_raw.append(lbl)
-                                label_positions.append(dist)
-
-                    lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
-                    if i == len(seg) - 2:
-                        path_labels_raw.append(lbl)
-                        label_positions.append(dist)
-
-
-            seen_pos       = set()
-            unique_labels  = []
-            unique_pos     = []
-            for lbl, pos in zip(path_labels_raw, label_positions):
-                key = round(pos, 8)
-                if key not in seen_pos:
-                    seen_pos.add(key)
-                    unique_labels.append(lbl)
-                    unique_pos.append(pos)
-
-            log_queue.put(
-                f"  High-symmetry path: {' → '.join(unique_labels)}"
-                f"  ({len(all_kpts)} k-points)"
-            )
-
-        except Exception as path_error:
-            log_queue.put(f"  ⚠️ High-symmetry path detection failed: {path_error}")
-            log_queue.put("  Using simple Γ–X–M–Γ fallback path")
-            npts = int(phonon_params.get('npoints_per_segment',
-                                         phonon_params.get('npoints', 101)))
-            all_kpts, cumul_dist, dist = [], [0.0], 0.0
-            segs = [([0,0,0],[0.5,0,0]), ([0.5,0,0],[0.5,0.5,0]),
-                    ([0.5,0.5,0],[0,0,0])]
-            for start, end in segs:
-                for j in range(npts):
-                    t   = j / (npts - 1)
-                    kpt = [start[k] + t*(end[k]-start[k]) for k in range(3)]
-                    if j > 0:
-                        dk = np.array(kpt) - np.array(all_kpts[-1])
+                for j in range(npoints_per_segment):
+                    t = j / (npoints_per_segment - 1)
+                    kpt = start + t * (end - start)
+                    if all_kpts:
+                        dk = (kpt - all_kpts[-1]) @ rec_mat
                         dist += float(np.linalg.norm(dk))
                     all_kpts.append(kpt)
                     cumul_dist.append(dist)
-            unique_labels = ["Γ", "X", "M", "Γ"]
-            unique_pos    = [0.0,
-                             cumul_dist[npts - 1],
-                             cumul_dist[2 * npts - 1],
-                             dist]
+
+                if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                    if unique_labels[-1] != e_lbl:
+                        unique_labels[-1] = unique_labels[-1] + "|" + e_lbl
+                else:
+                    unique_labels.append(e_lbl)
+                    unique_pos.append(dist)
+
+            path_str = " → ".join(unique_labels)
+            log_queue.put(f"  Manual k-path: {path_str}  ({len(all_kpts)} k-points)")
+
+        # Automatic k-path
+        else:
+            try:
+                from pymatgen.symmetry.bandstructure import HighSymmKpath
+                from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+                import warnings
+
+                sga = SpacegroupAnalyzer(pmg_structure)
+                pmg_std = sga.get_primitive_standard_structure()
+                log_queue.put(
+                    f"  Space group: {sga.get_space_group_symbol()} "
+                    f"(#{sga.get_space_group_number()})"
+                )
+
+                kpath_convention = phonon_params.get('kpath_convention', 'setyawan_curtarolo')
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning,
+                                            message=".*standard primitive.*")
+                    try:
+                        kpath_obj = HighSymmKpath(pmg_std, path_type=kpath_convention)
+                    except TypeError:
+                        log_queue.put(
+                            f"  ⚠ This pymatgen version does not support "
+                            f"path_type='{kpath_convention}'; using default"
+                        )
+                        kpath_obj = HighSymmKpath(pmg_std)
+
+                _CONV_DISPLAY = {
+                    "setyawan_curtarolo": "Setyawan-Curtarolo 2010",
+                    "hinuma": "SeeK-path / HPKOT (Hinuma 2017)",
+                    "latimer_munro": "Latimer-Munro 2020",
+                }
+                log_queue.put(
+                    f"  k-path convention: {_CONV_DISPLAY.get(kpath_convention, kpath_convention)}"
+                )
+
+                path_segs = kpath_obj.kpath["path"]
+                kpoints_dict = kpath_obj.kpath["kpoints"]
+
+                pmg_cell = np.array(pmg_std.lattice.matrix)
+                rec_std = np.linalg.inv(pmg_cell).T * 2 * np.pi
+
+                all_kpts = []
+                cumul_dist = []
+                dist = 0.0
+                path_labels_raw = []
+                label_positions = []
+
+                for seg in path_segs:
+                    for i in range(len(seg) - 1):
+                        start = np.array(kpoints_dict[seg[i]], dtype=float)
+                        end = np.array(kpoints_dict[seg[i + 1]], dtype=float)
+                        for j in range(npoints_per_segment):
+                            t = j / (npoints_per_segment - 1)
+                            kpt = start + t * (end - start)
+                            all_kpts.append(kpt)
+                            if len(all_kpts) > 1:
+                                dk = (kpt - all_kpts[-2]) @ rec_std
+                                dist += float(np.linalg.norm(dk))
+                            cumul_dist.append(dist)
+                            if j == 0:
+                                lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
+                                if label_positions and abs(label_positions[-1] - dist) < 1e-8:
+                                    path_labels_raw[-1] = path_labels_raw[-1] + "|" + lbl
+                                else:
+                                    path_labels_raw.append(lbl)
+                                    label_positions.append(dist)
+
+                        lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
+                        if i == len(seg) - 2:
+                            path_labels_raw.append(lbl)
+                            label_positions.append(dist)
+
+                seen_pos = set()
+                unique_labels = []
+                unique_pos = []
+                for lbl, pos in zip(path_labels_raw, label_positions):
+                    key = round(pos, 8)
+                    if key not in seen_pos:
+                        seen_pos.add(key)
+                        unique_labels.append(lbl)
+                        unique_pos.append(pos)
+
+                log_queue.put(
+                    f"  High-symmetry path: {' → '.join(unique_labels)}"
+                    f"  ({len(all_kpts)} k-points)"
+                )
+
+            except Exception as path_error:
+                log_queue.put(f"  ⚠️ High-symmetry path detection failed: {path_error}")
+                log_queue.put("  Using simple Γ–X–M–Γ fallback path")
+                npts = npoints_per_segment
+                all_kpts, dist = [], 0.0
+                segs = [([0, 0, 0], [0.5, 0, 0]), ([0.5, 0, 0], [0.5, 0.5, 0]),
+                        ([0.5, 0.5, 0], [0, 0, 0])]
+                for start, end in segs:
+                    for j in range(npts):
+                        t = j / (npts - 1)
+                        kpt = [start[k] + t * (end[k] - start[k]) for k in range(3)]
+                        if j > 0:
+                            dk = np.array(kpt) - np.array(all_kpts[-1])
+                            dist += float(np.linalg.norm(dk))
+                        all_kpts.append(kpt)
+                unique_labels = ["Γ", "X", "M", "Γ"]
+                unique_pos = [0.0,
+                              float(npts - 1) * 0.5 / (npts - 1),
+                              float(2 * npts - 2) * 0.5 / (npts - 1),
+                              dist]
 
 
         n_per  = int(phonon_params.get('npoints_per_segment',
@@ -1254,9 +1300,8 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
         phonon.run_band_structure(
             bands,
-            is_band_connection=False,
+            is_band_connection=True,
             with_eigenvectors=True,
-            is_legacy_plot=False,
         )
         band_yaml_content = None
         try:
@@ -4978,15 +5023,75 @@ with tab1:
 
                 import pandas as pd
 
-                if "phonon_kpath_segments" not in st.session_state:
-                    st.session_state["phonon_kpath_segments"] = [
+                # ── Preset paths ──────────────────────────────────────────────
+                KPATH_PRESETS = {
+                    "Γ→M→K→Γ  (Hexagonal / trigonal — phonon.materialscloud.io)": [
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "M", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "M", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "K", "end_x": 1 / 3, "end_y": 1 / 3, "end_z": 0.0},
+                        {"start_label": "K", "start_x": 1 / 3, "start_y": 1 / 3, "start_z": 0.0,
+                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
+                    ],
+                    "Γ→X→M→Γ  (Tetragonal / square)": [
                         {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
                          "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
                         {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
                          "end_label": "M", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
                         {"start_label": "M", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
                          "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
+                    ],
+                    "Γ→X→M→Γ→R→X  (Cubic)": [
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "M", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
+                        {"start_label": "M", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
+                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "R", "end_x": 0.5, "end_y": 0.5, "end_z": 0.5},
+                        {"start_label": "R", "start_x": 0.5, "start_y": 0.5, "start_z": 0.5,
+                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
+                    ],
+                    "Γ→X→S→Y→Γ→Z  (Orthorhombic)": [
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "S", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
+                        {"start_label": "S", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
+                         "end_label": "Y", "end_x": 0.0, "end_y": 0.5, "end_z": 0.0},
+                        {"start_label": "Y", "start_x": 0.0, "start_y": 0.5, "start_z": 0.0,
+                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
+                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
+                         "end_label": "Z", "end_x": 0.0, "end_y": 0.0, "end_z": 0.5},
+                    ],
+                }
+
+                if "phonon_kpath_segments" not in st.session_state:
+                    # Default to Γ→X→M→Γ
+                    st.session_state["phonon_kpath_segments"] = KPATH_PRESETS[
+                        "Γ→X→M→Γ  (Tetragonal / square)"
                     ]
+
+                st.write("**Load a preset path:**")
+                preset_cols = st.columns(len(KPATH_PRESETS))
+                for col, (label, segments) in zip(preset_cols, KPATH_PRESETS.items()):
+                    # Short label for the button: just the arrow path part
+                    btn_label = label.split("(")[0].strip()
+                    if col.button(btn_label, key=f"preset_{label[:20]}", use_container_width=True):
+                        st.session_state["phonon_kpath_segments"] = [dict(s) for s in segments]
+                        st.rerun()
+
+                # Highlight if Γ→M→K→Γ is active (for phonon.materialscloud.io users)
+                current_labels = [
+                                     s.get("start_label", "") for s in st.session_state["phonon_kpath_segments"]
+                                 ] + [st.session_state["phonon_kpath_segments"][-1].get("end_label", "")]
+                if current_labels == ["Γ", "M", "K", "Γ"]:
+                    st.success(
+                        "✅ **Γ→M→K→Γ path active** — compatible with "
+                        "[phonon.materialscloud.io](https://phonon.materialscloud.io). "
+                        "Download `band.yaml` and upload it there directly."
+                    )
 
                 seg_df = pd.DataFrame(st.session_state["phonon_kpath_segments"])
                 edited_df = st.data_editor(
