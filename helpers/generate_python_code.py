@@ -338,7 +338,7 @@ def main():
 
     # Find and validate POSCAR files in current directory
     print("\\n📁 Looking for POSCAR files in current directory...")
-    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
+    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
 
     if not structure_files:
         print("❌ No POSCAR files found in current directory!")
@@ -1003,7 +1003,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 '''
 
     # Main GA code with concentration sweep support
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")]
 
     if len(structure_files) == 0:
         print("❌ No structure files found!")
@@ -2315,7 +2315,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
 def _generate_energy_only_code(calc_formation_energy):
     """Generate code for energy-only calculations."""
-    code = '''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
+    code = '''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     print(f"📊 Found {len(structure_files)} structure files")
 
@@ -2640,7 +2640,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     """Generate code for elastic property calculations."""
     strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
@@ -3727,7 +3727,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
@@ -4428,326 +4428,550 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 '''
 
     return code
-
-
 def _generate_phonon_code(phonon_params, optimization_params, calc_formation_energy):
-    """Generate code for phonon calculations."""
-    auto_supercell = phonon_params.get('auto_supercell', True)
-    if auto_supercell:
-        target_length = phonon_params.get('target_supercell_length', 15.0)
-        max_multiplier = phonon_params.get('max_supercell_multiplier', 4)
-        max_atoms = phonon_params.get('max_supercell_atoms', 800)
-    else:
-        supercell_size = phonon_params.get('supercell_size', (2, 2, 2))
+    auto_supercell      = phonon_params.get('auto_supercell', True)
+    target_length       = phonon_params.get('target_supercell_length', 15.0)
+    max_multiplier      = phonon_params.get('max_supercell_multiplier', 4)
+    max_atoms           = phonon_params.get('max_supercell_atoms', 800)
+    supercell_size      = phonon_params.get('supercell_size', (2, 2, 2))
+    delta               = phonon_params.get('displacement_distance', phonon_params.get('delta', 0.01))
+    temperature         = phonon_params.get('temperature', 300)
+    npoints             = phonon_params.get('npoints_per_segment', phonon_params.get('npoints', 101))
+    use_auto_kpath      = phonon_params.get('use_auto_kpath', True)
+    manual_kpath        = phonon_params.get('manual_kpath', None)
+    kpath_convention    = phonon_params.get('kpath_convention', 'setyawan_curtarolo')
+    dos_mesh            = phonon_params.get('dos_mesh', (30, 30, 30))
+    pre_relax           = phonon_params.get('pre_relax', True)
+    pre_relax_optimizer = phonon_params.get('pre_relax_optimizer', 'LBFGS')
+    pre_relax_fmax      = phonon_params.get('pre_relax_fmax', 0.01)
+    pre_relax_steps     = phonon_params.get('pre_relax_steps', 100)
+    imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
+                          -phonon_params.get('imaginary_freq_threshold', 0.1))
 
-    delta = phonon_params.get('delta', 0.01)
-    temperature = phonon_params.get('temperature', 300)
-    npoints = phonon_params.get('npoints', 100)
-
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar")])
-    results = []
-    print(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
-
-    try:
-        from phonopy import Phonopy
-        from phonopy.structure.atoms import PhonopyAtoms
-        import phonopy.units as units_phonopy
-        PHONOPY_AVAILABLE = True
-        print("✅ Phonopy available")
-    except ImportError:
-        print("❌ Phonopy not available. Please install with: pip install phonopy")
-        return
-
-    auto_supercell = {auto_supercell}'''
+    import json as _json
+    manual_kpath_repr   = _json.dumps(manual_kpath) if manual_kpath else "None"
+    use_auto_kpath_str  = str(use_auto_kpath)
+    pre_relax_str       = str(pre_relax)
+    dos_mesh_str        = str(list(dos_mesh))
 
     if auto_supercell:
-        code += f'''
-    target_supercell_length = {target_length}
-    max_supercell_multiplier = {max_multiplier}
-    max_supercell_atoms = {max_atoms}
-    print(f"⚙️ Auto supercell: target length {target_supercell_length} Å, max multiplier {max_supercell_multiplier}")'''
-    else:
-        code += f'''
-    supercell_size = {supercell_size}
-    print(f"⚙️ Manual supercell: {supercell_size}")'''
-
-    code += f'''
-    displacement_distance = {delta}
-    temperature = {temperature}
-    npoints_per_segment = {npoints}
-    pre_opt_steps = {optimization_params.get('max_steps', 50)}
-
-    print(f"⚙️ Phonon settings:")
-    print(f"  - Displacement: {{displacement_distance}} Å")
-    print(f"  - Temperature: {{temperature}} K")
-    print(f"  - Pre-opt steps: {{pre_opt_steps}}")
-
-    reference_energies = {{}}'''
-
-    if calc_formation_energy:
-        code += '''
-    print("🔬 Calculating atomic reference energies...")
-    all_elements = set()
-    for filename in structure_files:
-        atoms = read(filename)
-        for symbol in atoms.get_chemical_symbols():
-            all_elements.add(symbol)
-
-    print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-
-    for i, element in enumerate(sorted(all_elements)):
-        print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
-        atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
-        atom.calc = calculator
-        reference_energies[element] = atom.get_potential_energy()
-        print(f"  ✅ {element}: {reference_energies[element]:.6f} eV")'''
-
-    code += '''
-
-    for i, filename in enumerate(structure_files):
-        print(f"\\n🎵 Processing structure {i+1}/{len(structure_files)}: {filename}")
-        structure_start_time = time.time()
-        try:
-            atoms = read(filename)
-            atoms.calc = calculator
-            print(f"  📊 Structure has {len(atoms)} atoms")
-
-            print("  🔧 Running pre-optimization...")
-            temp_atoms = atoms.copy()
-            temp_atoms.calc = calculator
-            temp_optimizer = LBFGS(temp_atoms, logfile=None)
-            temp_optimizer.run(fmax=0.02, steps=pre_opt_steps)
-            atoms = temp_atoms
-            print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
-
-            from pymatgen.io.ase import AseAtomsAdaptor
-            adaptor = AseAtomsAdaptor()
-            pmg_structure = adaptor.get_structure(atoms)
-
-            phonopy_atoms = PhonopyAtoms(
-                symbols=[str(site.specie) for site in pmg_structure],
-                scaled_positions=pmg_structure.frac_coords,
-                cell=pmg_structure.lattice.matrix
-            )'''
-
-    if auto_supercell:
-        code += '''
-            a, b, c = pmg_structure.lattice.abc
-            na = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / a))))
-            nb = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / b))))
-            nc = max(1, min(max_supercell_multiplier, int(np.ceil(target_supercell_length / c))))
-
+        supercell_block = f"""
+            a_len, b_len, c_len = pmg_structure.lattice.abc
+            na = max(1, min({max_multiplier}, int(np.ceil({target_length} / a_len))))
+            nb = max(1, min({max_multiplier}, int(np.ceil({target_length} / b_len))))
+            nc = max(1, min({max_multiplier}, int(np.ceil({target_length} / c_len))))
             if len(atoms) > 50:
                 na = max(1, na - 1)
                 nb = max(1, nb - 1)
                 nc = max(1, nc - 1)
-
             supercell_matrix = [[na, 0, 0], [0, nb, 0], [0, 0, nc]]
-            total_atoms = len(atoms) * na * nb * nc
-
-            if total_atoms > max_supercell_atoms:
-                print(f"  ⚠️ Supercell too large ({total_atoms} atoms), using 1x1x1")
+            n_sc = len(atoms) * na * nb * nc
+            if n_sc > {max_atoms}:
+                log(f"  ⚠️ Supercell too large ({{n_sc}} atoms) – falling back to 1×1×1")
                 supercell_matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-                total_atoms = len(atoms)'''
+                n_sc = len(atoms)
+            log(f"  Auto-determining supercell size...")
+            log(f"  Supercell: {{na}}×{{nb}}×{{nc}} → {{n_sc}} atoms")"""
     else:
-        code += f'''
-            supercell_matrix = [[{supercell_size[0]}, 0, 0], [0, {supercell_size[1]}, 0], [0, 0, {supercell_size[2]}]]
-            total_atoms = len(atoms) * {supercell_size[0]} * {supercell_size[1]} * {supercell_size[2]}'''
+        na, nb, nc = supercell_size
+        supercell_block = f"""
+            supercell_matrix = [[{na}, 0, 0], [0, {nb}, 0], [0, 0, {nc}]]
+            n_sc = len(atoms) * {na} * {nb} * {nc}
+            log(f"  Manual supercell: {na}×{nb}×{nc} → {{n_sc}} atoms")"""
 
-    code += '''
+    formation_ref_block = ""
+    if calc_formation_energy:
+        formation_ref_block = """
+    log("🔬 Calculating atomic reference energies...")
+    all_elements = set()
+    for fn in structure_files:
+        for sym in read(fn).get_chemical_symbols():
+            all_elements.add(sym)
+    log(f"🧪 Elements: {', '.join(sorted(all_elements))}")
+    for elem in sorted(all_elements):
+        atom_ref = Atoms(elem, positions=[(0,0,0)], cell=[20,20,20], pbc=True)
+        atom_ref.calc = calculator
+        reference_energies[elem] = atom_ref.get_potential_energy()
+        log(f"  ✅ {elem}: {reference_energies[elem]:.6f} eV")
+"""
 
-            print(f"  📏 Using supercell: {supercell_matrix} ({total_atoms} total atoms)")
+    formation_save_block = ""
+    if calc_formation_energy:
+        formation_save_block = """
+            fe = calculate_formation_energy(final_energy, atoms, reference_energies)
+            result["formation_energy_eV_per_atom"] = fe
+            if fe is not None:
+                log(f"  ✅ Formation energy: {fe:.6f} eV/atom")
+"""
 
-            phonon = Phonopy(phonopy_atoms, supercell_matrix=supercell_matrix, primitive_matrix='auto')
+    code = f'''    import io, warnings
 
-            print(f"  📍 Generating displacements...")
+    def log(msg):
+        print(msg)
+
+    structure_files = sorted([
+        f for f in os.listdir(".")
+        if f.startswith("POSCAR") or f.endswith(".vasp")
+        or f.endswith(".poscar") or f.endswith(".cif")
+    ])
+    results = []
+    log(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
+
+    try:
+        from phonopy import Phonopy
+        from phonopy.structure.atoms import PhonopyAtoms
+        log("✅ Phonopy available")
+    except ImportError:
+        log("❌ Phonopy not available. Install with: pip install phonopy")
+        return
+
+    EV_PER_KJMOL = 1.0 / 96.4853
+    EV_PER_JKMOL = 1.0 / 96485.3
+
+    displacement_distance   = {delta}
+    temperature_display     = {temperature}
+    npoints_per_segment     = {npoints}
+    use_auto_kpath          = {use_auto_kpath_str}
+    manual_kpath_data       = {manual_kpath_repr}
+    kpath_convention        = "{kpath_convention}"
+    dos_mesh                = {dos_mesh_str}
+    pre_relax               = {pre_relax_str}
+    pre_relax_optimizer     = "{pre_relax_optimizer}"
+    pre_relax_fmax          = {pre_relax_fmax}
+    pre_relax_steps         = {pre_relax_steps}
+    imaginary_tol_mev       = {imag_tol_mev}
+    imaginary_tol_thz       = imaginary_tol_mev / 4.136
+
+    log(f"⚙️  Displacement: {{displacement_distance}} Å")
+    log(f"⚙️  k-path: {{'auto (' + kpath_convention + ')' if use_auto_kpath else 'manual'}}")
+    log(f"⚙️  Points/segment: {{npoints_per_segment}}")
+    log(f"⚙️  DOS mesh: {{dos_mesh}}")
+    log(f"⚙️  Pre-relax: {{pre_relax}} ({{pre_relax_optimizer}}, fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)")
+    log(f"⚙️  Imaginary mode tolerance: {{imaginary_tol_mev:.3f}} meV")
+
+    reference_energies = {{}}
+{formation_ref_block}
+    for struct_idx, filename in enumerate(structure_files):
+        log(f"\\n🎵 Processing structure {{struct_idx+1}}/{{len(structure_files)}}: {{filename}}")
+        structure_start = time.time()
+
+        try:
+            atoms = read(filename)
+            atoms.calc = calculator
+            log(f"  {{len(atoms)}}-atom structure loaded")
+
+            if pre_relax:
+                log(f"  Running brief pre-phonon optimisation ({{pre_relax_optimizer}}, "
+                    f"fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)...")
+                pre_atoms = atoms.copy()
+                pre_atoms.calc = calculator
+                if pre_relax_optimizer == "FIRE":
+                    pre_opt = FIRE(pre_atoms, logfile=None)
+                else:
+                    pre_opt = LBFGS(pre_atoms, logfile=None)
+                pre_opt.run(fmax=pre_relax_fmax, steps=pre_relax_steps)
+                atoms = pre_atoms
+                log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
+                    f"F_max={{np.max(np.linalg.norm(atoms.get_forces(), axis=1)):.4f}} eV/Å")
+            else:
+                log("  Skipping pre-optimisation (disabled by user)")
+
+            from pymatgen.io.ase import AseAtomsAdaptor
+            pmg_structure = AseAtomsAdaptor().get_structure(atoms)
+            log(f"  Converted to pymatgen structure: {{pmg_structure.composition.reduced_formula}}")
+
+{supercell_block}
+
+            phonopy_atoms = PhonopyAtoms(
+                symbols=[str(s.specie) for s in pmg_structure],
+                scaled_positions=pmg_structure.frac_coords,
+                cell=pmg_structure.lattice.matrix,
+            )
+            phonon = Phonopy(phonopy_atoms,
+                             supercell_matrix=supercell_matrix,
+                             primitive_matrix="auto")
+
+            log(f"  Generating displacements (distance={{displacement_distance}} Å)...")
             phonon.generate_displacements(distance=displacement_distance)
-            supercells = phonon.get_supercells_with_displacements()
-            print(f"  📊 Generated {len(supercells)} displaced supercells")
+            supercells = phonon.supercells_with_displacements
+            log(f"  Generated {{len(supercells)}} displaced supercells")
 
-            print("  ⚡ Calculating forces...")
-            forces = []
-            for j, supercell in enumerate(supercells):
-                if j % max(1, len(supercells) // 5) == 0:
-                    print(f"    📊 Progress: {j+1}/{len(supercells)} ({100*(j+1)/len(supercells):.1f}%)")
+            log("  Calculating forces for displaced supercells...")
+            all_forces = []
+            for j, sc in enumerate(supercells):
+                sc_atoms = Atoms(symbols=sc.symbols, positions=sc.positions,
+                                 cell=sc.cell, pbc=True)
+                sc_atoms.calc = calculator
+                all_forces.append(sc_atoms.get_forces())
+                if (j + 1) % max(1, len(supercells) // 8) == 0 or j == len(supercells) - 1:
+                    log(f"    Forces: {{j+1}}/{{len(supercells)}} ({{100*(j+1)//len(supercells)}}%)")
+            log("  ✅ All force calculations completed")
 
-                ase_supercell = Atoms(
-                    symbols=supercell.symbols,
-                    positions=supercell.positions,
-                    cell=supercell.cell,
-                    pbc=True
-                )
-                ase_supercell.calc = calculator
-                supercell_forces = ase_supercell.get_forces()
-                forces.append(supercell_forces)
-
-            print("  ✅ All force calculations completed")
-            phonon.forces = forces
-            print("  🔧 Calculating force constants...")
+            phonon.forces = all_forces
+            log("  Calculating force constants...")
             phonon.produce_force_constants()
 
-            print("  📈 Calculating phonon band structure...")
+            log("  Calculating phonon band structure with enhanced k-point density...")
+            cumul_dist = []
+
+            if manual_kpath_data and not use_auto_kpath:
+                log(f"  Using manual k-path ({{len(manual_kpath_data)}} segments)")
+                all_kpts      = []
+                dist          = 0.0
+                unique_labels = []
+                unique_pos    = []
+
+                cell_obj = np.array(pmg_structure.lattice.matrix)
+                rec_mat  = np.linalg.inv(cell_obj).T
+
+                for seg_i, seg in enumerate(manual_kpath_data):
+                    start = np.array(seg["start_coords"], dtype=float)
+                    end   = np.array(seg["end_coords"],   dtype=float)
+                    s_lbl = seg.get("start_label", f"P{{seg_i}}")
+                    e_lbl = seg.get("end_label",   f"P{{seg_i+1}}")
+
+                    if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                        if unique_labels[-1] != s_lbl:
+                            unique_labels[-1] += "|" + s_lbl
+                    else:
+                        unique_labels.append(s_lbl)
+                        unique_pos.append(dist)
+
+                    for j in range(npoints_per_segment):
+                        t   = j / (npoints_per_segment - 1)
+                        kpt = start + t * (end - start)
+                        if all_kpts:
+                            dk    = (kpt - all_kpts[-1]) @ rec_mat
+                            dist += float(np.linalg.norm(dk))
+                        all_kpts.append(kpt)
+                        cumul_dist.append(dist)
+
+                    if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                        if unique_labels[-1] != e_lbl:
+                            unique_labels[-1] += "|" + e_lbl
+                    else:
+                        unique_labels.append(e_lbl)
+                        unique_pos.append(dist)
+
+                path_str = " → ".join(unique_labels)
+                log(f"  Manual k-path: {{path_str}}  ({{len(all_kpts)}} k-points)")
+                bands = [all_kpts]
+
+            else:
+                try:
+                    from pymatgen.symmetry.bandstructure import HighSymmKpath
+                    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+                    sga     = SpacegroupAnalyzer(pmg_structure)
+                    pmg_std = sga.get_primitive_standard_structure()
+                    log(f"  Space group: {{sga.get_space_group_symbol()}} (#{{sga.get_space_group_number()}})")
+
+                    _CONV = {{
+                        "setyawan_curtarolo": "Setyawan-Curtarolo 2010",
+                        "hinuma":             "SeeK-path / HPKOT (Hinuma 2017)",
+                        "latimer_munro":      "Latimer-Munro 2020",
+                    }}
+                    log(f"  k-path convention: {{_CONV.get(kpath_convention, kpath_convention)}}")
+
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=UserWarning,
+                                                message=".*standard primitive.*")
+                        try:
+                            kpath_obj = HighSymmKpath(pmg_std, path_type=kpath_convention)
+                        except TypeError:
+                            kpath_obj = HighSymmKpath(pmg_std)
+
+                    path_segs    = kpath_obj.kpath["path"]
+                    kpoints_dict = kpath_obj.kpath["kpoints"]
+                    pmg_cell     = np.array(pmg_std.lattice.matrix)
+                    rec_std      = np.linalg.inv(pmg_cell).T * 2 * np.pi
+
+                    all_kpts        = []
+                    dist            = 0.0
+                    path_labels_raw = []
+                    label_positions = []
+
+                    for seg in path_segs:
+                        for i in range(len(seg) - 1):
+                            start = np.array(kpoints_dict[seg[i]],     dtype=float)
+                            end   = np.array(kpoints_dict[seg[i + 1]], dtype=float)
+                            for j in range(npoints_per_segment):
+                                t   = j / (npoints_per_segment - 1)
+                                kpt = start + t * (end - start)
+                                all_kpts.append(kpt)
+                                if len(all_kpts) > 1:
+                                    dk    = (kpt - all_kpts[-2]) @ rec_std
+                                    dist += float(np.linalg.norm(dk))
+                                cumul_dist.append(dist)
+                                if j == 0:
+                                    lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
+                                    if label_positions and abs(label_positions[-1] - dist) < 1e-8:
+                                        path_labels_raw[-1] += "|" + lbl
+                                    else:
+                                        path_labels_raw.append(lbl)
+                                        label_positions.append(dist)
+                            lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
+                            if i == len(seg) - 2:
+                                path_labels_raw.append(lbl)
+                                label_positions.append(dist)
+
+                    seen_pos      = set()
+                    unique_labels = []
+                    unique_pos    = []
+                    for lbl, pos in zip(path_labels_raw, label_positions):
+                        key = round(pos, 8)
+                        if key not in seen_pos:
+                            seen_pos.add(key)
+                            unique_labels.append(lbl)
+                            unique_pos.append(pos)
+
+                    log(f"  High-symmetry path: {{' → '.join(unique_labels)}}  ({{len(all_kpts)}} k-points)")
+                    bands = [all_kpts]
+
+                except Exception as kpath_err:
+                    log(f"  ⚠️ k-path detection failed: {{kpath_err}} – using Γ–X–M–Γ fallback")
+                    npts     = npoints_per_segment
+                    all_kpts = []
+                    dist     = 0.0
+                    for seg_s, seg_e in [
+                        ([0,0,0],[0.5,0,0]),
+                        ([0.5,0,0],[0.5,0.5,0]),
+                        ([0.5,0.5,0],[0,0,0])
+                    ]:
+                        for j in range(npts):
+                            t   = j / (npts - 1)
+                            kpt = [seg_s[k] + t*(seg_e[k]-seg_s[k]) for k in range(3)]
+                            if all_kpts:
+                                dist += float(np.linalg.norm(np.array(kpt) - np.array(all_kpts[-1])))
+                            all_kpts.append(kpt)
+                            cumul_dist.append(dist)
+                    unique_labels = ["Γ", "X", "M", "Γ"]
+                    unique_pos    = [0.0,
+                                     cumul_dist[npts - 1],
+                                     cumul_dist[2 * npts - 2],
+                                     cumul_dist[-1]]
+                    bands = [all_kpts]
+
+            phonon.run_band_structure(bands,
+                                      is_band_connection=True,
+                                      with_eigenvectors=True)
+
+            band_yaml_content = None
             try:
-                from pymatgen.symmetry.bandstructure import HighSymmKpath
-                kpath = HighSymmKpath(pmg_structure)
-                path = kpath.kpath["path"]
-                kpoints_dict = kpath.kpath["kpoints"]
+                _buf = io.StringIO()
+                phonon.write_yaml_band_structure(filename=_buf)
+                band_yaml_content = _buf.getvalue()
+                log("  ✅ band.yaml with eigenvectors captured")
+            except TypeError:
+                import tempfile as _tempfile
+                with _tempfile.NamedTemporaryFile(mode="r", suffix=".yaml",
+                                                  delete=False) as _tf:
+                    _tmp_path = _tf.name
+                phonon.write_yaml_band_structure(filename=_tmp_path)
+                with open(_tmp_path) as _tf:
+                    band_yaml_content = _tf.read()
+                os.unlink(_tmp_path)
+                log("  ✅ band.yaml captured (via temp file)")
 
-                path_kpoints = []
-                for segment in path:
-                    if len(segment) >= 2:
-                        start_point = np.array(kpoints_dict[segment[0]])
-                        end_point = np.array(kpoints_dict[segment[-1]])
-                        for j in range(npoints_per_segment):
-                            t = j / (npoints_per_segment - 1)
-                            kpt = start_point + t * (end_point - start_point)
-                            path_kpoints.append(kpt.tolist())
+            log("  Processing band structure data...")
+            band_dict  = phonon.get_band_structure_dict()
+            freq_array = np.array(band_dict["frequencies"])
+            freq_thz   = freq_array[0]
 
-                bands = [path_kpoints]
-                print(f"  📍 Generated {len(path_kpoints)} k-points along high-symmetry path")
+            min_len    = min(len(cumul_dist), freq_thz.shape[0])
+            dist_array = np.array(cumul_dist[:min_len])
+            freq_thz   = freq_thz[:min_len]
 
-            except Exception:
-                print("  ⚠️ Using fallback k-point path")
-                bands = [[[0, 0, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0, 0]]]
-
-            phonon.run_band_structure(bands, is_band_connection=False, with_eigenvectors=False)
-            band_dict = phonon.get_band_structure_dict()
-
-            print("  📊 Calculating phonon DOS...")
-            mesh_density = [30, 30, 30] if len(atoms) <= 100 else [20, 20, 20]
-            phonon.run_mesh(mesh_density)
+            log(f"  Calculating phonon DOS (mesh {{dos_mesh}})...")
+            phonon.run_mesh(dos_mesh, with_eigenvectors=False)
             phonon.run_total_dos()
-            dos_dict = phonon.get_total_dos_dict()
+            dos_dict     = phonon.get_total_dos_dict()
+            dos_freq_thz = np.array(dos_dict["frequency_points"])
+            dos_values   = np.array(dos_dict["total_dos"])
 
-            print(f"  🌡️ Calculating thermodynamics at {temperature} K...")
-            phonon.run_thermal_properties(t_step=10, t_max=1500, t_min=0)
+            log("  Calculating thermal properties...")
+            phonon.run_thermal_properties(t_step=10, t_max=1000, t_min=0)
             thermal_dict = phonon.get_thermal_properties_dict()
+            temps_K      = np.array(thermal_dict["temperatures"])
 
-            frequencies = np.array(band_dict['frequencies']) * units_phonopy.THzToEv * 1000
-            dos_frequencies = dos_dict['frequency_points'] * units_phonopy.THzToEv * 1000
-            dos_values = dos_dict['total_dos']
+            try:
+                _zpe_raw = float(thermal_dict["zero_point_energy"])
+            except KeyError:
+                try:
+                    _zpe_raw = float(phonon.get_zero_point_energy())
+                except Exception:
+                    _zpe_raw = float(thermal_dict["free_energy"][0])
+            _zpe_eV = _zpe_raw * EV_PER_KJMOL
 
-            valid_frequencies = frequencies[~np.isnan(frequencies)]
-            imaginary_modes = np.sum(valid_frequencies < -0.001)
-            min_frequency = np.min(valid_frequencies) if len(valid_frequencies) > 0 else 0
-            max_frequency = np.max(valid_frequencies) if len(valid_frequencies) > 0 else 0
+            def _thermo_at(T):
+                idx = int(np.argmin(np.abs(temps_K - T)))
+                return {{
+                    "temperature_K":          float(temps_K[idx]),
+                    "free_energy_eV":         float(thermal_dict["free_energy"][idx])      * EV_PER_KJMOL,
+                    "entropy_eV_per_K":       float(thermal_dict["entropy"][idx])           * EV_PER_JKMOL,
+                    "heat_capacity_eV_per_K": float(thermal_dict["heat_capacity"][idx])     * EV_PER_JKMOL,
+                    "zero_point_energy_eV":   _zpe_eV,
+                }}
 
-            temps = np.array(thermal_dict['temperatures'])
-            temp_idx = np.argmin(np.abs(temps - temperature))
+            thermo_display = _thermo_at(temperature_display)
 
-            thermo_props = {{
-                'temperature': float(temps[temp_idx]),
-                'zero_point_energy': float(thermal_dict['zero_point_energy']),
-                'internal_energy': float(thermal_dict['internal_energy'][temp_idx]),
-                'heat_capacity': float(thermal_dict['heat_capacity'][temp_idx]),
-                'entropy': float(thermal_dict['entropy'][temp_idx]),
-                'free_energy': float(thermal_dict['free_energy'][temp_idx])
-            }}
+            base_name  = filename.rsplit(".", 1)[0] if "." in filename else filename
+            out_folder = Path("results") / f"phonon_{{base_name}}"
+            out_folder.mkdir(parents=True, exist_ok=True)
+            log(f"  Saving structure results to {{out_folder}}/")
+
+            if band_yaml_content:
+                yaml_path = out_folder / "band.yaml"
+                with open(yaml_path, "w") as _f:
+                    _f.write(band_yaml_content)
+                log(f"  💾 band.yaml → {{yaml_path}}")
+
+            dos_csv_path = out_folder / "phonon_dos.csv"
+            pd.DataFrame({{
+                "frequency_THz":      dos_freq_thz,
+                "frequency_meV":      dos_freq_thz * 4.136,
+                "dos_states_per_THz": dos_values,
+                "dos_states_per_meV": dos_values / 4.136,
+            }}).to_csv(dos_csv_path, index=False)
+            log(f"  💾 phonon_dos.csv → {{dos_csv_path}}")
+
+            thermo_rows = []
+            for T in [100, 300, 500, 700, 900]:
+                row = _thermo_at(T)
+                thermo_rows.append(row)
+                log(f"    S({{T:4d}} K) = {{row['entropy_eV_per_K']:.6e}} eV/K/unit-cell")
+            thermo_csv_path = out_folder / "thermodynamics.csv"
+            pd.DataFrame(thermo_rows).to_csv(thermo_csv_path, index=False)
+            log(f"  💾 thermodynamics.csv (eV, eV/K per unit cell) → {{thermo_csv_path}}")
+
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                import matplotlib.ticker as ticker
+
+                freq_meV = freq_thz * 4.136
+
+                fig, ax = plt.subplots(figsize=(8, 6))
+                n_bands = freq_meV.shape[1]
+                _cmap = matplotlib.colormaps["rainbow"].resampled(n_bands)
+                for b in range(n_bands):
+                    ax.plot(dist_array, freq_meV[:, b],
+                            color=_cmap(b), linewidth=0.9, alpha=0.85)
+                ax.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.6)
+                ax.set_xticks(unique_pos)
+                ax.set_xticklabels(
+                    [lbl.replace("Γ", r"$\\Gamma$").replace("|", "/") for lbl in unique_labels],
+                    fontsize=12
+                )
+                for xv in unique_pos:
+                    ax.axvline(xv, color="gray", linewidth=0.6, linestyle="--", alpha=0.5)
+                ax.set_xlim(dist_array[0], dist_array[-1])
+                ax.set_xlabel("Wave vector", fontsize=13)
+                ax.set_ylabel("Frequency (meV)", fontsize=13)
+                ax.tick_params(axis='both', labelsize=12)
+                path_label = " → ".join(unique_labels) if unique_labels else "k-path"
+                ax.set_title(f"Phonon bands – {{base_name}}\\n{{path_label}}", fontsize=11)
+                ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+                plt.tight_layout()
+                band_png = out_folder / "phonon_bands.png"
+                fig.savefig(band_png, dpi=200, bbox_inches="tight")
+                plt.close(fig)
+                log(f"  💾 phonon_bands.png → {{band_png}}")
+
+                fig2, ax2 = plt.subplots(figsize=(5, 6))
+                dos_meV_axis = dos_freq_thz * 4.136
+                dos_values_per_meV = dos_values / 4.136
+                ax2.plot(dos_values_per_meV, dos_meV_axis, color="steelblue", linewidth=1.2)
+                ax2.fill_betweenx(dos_meV_axis, 0, dos_values_per_meV, alpha=0.3, color="steelblue")
+                ax2.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.6)
+                ax2.set_xlabel("DOS (states / meV)", fontsize=13)
+                ax2.set_ylabel("Frequency (meV)", fontsize=13)
+                ax2.set_title(f"Phonon DOS – {{base_name}}", fontsize=11)
+                ax2.set_xlim(left=0)
+                plt.tight_layout()
+                dos_png = out_folder / "phonon_dos.png"
+                fig2.savefig(dos_png, dpi=200, bbox_inches="tight")
+                plt.close(fig2)
+                log(f"  💾 phonon_dos.png → {{dos_png}}")
+
+            except Exception as plot_err:
+                log(f"  ⚠️ Plot generation failed: {{plot_err}}")
+
+            final_energy    = atoms.get_potential_energy()
+            freq_all        = freq_thz.flatten()
+            valid_freq      = freq_all[~np.isnan(freq_all)]
+            imaginary_modes = int(np.sum(valid_freq < imaginary_tol_thz))
 
             result = {{
-                "structure": filename,
-                "calculation_type": "phonon_calculation",
-                "supercell_matrix": supercell_matrix,
-                "imaginary_modes": int(imaginary_modes),
-                "min_frequency_meV": float(min_frequency),
-                "max_frequency_meV": float(max_frequency),
-                "thermodynamics": thermo_props,
-                "num_atoms": len(atoms),
-                "total_supercell_atoms": total_atoms
+                "structure":               filename,
+                "calculation_type":        "phonon_calculation",
+                "supercell_matrix":        str(supercell_matrix),
+                "imaginary_modes":         imaginary_modes,
+                "imaginary_tol_mev":       imaginary_tol_mev,
+                "min_frequency_meV":       float(np.min(valid_freq) * 4.136) if len(valid_freq) else 0.0,
+                "max_frequency_meV":       float(np.max(valid_freq) * 4.136) if len(valid_freq) else 0.0,
+                "zero_point_energy_eV":    thermo_display["zero_point_energy_eV"],
+                "free_energy_eV":          thermo_display["free_energy_eV"],
+                "entropy_eV_per_K":        thermo_display["entropy_eV_per_K"],
+                "heat_capacity_eV_per_K":  thermo_display["heat_capacity_eV_per_K"],
+                "thermo_temperature_K":    thermo_display["temperature_K"],
+                "energy_eV":               final_energy,
+                "num_atoms":               len(atoms),
+                "output_folder":           str(out_folder),
+                "kpath_used":              "manual" if (manual_kpath_data and not use_auto_kpath) else "auto",
             }}
-
-            phonon_data_dict = {{
-                "structure_name": [filename],
-                "supercell_matrix_00": [supercell_matrix[0][0]],
-                "supercell_matrix_11": [supercell_matrix[1][1]], 
-                "supercell_matrix_22": [supercell_matrix[2][2]],
-                "imaginary_modes": [int(imaginary_modes)],
-                "min_frequency_meV": [float(min_frequency)],
-                "max_frequency_meV": [float(max_frequency)],
-                "zero_point_energy_eV": [thermo_props['zero_point_energy']],
-                "internal_energy_eV": [thermo_props['internal_energy']],
-                "heat_capacity_eV_K": [thermo_props['heat_capacity']],
-                "entropy_eV_K": [thermo_props['entropy']],
-                "free_energy_eV": [thermo_props['free_energy']],
-                "temperature_K": [thermo_props['temperature']],
-                "num_atoms": [len(atoms)],
-                "total_supercell_atoms": [total_atoms]
-            }}
-
-            df_phonon = pd.DataFrame(phonon_data_dict)
-            df_phonon.to_csv(f"results/phonon_data_{filename.replace('.', '_')}.csv", index=False)
-
-            if len(valid_frequencies) > 0:
-                freq_data = {{
-                    "frequency_meV": valid_frequencies[~np.isnan(valid_frequencies)].flatten(),
-                    "structure": [filename] * len(valid_frequencies[~np.isnan(valid_frequencies)].flatten())
-                }}
-                df_freq = pd.DataFrame(freq_data)
-                df_freq.to_csv(f"results/phonon_frequencies_{filename.replace('.', '_')}.csv", index=False)
-
-            dos_data = {{
-                "energy_meV": dos_frequencies,
-                "dos_states_per_meV": dos_values,
-                "structure": [filename] * len(dos_frequencies)
-            }}
-            df_dos = pd.DataFrame(dos_data)
-            df_dos.to_csv(f"results/phonon_dos_{filename.replace('.', '_')}.csv", index=False)
-
-            final_energy = atoms.get_potential_energy()
-            result["energy_eV"] = final_energy
-
-            if calc_formation_energy:
-                formation_energy = calculate_formation_energy(final_energy, atoms, reference_energies)
-                result["formation_energy_eV_per_atom"] = formation_energy
-
-            structure_time = time.time() - structure_start_time
-            print(f"  ✅ Phonon calculation completed in {structure_time:.1f}s")
-            print(f"  ✅ Energy: {final_energy:.6f} eV")
-            print(f"  ✅ Imaginary modes: {imaginary_modes}")
-            print(f"  ✅ Frequency range: {min_frequency:.3f} to {max_frequency:.3f} meV")
+{formation_save_block}
+            struct_time = time.time() - structure_start
+            log(f"  ✅ Phonon calculation completed in {{struct_time:.1f}}s")
+            log(f"  ✅ Energy: {{final_energy:.6f}} eV")
+            log(f"  ✅ Imaginary modes: {{imaginary_modes}}")
+            log(f"  ✅ Frequency range: {{result['min_frequency_meV']:.2f}}–{{result['max_frequency_meV']:.2f}} meV")
             if imaginary_modes > 0:
-                print(f"  ⚠️ Structure may be dynamically unstable")
+                log(f"  ⚠️  Structure may be dynamically unstable "
+                    f"({{imaginary_modes}} modes below {{imaginary_tol_mev:.3f}} meV tolerance)")
             else:
-                print(f"  ✅ Structure appears dynamically stable")
-
+                log(f"  ✅ Structure appears dynamically stable "
+                    f"(tolerance: {{imaginary_tol_mev:.3f}} meV)")
 
             results.append(result)
-
-            df_results = pd.DataFrame(results)
-            df_results.to_csv("results/phonon_results.csv", index=False)
-            print(f"  💾 Results updated and saved")
+            pd.DataFrame(results).to_csv("results/phonon_results.csv", index=False)
 
         except Exception as e:
-            print(f"  ❌ Phonon calculation failed: {e}")
-            results.append({"structure": filename, "error": str(e)}")
+            import traceback
+            log(f"  ❌ Phonon calculation failed for {{filename}}: {{e}}")
+            log(f"Traceback: {{traceback.format_exc()}}")
+            results.append({{"structure": filename, "error": str(e)}})
+            pd.DataFrame(results).to_csv("results/phonon_results.csv", index=False)
 
-            df_results = pd.DataFrame(results)
-            df_results.to_csv("results/phonon_results.csv", index=False)
-            print(f"  💾 Results updated and saved")
+    pd.DataFrame(results).to_csv("results/phonon_results.csv", index=False)
+    log(f"\\n💾 Final results saved to results/phonon_results.csv")
 
-    df_results = pd.DataFrame(results)
-    df_results.to_csv("results/phonon_results.csv", index=False)
-
-    print(f"\\n💾 Saved results to results/phonon_results.csv")
-
-    with open("results/phonon_summary.txt", "w") as f:
-        f.write("MACE Phonon Calculation Results\\n")
-        f.write("=" * 40 + "\\n\\n")
-        for result in results:
-            if "error" not in result:
-                f.write(f"Structure: {result['structure']}\\n")
-                f.write(f"Energy: {result['energy_eV']:.6f} eV\\n")
-                f.write(f"Imaginary modes: {result['imaginary_modes']}\\n")
-                f.write(f"Min frequency: {result['min_frequency_meV']:.3f} meV\\n")
-                f.write(f"Max frequency: {result['max_frequency_meV']:.3f} meV\\n")
-                f.write(f"Atoms: {result['num_atoms']}\\n")
-                f.write(f"Supercell atoms: {result['total_supercell_atoms']}\\n")
-                if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
-                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")
-                f.write("\\n")
+    with open("results/phonon_summary.txt", "w") as _sf:
+        _sf.write("Phonon Calculation Results\\n")
+        _sf.write("=" * 45 + "\\n\\n")
+        _sf.write("Units: energies in eV, entropy/heat_capacity in eV/K, all per unit cell\\n\\n")
+        for r in results:
+            if "error" not in r:
+                _sf.write(f"Structure : {{r['structure']}}\\n")
+                _sf.write(f"Energy    : {{r['energy_eV']:.6f}} eV\\n")
+                _sf.write(f"Imaginary : {{r['imaginary_modes']}} modes "
+                          f"(tolerance {{r['imaginary_tol_mev']:.3f}} meV)\\n")
+                _sf.write(f"Freq range: {{r['min_frequency_meV']:.2f}} – "
+                          f"{{r['max_frequency_meV']:.2f}} meV\\n")
+                _sf.write(f"ZPE       : {{r['zero_point_energy_eV']:.6f}} eV/unit-cell\\n")
+                _sf.write(f"F(@{{r['thermo_temperature_K']:.0f}}K): "
+                          f"{{r['free_energy_eV']:.6f}} eV/unit-cell\\n")
+                _sf.write(f"S(@{{r['thermo_temperature_K']:.0f}}K): "
+                          f"{{r['entropy_eV_per_K']:.6e}} eV/K/unit-cell\\n")
+                _sf.write(f"Cv(@{{r['thermo_temperature_K']:.0f}}K): "
+                          f"{{r['heat_capacity_eV_per_K']:.6e}} eV/K/unit-cell\\n")
+                _sf.write(f"Output    : {{r['output_folder']}}\\n")
+                if "formation_energy_eV_per_atom" in r and r["formation_energy_eV_per_atom"] is not None:
+                    _sf.write(f"Ef/atom   : {{r['formation_energy_eV_per_atom']:.6f}} eV/atom\\n")
+                _sf.write("\\n")
             else:
-                f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
-
-    print(f"💾 Saved summary to results/phonon_summary.txt")
+                _sf.write(f"Structure : {{r['structure']}} – ERROR: {{r['error']}}\\n\\n")
+    log("💾 Summary saved to results/phonon_summary.txt")
 '''
     return code
