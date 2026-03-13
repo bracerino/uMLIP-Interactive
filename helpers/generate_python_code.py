@@ -3723,6 +3723,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimize_lattice = optimization_params.get(
         'optimize_lattice', {'a': True, 'b': True, 'c': True})
     fix_symmetry = optimization_params.get('fix_symmetry', False)
+    force_divergence_threshold = optimization_params.get('force_divergence_threshold', 500)
 
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
@@ -3742,12 +3743,14 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimize_lattice = {optimize_lattice}
     is_tetragonal = {is_tetragonal}
     fix_symmetry = {fix_symmetry}
+    force_divergence_threshold = {force_divergence_threshold}
     
     print(f"⚙️ Optimization settings:")
     print(f"  - Optimizer: {{optimizer_type}}")
     print(f"  - Force threshold: {{fmax}} eV/Å")
     print(f"  - Max steps: {{max_steps}}")
     print(f"  - Type: {{optimization_type}}")
+    print(f"  - Force divergence threshold: {{force_divergence_threshold}} eV/Å")
     if fix_symmetry:
         print(f"  - 🔷 FixSymmetry: space group will be preserved")
     if pressure > 0:
@@ -3908,7 +3911,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
             optimizer.attach(lambda: logger(optimizer), interval=1)
 
             print(f"  🏃 Running {optimizer_type} optimization...")
-
+            
+            _diverged = False
             # Tetragonal mode uses manual convergence loop
             if is_tetragonal and tetragonal_callback is not None:
                 print(f"  🔷 Using manual convergence loop for tetragonal constraint")
@@ -3936,7 +3940,17 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                     forces = current_atoms.get_forces()
                     max_force = np.max(np.linalg.norm(forces, axis=1))
                     energy = current_atoms.get_potential_energy()
+                    
+                    forces = current_atoms.get_forces()
+                    max_force = np.max(np.linalg.norm(forces, axis=1))
+                    energy = current_atoms.get_potential_energy()
 
+                    if max_force > force_divergence_threshold:
+                        print(f"  ⛔ Force divergence at step {step+1}: "
+                              f"F_max={max_force:.2f} eV/Å > {force_divergence_threshold} eV/Å — stopping")
+                        _diverged = True
+                        break
+                        
                     # Check stress for cell optimization
                     try:
                         stress_voigt = current_atoms.get_stress(voigt=True)
@@ -3978,10 +3992,16 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                         break
             else:
                 # Standard optimization (non-tetragonal)
-                if opt_mode == "cell_only":
-                    optimizer.run(fmax=0.1, steps=max_steps)
-                else:
-                    optimizer.run(fmax=fmax, steps=max_steps)
+                _fmax_run = 0.1 if opt_mode == "cell_only" else fmax
+                _diverged = False
+                for _converged in optimizer.irun(fmax=_fmax_run, steps=max_steps):
+                    _forces = atoms.get_forces()
+                    _max_f  = np.max(np.linalg.norm(_forces, axis=1))
+                    if _max_f > force_divergence_threshold:
+                        print(f"  ⛔ Force divergence at step {optimizer.nsteps}: "
+                              f"F_max={_max_f:.2f} eV/Å > {force_divergence_threshold} eV/Å — stopping")
+                        _diverged = True
+                        break
 
             if hasattr(optimization_object, 'atoms'):
                 final_atoms = optimization_object.atoms
@@ -4005,7 +4025,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 stress_converged = True
                 max_final_stress = 0.0
 
-            if opt_mode == "atoms_only":
+            if _diverged:
+                convergence_status = "FORCE_DIVERGED"
+            elif opt_mode == "atoms_only":
                 convergence_status = "CONVERGED" if force_converged else "MAX_STEPS_REACHED"
             elif opt_mode == "cell_only":
                 convergence_status = "CONVERGED" if stress_converged else "MAX_STEPS_REACHED"
