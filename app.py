@@ -3161,6 +3161,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                             optimizer.max_steps = optimization_params['max_steps']
                             optimizer.attach(lambda: logger(optimizer), interval=1)
+                            force_divergence_threshold = optimization_params.get('force_divergence_threshold', 500)
+                            _diverged = False
 
                             # Set convergence criteria based on optimization type
                             if opt_type == "Cell only (fixed atoms)":
@@ -3183,6 +3185,11 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                     forces = current_atoms.get_forces()
                                     max_force = np.max(np.linalg.norm(forces, axis=1))
                                     energy = current_atoms.get_potential_energy()
+                                    if max_force > force_divergence_threshold:
+                                        log_queue.put(f"  ⛔ Force divergence at step {step + 1}: "
+                                                      f"F_max={max_force:.2f} eV/Å > {force_divergence_threshold} eV/Å — stopping")
+                                        _diverged = True
+                                        break
 
                                     # Check stress for cell optimization
                                     try:
@@ -3233,7 +3240,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             else:
                                 # For non-tetragonal modes, use standard ASE convergence
                                 fmax_criterion = optimization_params['fmax']
-                                optimizer.run(fmax=fmax_criterion, steps=optimization_params['max_steps'])
+                                for _conv in optimizer.irun(fmax=fmax_criterion,
+                                                            steps=optimization_params['max_steps']):
+                                    if hasattr(optimization_object, 'atoms'):
+                                        _check_atoms = optimization_object.atoms
+                                    else:
+                                        _check_atoms = optimization_object
+                                    _forces = _check_atoms.get_forces()
+                                    _max_f = np.max(np.linalg.norm(_forces, axis=1))
+                                    if _max_f > force_divergence_threshold:
+                                        log_queue.put(f"  ⛔ Force divergence at step {optimizer.nsteps}: "
+                                                      f"F_max={_max_f:.2f} eV/Å > {force_divergence_threshold} eV/Å — stopping")
+                                        _diverged = True
+                                        break
 
                             # Get final structure
                             if hasattr(optimization_object, 'atoms'):
@@ -3264,8 +3283,11 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                             # Determine convergence status
                             if opt_type == "Atoms only (fixed cell)":
-                                if force_converged and energy_converged:
-                                    convergence_status = "CONVERGED (Force & Energy)"
+                                if _diverged:
+                                    convergence_status = "FORCE_DIVERGED"
+                                elif opt_type == "Atoms only (fixed cell)":
+                                    if force_converged and energy_converged:
+                                        convergence_status = "CONVERGED (Force & Energy)"
                                 elif force_converged:
                                     convergence_status = "CONVERGED (Force)"
                                 else:
