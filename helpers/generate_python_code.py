@@ -175,7 +175,7 @@ from ase.optimize import (
 )
 from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
 from ase.constraints import FixAtoms
-from ase.filters import ExpCellFilter, UnitCellFilter
+from ase.filters import FrechetCellFilter, UnitCellFilter
 
 # PyMatGen imports
 from pymatgen.core import Structure
@@ -310,7 +310,7 @@ from ase.optimize import (
 )
 from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
 from ase.constraints import FixAtoms
-from ase.filters import ExpCellFilter, UnitCellFilter
+from ase.filters import FrechetCellFilter, UnitCellFilter
 
 # PyMatGen imports
 from pymatgen.core import Structure
@@ -3601,15 +3601,15 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
 
     if cell_constraint == "Full cell (lattice + angles)":
         if hydrostatic_strain:
-            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
+            return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
-            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+            return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3)
     elif cell_constraint == "Tetragonal (a=b, optimize a and c)":
         from ase.constraints import FixSymmetry
         existing_constraints = atoms.constraints if hasattr(atoms, 'constraints') and atoms.constraints else []
         symmetry_constraint = FixSymmetry(atoms)
         atoms.set_constraint(existing_constraints + [symmetry_constraint])
-        return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+        return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3)
     else:  # "Lattice parameters only (fix angles)"
         if hydrostatic_strain:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
