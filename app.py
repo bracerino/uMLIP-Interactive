@@ -873,6 +873,89 @@ def check_mechanical_stability(C, log_queue):
         log_queue.put(f"  ⚠️ Error checking stability: {str(e)}")
         return {'error': str(e)}
 
+def calculate_rmscd_score(initial_atoms, final_atoms, log_queue, structure_name):
+    try:
+        log_queue.put(f"  Calculating RMSCD (van de Streek & Neumann 2010) for {structure_name}...")
+
+        G1 = initial_atoms.get_cell().array
+        G2 = final_atoms.get_cell().array
+
+        r1_all = initial_atoms.get_scaled_positions()
+        r2_all = final_atoms.get_scaled_positions()
+
+        sym1 = initial_atoms.get_chemical_symbols()
+        sym2 = final_atoms.get_chemical_symbols()
+
+        if len(sym1) != len(sym2):
+            log_queue.put(f"  ⚠️ Atom count mismatch ({len(sym1)} vs {len(sym2)}) — skipping RMSCD")
+            return {'success': False, 'error': 'Atom count mismatch'}
+
+        def _compute(indices, label):
+            results = []
+            for idx in indices:
+                dr = r1_all[idx] - r2_all[idx]
+                dr = dr - np.round(dr)
+                d_i = (np.linalg.norm(dr @ G1) + np.linalg.norm(dr @ G2)) / 2.0
+                results.append({
+                    'atom_index':     idx,
+                    'element':        sym1[idx],
+                    'displacement_A': float(d_i)
+                })
+            disps = np.array([x['displacement_A'] for x in results])
+            rmscd    = float(np.sqrt(np.mean(disps ** 2)))
+            max_disp = float(np.max(disps))
+            mean_disp= float(np.mean(disps))
+
+            if rmscd < 0.10:
+                quality = "excellent"
+                interpretation = "✅ Excellent — structure reproduced very well (< 0.10 Å)"
+            elif rmscd < 0.25:
+                quality = "good"
+                interpretation = "✅ Good — structure correctly reproduced (< 0.25 Å)"
+            elif rmscd < 0.40:
+                quality = "moderate"
+                interpretation = "⚠️ Moderate — possible incorrect features, disorder or large temperature effects (0.25–0.40 Å)"
+            else:
+                quality = "poor"
+                interpretation = "❌ Large — structure likely incorrect or severely strained (> 0.40 Å)"
+
+            log_queue.put(
+                f"  RMSCD ({label}): {rmscd:.4f} Å  |  "
+                f"Max = {max_disp:.4f} Å  |  Mean = {mean_disp:.4f} Å  →  {quality}"
+            )
+            return {
+                'rmscd_A':             rmscd,
+                'max_displacement_A':  max_disp,
+                'mean_displacement_A': mean_disp,
+                'n_atoms':             len(indices),
+                'per_atom':            results,
+                'per_atom_sorted':     sorted(results, key=lambda x: x['displacement_A'], reverse=True),
+                'interpretation':      interpretation,
+                'quality':             quality,
+            }
+
+        all_indices  = list(range(len(sym1)))
+        nonh_indices = [i for i, s in enumerate(sym1) if s != 'H']
+        n_h          = len(all_indices) - len(nonh_indices)
+
+        log_queue.put(f"  Total atoms: {len(all_indices)}  |  Non-H: {len(nonh_indices)}  |  H: {n_h}")
+
+        result_nonh = _compute(nonh_indices, "without H") if nonh_indices else None
+        result_all  = _compute(all_indices,  "with H")
+
+        return {
+            'success':       True,
+            'n_total_atoms': len(all_indices),
+            'n_h_atoms':     n_h,
+            'n_non_h_atoms': len(nonh_indices),
+            'without_h':     result_nonh,
+            'with_h':        result_all,
+            'reference':     'van de Streek & Neumann, Acta Cryst. B66, 544–558 (2010), Eq. 3'
+        }
+
+    except Exception as e:
+        log_queue.put(f"  ❌ RMSCD calculation failed for {structure_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
 
 def create_phonon_data_export(phonon_results, structure_name):
     if not phonon_results['success']:
@@ -1807,8 +1890,8 @@ def create_xyz_content(trajectory_data, structure_name):
 
 
 MACE_MODELS = {
-    "UPET PET-MAD-1.5 (XS) ⭐ - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
-    "UPET PET-MAD-1.5 (S) ⭐ - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-s:1.5.0",
+    "UPET PET-MAD-1.5 (XS) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
+    "⭐ UPET PET-MAD-1.5 (S) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-s:1.5.0",
     "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
     "UPET PET-OMAD (XS) - Materials & Molecules [PBEsol]": "upet:pet-omad-xs:1.0.0",
     "UPET PET-OMAD (S) - Materials & Molecules [PBEsol]": "upet:pet-omad-s:1.0.0",
@@ -1864,7 +1947,7 @@ MACE_MODELS = {
     "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
     "SevenNet-OMAT24": "7net-omat",
     "SevenNet-L3I5": "7net-l3i5",
-    "SevenNet-Omni (mpa) ⭐ - PBE(+U)": "7net-omni-mpa",
+    "⭐ SevenNet-Omni (mpa) - PBE(+U)": "7net-omni-mpa",
     "SevenNet-Omni (omat24) - PBE(+U)": "7net-omni-omat24",
     "SevenNet-Omni (matpes_pbe) - PBE": "7net-omni-matpes_pbe",
     "SevenNet-Omni (oc20) - RPBE": "7net-omni-oc20",
@@ -1880,9 +1963,9 @@ MACE_MODELS = {
 
     # ========== MATTERSIM MODELS ==========
     "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
-    "MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
+    "⭐ MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
     # ========== ORB MODELS ==========
-    "ORB-v3 Conservative OMAT (Recommended)": "orb_v3_conservative_inf_omat",
+    "⭐ ORB-v3 Conservative OMAT (Recommended)": "orb_v3_conservative_inf_omat",
     "ORB-v3 Conservative OMol (Molecular)": "orb_v3_conservative_omol",
     "ORB-v3 Direct OMAT (Fast)": "orb_v3_direct_inf_omat",
     "ORB-v3 Direct OMol (Molecular Fast)": "orb_v3_direct_omol",
@@ -3072,6 +3155,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                         atoms = pymatgen_to_ase(structure)
                         atoms.calc = calculator
+
+                        # RMSCD
+                        _calc_rmscd = optimization_params.get('calculate_rmscd', False)
+                        initial_atoms_for_rmscd = atoms.copy() if _calc_rmscd else None
                         if optimization_params.get('fix_symmetry', False):
                             try:
                                 from ase.constraints import FixSymmetry
@@ -3312,6 +3399,13 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             optimized_structure = ase_to_pymatgen_wrapped(final_atoms)
                             final_structure = optimized_structure
 
+                            # RMSCD calculation (van de Streek & Neumann 2010, Eq. 3)
+                            rmscd_results = None
+                            if _calc_rmscd and initial_atoms_for_rmscd is not None:
+                                rmscd_results = calculate_rmscd_score(
+                                    initial_atoms_for_rmscd, final_atoms, log_queue, name,
+                                )
+
                             # Log final results
                             if opt_mode == "cell_only":
                                 log_queue.put(
@@ -3478,12 +3572,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         if md_results['success']:
                             energy = md_results['final_energy']
 
-                            # --- THIS IS THE FIX ---
-                            # 1. Get the final ASE 'atoms' object from the results
                             final_atoms_object = md_results['final_atoms']
-                            # 2. Convert it back to a Pymatgen structure
                             final_structure = ase_to_pymatgen_wrapped(final_atoms_object)
-                            # --- END FIX ---
 
                             log_queue.put(f"✅ MD simulation completed for {name}")
                         else:
@@ -3615,6 +3705,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         'convergence_status': convergence_status,
                         'phonon_results': phonon_results,
                         'elastic_results': elastic_results,
+                        'rmscd_results': rmscd_results,
                         'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
                         'md_results': md_results if calc_type == "Molecular Dynamics" else None,
                         'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None,
@@ -3807,7 +3898,6 @@ with st.sidebar:
             "MatterSim": MATTERSIM_AVAILABLE,
             "ORB": ORB_AVAILABLE,
             "Nequix": NEQUIX_AVAILABLE,
-            "PET-MAD": PETMAD_AVAILABLE,
             "UPET": UPET_AVAILABLE,
         }
         available = [name for name, ok in availability.items() if ok]
@@ -7238,195 +7328,451 @@ with tab3:
 
         with results_tab2:
             with results_tab2:
-                st.subheader("Geometry Optimization Details")
+                geom_subtab1, geom_subtab2 = st.tabs([
+                    "📐 Geometry Optimization Details",
+                    "📏 RMSCD Analysis"
+                ])
+
+
                 geometry_results = [r for r in st.session_state.results if
                                     r['calc_type'] == 'Geometry Optimization' and r['energy'] is not None]
 
                 if geometry_results:
-                    st.info(f"Found {len(geometry_results)} completed geometry optimizations")
-                    st.subheader("📐 Lattice Parameters Comparison")
+                    with geom_subtab1:
+                        st.subheader("Geometry Optimization Details")
+                        st.info(f"Found {len(geometry_results)} completed geometry optimizations")
+                        st.subheader("📐 Lattice Parameters Comparison")
 
-                    # Get all unique elements across all structures
-                    all_elements = set()
-                    for result in geometry_results:
-                        initial_structure = st.session_state.structures.get(result['name'])
-                        final_structure = result['structure']
-
-                        if initial_structure:
-                            for site in initial_structure:
-                                all_elements.add(site.specie.symbol)
-                        if final_structure:
-                            for site in final_structure:
-                                all_elements.add(site.specie.symbol)
-
-                    all_elements = sorted(list(all_elements))  # Sort alphabetically
-
-                    lattice_data = []
-                    for result in geometry_results:
-                        try:
+                        # Get all unique elements across all structures
+                        all_elements = set()
+                        for result in geometry_results:
                             initial_structure = st.session_state.structures.get(result['name'])
                             final_structure = result['structure']
 
-                            if initial_structure and final_structure:
-                                initial_lattice = initial_structure.lattice
-                                final_lattice = final_structure.lattice
-
-                                a_change = ((final_lattice.a - initial_lattice.a) / initial_lattice.a) * 100
-                                b_change = ((final_lattice.b - initial_lattice.b) / initial_lattice.b) * 100
-                                c_change = ((final_lattice.c - initial_lattice.c) / initial_lattice.c) * 100
-
-                                alpha_change = final_lattice.alpha - initial_lattice.alpha
-                                beta_change = final_lattice.beta - initial_lattice.beta
-                                gamma_change = final_lattice.gamma - initial_lattice.gamma
-
-                                volume_change = ((
-                                                             final_lattice.volume - initial_lattice.volume) / initial_lattice.volume) * 100
-
-                                # Calculate element concentrations for final structure
-                                final_element_counts = {}
-                                total_atoms = len(final_structure)
-
+                            if initial_structure:
+                                for site in initial_structure:
+                                    all_elements.add(site.specie.symbol)
+                            if final_structure:
                                 for site in final_structure:
-                                    element = site.specie.symbol
-                                    final_element_counts[element] = final_element_counts.get(element, 0) + 1
+                                    all_elements.add(site.specie.symbol)
 
-                                # Create the basic lattice data row
-                                row_data = {
-                                    'Structure': result['name'],
-                                    'Initial a (Å)': f"{initial_lattice.a:.4f}",
-                                    'Final a (Å)': f"{final_lattice.a:.4f}",
-                                    'Δa (%)': f"{a_change:+.2f}",
-                                    'Initial b (Å)': f"{initial_lattice.b:.4f}",
-                                    'Final b (Å)': f"{final_lattice.b:.4f}",
-                                    'Δb (%)': f"{b_change:+.2f}",
-                                    'Initial c (Å)': f"{initial_lattice.c:.4f}",
-                                    'Final c (Å)': f"{final_lattice.c:.4f}",
-                                    'Δc (%)': f"{c_change:+.2f}",
-                                    'Initial α (°)': f"{initial_lattice.alpha:.2f}",
-                                    'Final α (°)': f"{final_lattice.alpha:.2f}",
-                                    'Δα (°)': f"{alpha_change:+.2f}",
-                                    'Initial β (°)': f"{initial_lattice.beta:.2f}",
-                                    'Final β (°)': f"{final_lattice.beta:.2f}",
-                                    'Δβ (°)': f"{beta_change:+.2f}",
-                                    'Initial γ (°)': f"{initial_lattice.gamma:.2f}",
-                                    'Final γ (°)': f"{final_lattice.gamma:.2f}",
-                                    'Δγ (°)': f"{gamma_change:+.2f}",
-                                    'Initial Vol (Å³)': f"{initial_lattice.volume:.2f}",
-                                    'Final Vol (Å³)': f"{final_lattice.volume:.2f}",
-                                    'ΔVol (%)': f"{volume_change:+.2f}",
-                                    'Convergence': result.get('convergence_status', 'Unknown')
+                        all_elements = sorted(list(all_elements))  # Sort alphabetically
+
+                        lattice_data = []
+                        for result in geometry_results:
+                            try:
+                                initial_structure = st.session_state.structures.get(result['name'])
+                                final_structure = result['structure']
+
+                                if initial_structure and final_structure:
+                                    initial_lattice = initial_structure.lattice
+                                    final_lattice = final_structure.lattice
+
+                                    a_change = ((final_lattice.a - initial_lattice.a) / initial_lattice.a) * 100
+                                    b_change = ((final_lattice.b - initial_lattice.b) / initial_lattice.b) * 100
+                                    c_change = ((final_lattice.c - initial_lattice.c) / initial_lattice.c) * 100
+
+                                    alpha_change = final_lattice.alpha - initial_lattice.alpha
+                                    beta_change = final_lattice.beta - initial_lattice.beta
+                                    gamma_change = final_lattice.gamma - initial_lattice.gamma
+
+                                    volume_change = ((
+                                                                 final_lattice.volume - initial_lattice.volume) / initial_lattice.volume) * 100
+
+                                    # Calculate element concentrations for final structure
+                                    final_element_counts = {}
+                                    total_atoms = len(final_structure)
+
+                                    for site in final_structure:
+                                        element = site.specie.symbol
+                                        final_element_counts[element] = final_element_counts.get(element, 0) + 1
+
+                                    # Create the basic lattice data row
+                                    row_data = {
+                                        'Structure': result['name'],
+                                        'Initial a (Å)': f"{initial_lattice.a:.4f}",
+                                        'Final a (Å)': f"{final_lattice.a:.4f}",
+                                        'Δa (%)': f"{a_change:+.2f}",
+                                        'Initial b (Å)': f"{initial_lattice.b:.4f}",
+                                        'Final b (Å)': f"{final_lattice.b:.4f}",
+                                        'Δb (%)': f"{b_change:+.2f}",
+                                        'Initial c (Å)': f"{initial_lattice.c:.4f}",
+                                        'Final c (Å)': f"{final_lattice.c:.4f}",
+                                        'Δc (%)': f"{c_change:+.2f}",
+                                        'Initial α (°)': f"{initial_lattice.alpha:.2f}",
+                                        'Final α (°)': f"{final_lattice.alpha:.2f}",
+                                        'Δα (°)': f"{alpha_change:+.2f}",
+                                        'Initial β (°)': f"{initial_lattice.beta:.2f}",
+                                        'Final β (°)': f"{final_lattice.beta:.2f}",
+                                        'Δβ (°)': f"{beta_change:+.2f}",
+                                        'Initial γ (°)': f"{initial_lattice.gamma:.2f}",
+                                        'Final γ (°)': f"{final_lattice.gamma:.2f}",
+                                        'Δγ (°)': f"{gamma_change:+.2f}",
+                                        'Initial Vol (Å³)': f"{initial_lattice.volume:.2f}",
+                                        'Final Vol (Å³)': f"{final_lattice.volume:.2f}",
+                                        'ΔVol (%)': f"{volume_change:+.2f}",
+                                        'Convergence': result.get('convergence_status', 'Unknown')
+                                    }
+
+                                    # Add element concentration columns
+                                    for element in all_elements:
+                                        count = final_element_counts.get(element, 0)
+                                        concentration = (count / total_atoms) * 100 if total_atoms > 0 else 0
+                                        row_data[f'{element} (%)'] = f"{concentration:.1f}"
+
+                                    lattice_data.append(row_data)
+
+                            except Exception as e:
+                                st.warning(f"Could not process lattice data for {result['name']}: {str(e)}")
+
+                        if lattice_data:
+                            df_lattice = pd.DataFrame(lattice_data)
+
+                            st.dataframe(df_lattice, use_container_width=True, hide_index=True)
+
+
+                            lattice_csv = df_lattice.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Download Lattice Parameters with Concentrations (CSV)",
+                                data=lattice_csv,
+                                file_name="lattice_parameters_with_concentrations.csv",
+                                mime="text/csv",
+                                type='primary'
+                            )
+
+                        if len(lattice_data) >= 1:
+                            st.subheader("📊 Lattice Parameter Changes")
+
+                            col_vis1, col_vis2 = st.columns(2)
+
+                            with col_vis1:
+                                structures = [data['Structure'] for data in lattice_data]
+                                a_changes = [float(data['Δa (%)'].replace('+', '')) for data in lattice_data]
+                                b_changes = [float(data['Δb (%)'].replace('+', '')) for data in lattice_data]
+                                c_changes = [float(data['Δc (%)'].replace('+', '')) for data in lattice_data]
+
+                                fig_lattice = go.Figure()
+                                fig_lattice.add_trace(go.Bar(name='Δa (%)', x=structures, y=a_changes, marker_color='red'))
+                                fig_lattice.add_trace(
+                                    go.Bar(name='Δb (%)', x=structures, y=b_changes, marker_color='green'))
+                                fig_lattice.add_trace(go.Bar(name='Δc (%)', x=structures, y=c_changes, marker_color='blue'))
+
+                                fig_lattice.update_layout(
+                                    title=dict(text="Lattice Parameter Changes (%)", font=dict(size=24)),
+                                    xaxis_title="Structure",
+                                    yaxis_title="Change (%)",
+                                    barmode='group',
+                                    height=750,
+                                    font=dict(size=20),
+                                    hoverlabel=dict(
+                                        bgcolor="white",
+                                        bordercolor="black",
+                                        font_size=20,
+                                        font_family="Arial"
+                                    ),
+                                    xaxis=dict(
+                                        tickangle=45,
+                                        title_font=dict(size=20),
+                                        tickfont=dict(size=20)
+                                    ),
+                                    yaxis=dict(
+                                        title_font=dict(size=20),
+                                        tickfont=dict(size=20)
+                                    ),
+                                    legend=dict(
+                                        font=dict(size=20)
+                                    )
+                                )
+
+                                st.plotly_chart(fig_lattice, use_container_width=True)
+
+                            with col_vis2:
+                                volume_changes = [float(data['ΔVol (%)'].replace('+', '')) for data in lattice_data]
+
+                                fig_volume = go.Figure()
+                                fig_volume.add_trace(go.Bar(
+                                    x=structures,
+                                    y=volume_changes,
+                                    marker_color=['green' if v < 0 else 'red' for v in volume_changes],
+                                    text=[f"{v:+.2f}%" for v in volume_changes],
+                                    textposition='auto',
+                                    textfont=dict(size=16)
+                                ))
+
+                                fig_volume.update_layout(
+                                    title=dict(text="Volume Changes (%)", font=dict(size=24)),
+                                    xaxis_title="Structure",
+                                    yaxis_title="Volume Change (%)",
+                                    height=750,
+                                    font=dict(size=20),
+                                    hoverlabel=dict(
+                                        bgcolor="white",
+                                        bordercolor="black",
+                                        font_size=20,
+                                        font_family="Arial"
+                                    ),
+                                    xaxis=dict(
+                                        tickangle=45,
+                                        title_font=dict(size=20),
+                                        tickfont=dict(size=20)
+                                    ),
+                                    yaxis=dict(
+                                        title_font=dict(size=20),
+                                        tickfont=dict(size=20)
+                                    )
+                                )
+
+                                st.plotly_chart(fig_volume, use_container_width=True)
+                    with geom_subtab2:
+                        rmscd_results_list = [
+                            r for r in geometry_results
+                            if r.get('rmscd_results') and r['rmscd_results'].get('success')
+                        ]
+
+                        if rmscd_results_list:
+                            st.subheader("R.M.S. Cartesian Displacement (RMSCD)")
+                            st.caption(
+                                "van de Streek & Neumann, *Acta Cryst.* **B66**, 544–558 (2010), Eq. 3 — "
+                                "measures how much the structure moved during optimization. "
+                                "**< 0.10 Å**: excellent · **< 0.25 Å**: correct · **> 0.25 Å**: suspicious"
+                            )
+
+                            h_mode = st.radio(
+                                "Atoms included in RMSCD:",
+                                ["Without H atoms",
+                                 "With H atoms (all atoms)"],
+                                index=0,
+                                horizontal=True,
+                            )
+                            use_with_h = (h_mode.startswith("With H"))
+                            data_key = 'with_h' if use_with_h else 'without_h'
+
+                            rmscd_summary = []
+                            for r in rmscd_results_list:
+                                rd = r['rmscd_results']
+                                sub = rd.get(data_key)
+                                if sub is None:
+                                    continue
+                                rmscd_summary.append({
+                                    'Structure': r['name'],
+                                    'RMSCD (Å)': f"{sub['rmscd_A']:.4f}",
+                                    'Max disp. (Å)': f"{sub['max_displacement_A']:.4f}",
+                                    'Mean disp. (Å)': f"{sub['mean_displacement_A']:.4f}",
+                                    'Atoms used': sub['n_atoms'],
+                                    'H atoms': f"{'included' if use_with_h else 'excluded'} "
+                                               f"({rd['n_h_atoms']})",
+                                    'Quality': sub['quality'],
+                                    'Interpretation': sub['interpretation'],
+                                })
+                            if rmscd_summary:
+                                st.dataframe(pd.DataFrame(rmscd_summary), use_container_width=True, hide_index=True)
+
+                            # ── Comparison bar chart (all structures) ─────────────────────────
+                            if len(rmscd_results_list) > 1:
+                                quality_colors = {
+                                    'excellent': '#28A745',
+                                    'good': '#17A2B8',
+                                    'moderate': '#FFC107',
+                                    'poor': '#DC3545',
                                 }
+                                valid = [r for r in rmscd_results_list if r['rmscd_results'].get(data_key)]
+                                rmscd_vals = [r['rmscd_results'][data_key]['rmscd_A'] for r in valid]
+                                rmscd_names = [r['name'] for r in valid]
+                                bar_colors = [
+                                    quality_colors.get(r['rmscd_results'][data_key]['quality'], 'steelblue')
+                                    for r in valid
+                                ]
 
-                                # Add element concentration columns
-                                for element in all_elements:
-                                    count = final_element_counts.get(element, 0)
-                                    concentration = (count / total_atoms) * 100 if total_atoms > 0 else 0
-                                    row_data[f'{element} (%)'] = f"{concentration:.1f}"
-
-                                lattice_data.append(row_data)
-
-                        except Exception as e:
-                            st.warning(f"Could not process lattice data for {result['name']}: {str(e)}")
-
-                    if lattice_data:
-                        df_lattice = pd.DataFrame(lattice_data)
-
-                        st.dataframe(df_lattice, use_container_width=True, hide_index=True)
-
-
-                        lattice_csv = df_lattice.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Lattice Parameters with Concentrations (CSV)",
-                            data=lattice_csv,
-                            file_name="lattice_parameters_with_concentrations.csv",
-                            mime="text/csv",
-                            type='primary'
-                        )
-
-                    if len(lattice_data) >= 1:
-                        st.subheader("📊 Lattice Parameter Changes")
-
-                        col_vis1, col_vis2 = st.columns(2)
-
-                        with col_vis1:
-                            structures = [data['Structure'] for data in lattice_data]
-                            a_changes = [float(data['Δa (%)'].replace('+', '')) for data in lattice_data]
-                            b_changes = [float(data['Δb (%)'].replace('+', '')) for data in lattice_data]
-                            c_changes = [float(data['Δc (%)'].replace('+', '')) for data in lattice_data]
-
-                            fig_lattice = go.Figure()
-                            fig_lattice.add_trace(go.Bar(name='Δa (%)', x=structures, y=a_changes, marker_color='red'))
-                            fig_lattice.add_trace(
-                                go.Bar(name='Δb (%)', x=structures, y=b_changes, marker_color='green'))
-                            fig_lattice.add_trace(go.Bar(name='Δc (%)', x=structures, y=c_changes, marker_color='blue'))
-
-                            fig_lattice.update_layout(
-                                title=dict(text="Lattice Parameter Changes (%)", font=dict(size=24)),
-                                xaxis_title="Structure",
-                                yaxis_title="Change (%)",
-                                barmode='group',
-                                height=750,
-                                font=dict(size=20),
-                                hoverlabel=dict(
-                                    bgcolor="white",
-                                    bordercolor="black",
-                                    font_size=20,
-                                    font_family="Arial"
-                                ),
-                                xaxis=dict(
-                                    tickangle=45,
-                                    title_font=dict(size=20),
-                                    tickfont=dict(size=20)
-                                ),
-                                yaxis=dict(
-                                    title_font=dict(size=20),
-                                    tickfont=dict(size=20)
-                                ),
-                                legend=dict(
-                                    font=dict(size=20)
+                                fig_rmscd = go.Figure(data=go.Bar(
+                                    x=rmscd_names,
+                                    y=rmscd_vals,
+                                    marker_color=bar_colors,
+                                    text=[f"{v:.4f} Å" for v in rmscd_vals],
+                                    textposition='auto',
+                                    textfont=dict(size=16),
+                                    hovertemplate='<b>%{x}</b><br>RMSCD: %{y:.4f} Å<extra></extra>'
+                                ))
+                                fig_rmscd.add_hline(
+                                    y=0.25, line_dash="dash", line_color="orange", line_width=2,
+                                    annotation_text="0.25 Å — suspicious threshold",
+                                    annotation_font_size=16, annotation_font_color="orange"
                                 )
-                            )
-
-                            st.plotly_chart(fig_lattice, use_container_width=True)
-
-                        with col_vis2:
-                            volume_changes = [float(data['ΔVol (%)'].replace('+', '')) for data in lattice_data]
-
-                            fig_volume = go.Figure()
-                            fig_volume.add_trace(go.Bar(
-                                x=structures,
-                                y=volume_changes,
-                                marker_color=['green' if v < 0 else 'red' for v in volume_changes],
-                                text=[f"{v:+.2f}%" for v in volume_changes],
-                                textposition='auto',
-                                textfont=dict(size=16)
-                            ))
-
-                            fig_volume.update_layout(
-                                title=dict(text="Volume Changes (%)", font=dict(size=24)),
-                                xaxis_title="Structure",
-                                yaxis_title="Volume Change (%)",
-                                height=750,
-                                font=dict(size=20),
-                                hoverlabel=dict(
-                                    bgcolor="white",
-                                    bordercolor="black",
-                                    font_size=20,
-                                    font_family="Arial"
-                                ),
-                                xaxis=dict(
-                                    tickangle=45,
-                                    title_font=dict(size=20),
-                                    tickfont=dict(size=20)
-                                ),
-                                yaxis=dict(
-                                    title_font=dict(size=20),
-                                    tickfont=dict(size=20)
+                                fig_rmscd.add_hline(
+                                    y=0.10, line_dash="dot", line_color="green", line_width=1.5,
+                                    annotation_text="0.10 Å — excellent",
+                                    annotation_font_size=16, annotation_font_color="green"
                                 )
-                            )
+                                fig_rmscd.update_layout(
+                                    title=dict(
+                                        text=f"RMSCD Comparison — {'with' if use_with_h else 'without'} H atoms "
+                                             f"(van de Streek & Neumann 2010)",
+                                        font=dict(size=22)
+                                    ),
+                                    xaxis_title="Structure",
+                                    yaxis_title="RMSCD (Å)",
+                                    height=500,
+                                    font=dict(size=18),
+                                    xaxis=dict(tickangle=45, tickfont=dict(size=16), title_font=dict(size=20)),
+                                    yaxis=dict(tickfont=dict(size=16), title_font=dict(size=20)),
+                                    hoverlabel=dict(bgcolor="white", bordercolor="black",
+                                                    font_size=18, font_family="Arial"),
+                                )
+                                st.plotly_chart(fig_rmscd, use_container_width=True)
 
-                            st.plotly_chart(fig_volume, use_container_width=True)
+                            # ── Per-structure expanders ───────────────────────────────────────
+                            for r in rmscd_results_list:
+                                rd = r['rmscd_results']
+                                sub = rd.get(data_key)
+                                if sub is None:
+                                    continue
 
+                                with st.expander(
+                                        f"📋 Per-atom displacements: {r['name']} "
+                                        f"(RMSCD = {sub['rmscd_A']:.4f} Å — {sub['quality']}, "
+                                        f"{'with' if use_with_h else 'without'} H)"
+                                ):
+                                    st.info(sub['interpretation'])
+
+                                    # Quick side-by-side metric comparison
+                                    col_woh, col_wh = st.columns(2)
+                                    with col_woh:
+                                        s = rd.get('without_h')
+                                        if s:
+                                            st.metric(
+                                                "RMSCD without H (paper convention)",
+                                                f"{s['rmscd_A']:.4f} Å",
+                                                help="Excludes H atoms per van de Streek & Neumann (2010)"
+                                            )
+                                    with col_wh:
+                                        s = rd.get('with_h')
+                                        if s:
+                                            st.metric(
+                                                "RMSCD with H (all atoms)",
+                                                f"{s['rmscd_A']:.4f} Å",
+                                                help="Includes all atoms including H"
+                                            )
+
+                                    df_per_atom = pd.DataFrame([
+                                        {
+                                            'Atom index': a['atom_index'],
+                                            'Element': a['element'],
+                                            'Displacement (Å)': f"{a['displacement_A']:.4f}"
+                                        }
+                                        for a in sub['per_atom_sorted']
+                                    ])
+                                    st.dataframe(df_per_atom, use_container_width=True, hide_index=True)
+
+                                    disp_vals = [a['displacement_A'] for a in sub['per_atom_sorted']]
+                                    atom_labels = [
+                                        f"{a['element']}{a['atom_index']}"
+                                        for a in sub['per_atom_sorted']
+                                    ]
+                                    # CPK/Jmol element colors
+                                    CPK_COLORS = {
+                                        'H': '#8a8a8a', 'He': '#5cb8c4', 'Li': '#8c3fc7', 'Be': '#6ea800',
+                                        'B': '#d4601a', 'C': '#404040', 'N': '#2a3fd4', 'O': '#cc0000',
+                                        'F': '#4caa10', 'Ne': '#3a8fa8', 'Na': '#7a3fd4', 'Mg': '#4a9900',
+                                        'Al': '#7a6060', 'Si': '#b08050', 'P': '#cc6000', 'S': '#b8a000',
+                                        'Cl': '#0db80d', 'Ar': '#3a90a8', 'K': '#6a2aaa', 'Ca': '#00b800',
+                                        'Sc': '#7a7a7a', 'Ti': '#6a7a8a', 'V': '#6a6a80', 'Cr': '#4a5a90',
+                                        'Mn': '#6a4a9a', 'Fe': '#b84010', 'Co': '#c0506a', 'Ni': '#208020',
+                                        'Cu': '#a06010', 'Zn': '#505080', 'Ga': '#8a5050', 'Ge': '#406060',
+                                        'As': '#8040c0', 'Se': '#cc7000', 'Br': '#801010', 'Kr': '#2a7a90',
+                                        'Rb': '#501890', 'Sr': '#008800', 'Y': '#3a9090', 'Zr': '#3a8080',
+                                        'Nb': '#308090', 'Mo': '#207070', 'Tc': '#106060', 'Ru': '#107070',
+                                        'Rh': '#006878', 'Pd': '#005070', 'Ag': '#707070', 'Cd': '#cc9000',
+                                        'In': '#704040', 'Sn': '#305060', 'Sb': '#6a3a8a', 'Te': '#a05800',
+                                        'I': '#700070', 'Xe': '#207080', 'Cs': '#380f70', 'Ba': '#008800',
+                                        'La': '#2090c0', 'Ce': '#c0b800', 'Pr': '#80b800', 'Nd': '#70a800',
+                                        'Pm': '#609800', 'Sm': '#508800', 'Eu': '#307a60', 'Gd': '#207060',
+                                        'Tb': '#106060', 'Dy': '#005050', 'Ho': '#007050', 'Er': '#006840',
+                                        'Tm': '#005a30', 'Yb': '#004c20', 'Lu': '#004010', 'Hf': '#1080c0',
+                                        'Ta': '#1070c0', 'W': '#1070a0', 'Re': '#105a80', 'Os': '#104a70',
+                                        'Ir': '#0a3860', 'Pt': '#707080', 'Au': '#c09000', 'Hg': '#606070',
+                                        'Tl': '#7a3830', 'Pb': '#383a40', 'Bi': '#6a2880', 'Po': '#804000',
+                                        'At': '#503028', 'Rn': '#205060', 'Fr': '#280040', 'Ra': '#005000',
+                                        'Ac': '#2060c0', 'Th': '#0080c0', 'Pa': '#0070c0', 'U': '#0060cc',
+                                        'Np': '#0058cc', 'Pu': '#0048cc', 'Am': '#3030c0', 'Cm': '#5030b0',
+                                    }
+                                    DEFAULT_COLOR = '#CCCCCC'
+
+                                    atom_colors = [
+                                        CPK_COLORS.get(a['element'], DEFAULT_COLOR)
+                                        for a in sub['per_atom_sorted']
+                                    ]
+                                    fig_pa = go.Figure(data=go.Bar(
+                                        x=atom_labels,
+                                        y=disp_vals,
+                                        marker_color=atom_colors,
+                                        text=[f"{v:.4f}" for v in disp_vals],
+                                        textposition='auto',
+                                        textfont=dict(size=16),
+                                        hovertemplate=(
+                                            '<b style="font-size:18px">%{x}</b><br>'
+                                            '<span style="font-size:16px">Displacement: %{y:.4f} Å</span>'
+                                            '<extra></extra>'
+                                        )
+                                    ))
+                                    fig_pa.add_hline(
+                                        y=0.25, line_dash="dash", line_color="orange", line_width=2,
+                                        annotation_text="0.25 Å — suspicious threshold",
+                                        annotation_font_size=16, annotation_font_color="orange"
+                                    )
+                                    fig_pa.add_hline(
+                                        y=0.10, line_dash="dot", line_color="green", line_width=1.5,
+                                        annotation_text="0.10 Å — excellent",
+                                        annotation_font_size=16, annotation_font_color="green"
+                                    )
+                                    fig_pa.update_layout(
+                                        title=dict(
+                                            text=(
+                                                f"Per-atom Cartesian displacements — {r['name']} "
+                                                f"({'with' if use_with_h else 'without'} H)"
+                                            ),
+                                            font=dict(size=24),
+                                        ),
+                                        xaxis_title="Atom",
+                                        yaxis_title="Cartesian displacement (Å)",
+                                        height=550,
+                                        font=dict(size=18),
+                                        xaxis=dict(tickangle=45, tickfont=dict(size=16), title_font=dict(size=20)),
+                                        yaxis=dict(tickfont=dict(size=16), title_font=dict(size=20)),
+                                        hoverlabel=dict(bgcolor="white", bordercolor="black",
+                                                        font_size=18, font_family="Arial"),
+                                    )
+                                    st.plotly_chart(fig_pa, use_container_width=True)
+
+                                    # Download initial structure as CIF
+                                    st.markdown("**📥 Download initial structure used for RMSCD comparison:**")
+                                    try:
+                                        initial_structure = st.session_state.structures.get(r['name'])
+                                        if initial_structure is not None:
+                                            from pymatgen.io.cif import CifWriter
+
+                                            cif_content = str(CifWriter(
+                                                initial_structure, symprec=None, write_site_properties=True
+                                            ))
+                                            base_name = r['name'].rsplit('.', 1)[0] if '.' in r['name'] else r['name']
+                                            cif_filename = f"{base_name}_initial_for_RMSCD.cif"
+                                            st.download_button(
+                                                label="📥 Download Initial Structure (CIF, original atom order)",
+                                                data=cif_content,
+                                                file_name=cif_filename,
+                                                mime="chemical/x-cif",
+                                                key=f"download_initial_cif_{r['name']}",
+                                                help=(
+                                                    "Structure as uploaded, in the exact atom order used as "
+                                                    "the RMSCD reference. Saved as P1 (symprec=None) to "
+                                                    "preserve atom ordering."
+                                                ),
+                                                type="primary"
+                                            )
+                                        else:
+                                            st.warning("Initial structure not found in session state.")
+                                    except Exception as _cif_err:
+                                        st.error(f"Could not generate CIF: {_cif_err}")
+
+                                    st.caption(rd['reference'])
                     st.subheader("📁 Download Optimized Structures")
 
                     col_download1, col_download2 = st.columns([2, 1])
@@ -7540,8 +7886,11 @@ with tab3:
                                                         ase_structure.set_constraint(constraint)
 
                                                     out = StringIO()
+                                                    preserve_order = st.session_state.default_settings.get(
+                                                        'geometry_optimization', {}
+                                                    ).get('preserve_atom_order', False)
                                                     write(out, ase_structure, format="vasp",
-                                                          direct=use_fractional, sort=True)
+                                                          direct=use_fractional, sort=(not preserve_order))
                                                     file_content = out.getvalue()
                                                     file_extension = ".vasp"
                                                     mime_type = "text/plain"
@@ -7559,8 +7908,13 @@ with tab3:
                                                             coords=site.frac_coords,
                                                             coords_are_cartesian=False,
                                                         )
+                                                    preserve_order = st.session_state.default_settings.get(
+                                                        'geometry_optimization', {}
+                                                    ).get('preserve_atom_order', False)
+
+                                                    effective_symprec = None if preserve_order else cif_symprec
                                                     file_content = CifWriter(
-                                                        new_struct, symprec=cif_symprec,
+                                                        new_struct, symprec=effective_symprec,
                                                         write_site_properties=True).__str__()
                                                     file_extension = ".cif"
                                                     mime_type = "chemical/x-cif"
@@ -7689,8 +8043,12 @@ with tab3:
                                                                 ase_structure.set_constraint(constraint)
 
                                                             out = StringIO()
+                                                            preserve_order = st.session_state.default_settings.get(
+                                                                'geometry_optimization', {}
+                                                            ).get('preserve_atom_order', False)
                                                             write(out, ase_structure, format="vasp",
-                                                                  direct=bulk_vasp_fractional, sort=True)
+                                                                  direct=bulk_vasp_fractional,
+                                                                  sort=(not preserve_order))
                                                             file_content = out.getvalue()
                                                             filename = f"POSCAR/{base_name}_POSCAR.vasp"
 
@@ -7836,9 +8194,9 @@ with tab3:
                         df_summary = pd.DataFrame(summary_data)
                         st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
-                else:
-                    st.info(
-                        "No completed geometry optimizations found. Results will appear here after geometry optimization calculations finish.")
+                #else:
+                #    st.info(
+                #        "No completed geometry optimizations found. Results will appear here after geometry optimization calculations finish.")
 
 
 
