@@ -3,9 +3,9 @@ import streamlit as st
 # Default geometry optimization settings
 DEFAULT_GEOMETRY_SETTINGS = {
     'optimizer': "BFGS",
-    'fmax': 0.05,
+    'fmax': 0.005,
     'ediff': 1e-4,
-    'max_steps': 200,
+    'max_steps': 800,
     'optimization_type': "Both atoms and cell",
     'cell_constraint': "Lattice parameters only (fix angles)",
     'optimize_lattice': {'a': True, 'b': True, 'c': True},
@@ -13,6 +13,9 @@ DEFAULT_GEOMETRY_SETTINGS = {
     'hydrostatic_strain': False,
     'stress_threshold': 0.1,
     'fix_symmetry': False,
+    'preserve_atom_order': False,
+    'calculate_rmscd': False,
+    'rmscd_include_hydrogen': False,
 }
 
 
@@ -193,6 +196,27 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             "Applies ASE's FixSymmetry constraint so the space group is preserved "
         )
     )
+    calculate_rmscd = st.checkbox(
+        "Calculate RMSCD after optimization (van de Streek & Neumann, Acta Cryst. B66, 2010)",
+        value=geom_defaults.get('calculate_rmscd', False),
+        help=(
+            "Computes the r.m.s. Cartesian displacement (Eq. 3) between the input and "
+            "energy-minimized structure, excluding H atoms. "
+            "RMSCD < 0.10 Å: excellent. < 0.25 Å: correct structure. "
+            "> 0.25 Å: possible errors."
+            "Reference: van de Streek & Neumann, Acta Cryst. B66, 544–558 (2010)."
+        )
+    )
+
+    preserve_atom_order = st.checkbox(
+        "Preserve original atom ordering in output files",
+        value=geom_defaults.get('preserve_atom_order', False),
+        help=(
+            "When enabled, atoms in trajectory XYZ files and downloaded POSCAR/CIF/LAMMPS/XYZ "
+            "outputs will keep the same index order as the uploaded file. "
+            "By default, POSCAR output sorts atoms by element type."
+        )
+    )
     save_trajectory = st.checkbox(
         "Save optimization trajectory (.xyz) (⚠️ Currently, do not turn it off for calculations within GUI)",
         value=True,
@@ -212,7 +236,9 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'hydrostatic_strain': hydrostatic_strain,
         'stress_threshold': stress_threshold,
         'save_trajectory': save_trajectory,
-        'fix_symmetry': fix_symmetry
+        'fix_symmetry': fix_symmetry,
+        'preserve_atom_order': preserve_atom_order,
+        'calculate_rmscd': calculate_rmscd,
     }
 
     if st.button("💾 Save Geometry Optimization Defaults", key="save_geom_defaults"):
