@@ -115,7 +115,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         calculation_code = _generate_energy_only_code(calc_formation_energy)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
-            optimization_params, calc_formation_energy)
+            optimization_params, calc_formation_energy,
+            preserve_atom_order=optimization_params.get('preserve_atom_order', False))
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -247,7 +248,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         calculation_code = _generate_energy_only_code(calc_formation_energy)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
-            optimization_params, calc_formation_energy)
+            optimization_params, calc_formation_energy,
+            preserve_atom_order=optimization_params.get('preserve_atom_order', False))
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -3332,7 +3334,7 @@ def read_poscar_with_selective_dynamics(filename):
     return atoms, selective_dynamics
 
 
-def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=None, comment="Optimized structure"):
+def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=None, comment="Optimized structure",preserve_order=False):
     if selective_dynamics is not None and len(selective_dynamics) == len(atoms):
         with open(filename, 'w') as f:
             f.write(f"{comment}\\n")
@@ -3365,7 +3367,7 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
                         flag_str = "  ".join(["T" if flag else "F" for flag in flags])
                         f.write(f"  {pos[0]:16.12f}  {pos[1]:16.12f}  {pos[2]:16.12f}   {flag_str}\\n")
     else:
-        write(filename, atoms, format='vasp', direct=True, sort=True)
+        write(filename, atoms, format='vasp', direct=True, sort=(not preserve_order))
         with open(filename, 'r') as f:
             lines = f.readlines()
         with open(filename, 'w') as f:
@@ -3373,6 +3375,23 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
             for line in lines[1:]:
                 f.write(line)
 
+def save_structure_as_cif(atoms, filename, preserve_order=False):
+    """Save ASE atoms as CIF, optionally preserving original atom order."""
+    try:
+        from pymatgen.core import Structure
+        from pymatgen.io.ase import AseAtomsAdaptor
+        from pymatgen.io.cif import CifWriter
+
+        pmg_struct = AseAtomsAdaptor().get_structure(atoms)
+        effective_symprec = None if preserve_order else 0.1
+        cif_content = str(CifWriter(pmg_struct, symprec=effective_symprec,
+                                    write_site_properties=True))
+        with open(filename, 'w') as f:
+            f.write(cif_content)
+        return True
+    except Exception as e:
+        print(f"  ⚠️ CIF save failed ({e})")
+        return False
 
 def apply_selective_dynamics_constraints(atoms, selective_dynamics):
     """Apply selective dynamics as ASE constraints with support for partial fixing."""
@@ -3708,8 +3727,7 @@ class OptimizationLogger:
 '''
 
 
-def _generate_optimization_code(optimization_params, calc_formation_energy):
-    """Generate code for geometry optimization with selective dynamics support."""
+def _generate_optimization_code(optimization_params, calc_formation_energy,preserve_atom_order=False):
     optimizer = optimization_params.get('optimizer', 'BFGS')
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
@@ -3723,7 +3741,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     optimize_lattice = optimization_params.get(
         'optimize_lattice', {'a': True, 'b': True, 'c': True})
     fix_symmetry = optimization_params.get('fix_symmetry', False)
-    force_divergence_threshold = optimization_params.get('force_divergence_threshold', 500)
+    force_divergence_threshold = optimization_params.get('force_divergence_threshold', 10000)
+    preserve_atom_order = optimization_params.get('preserve_atom_order', False)
 
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
@@ -3744,6 +3763,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
     is_tetragonal = {is_tetragonal}
     fix_symmetry = {fix_symmetry}
     force_divergence_threshold = {force_divergence_threshold}
+    preserve_atom_order = {preserve_atom_order}
     
     print(f"⚙️ Optimization settings:")
     print(f"  - Optimizer: {{optimizer_type}}")
@@ -3864,15 +3884,15 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
 
                     # Define tetragonal enforcement callback
                     def enforce_tetragonal():
-                        cell = atoms.get_cell()
-                        cellpar = cell.cellpar()
-                        avg_ab = (cellpar[0] + cellpar[1]) / 2.0
-                        old_a = cellpar[0]
-                        old_b = cellpar[1]
-                        cellpar[0] = avg_ab
-                        cellpar[1] = avg_ab
-                        # cellpar[3:] = 90.0  # Ensure angles stay at 90
-                        atoms.set_cell(cellpar, scale_atoms=True)
+                        cell = atoms.get_cell().array.copy()
+                        a_len = np.linalg.norm(cell[0])
+                        b_len = np.linalg.norm(cell[1])
+                        old_a = a_len
+                        old_b = b_len
+                        avg_ab = (a_len + b_len) / 2.0
+                        cell[0] = cell[0] / a_len * avg_ab
+                        cell[1] = cell[1] / b_len * avg_ab
+                        atoms.set_cell(cell, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
                     tetragonal_callback = enforce_tetragonal
@@ -4044,9 +4064,19 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 final_atoms, 
                 output_filename, 
                 selective_dynamics, 
-                f"Optimized - {convergence_status}"
+                f"Optimized - {convergence_status}",
+                preserve_order=preserve_atom_order
             )
-
+            cif_output_filename = f"optimized_structures/optimized-{base_name}.cif"
+            cif_saved = save_structure_as_cif(
+                final_atoms,
+                cif_output_filename,
+                preserve_order=preserve_atom_order
+            )
+            if cif_saved:
+                print(f"  💾 Saved CIF to {cif_output_filename}"
+                      + (" (original atom order, P1 symmetry)" if preserve_atom_order
+                         else " (symmetry-reduced)"))
             detailed_summary_file = "results/optimization_detailed_summary.csv"
             print(f"  📊 Appending detailed summary to {detailed_summary_file}")
             append_optimization_summary(
@@ -4087,6 +4117,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy):
                 "has_selective_dynamics": selective_dynamics is not None,
                 "num_fixed_atoms": len([flags for flags in (selective_dynamics or []) if not any(flags)]),
                 "output_structure": output_filename,
+                "output_cif": cif_output_filename if cif_saved else None,
                 # Convert dict to individual fields for CSV compatibility
                 "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,
