@@ -1933,7 +1933,7 @@ MACE_MODELS = {
     "MACE-OFF23 (large) - Organic": "large",
 
     "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
-    "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+    "⭐ MACE-MH-1 (Multi-head Foundation) - Non-linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
 
 
 
@@ -2271,20 +2271,15 @@ def setup_optimization_constraints(atoms, optimization_params):
 
             # Create callback to enforce a=b after each step
             def enforce_tetragonal():
-                cell = atoms.get_cell()
-                cellpar = cell.cellpar()
-
-                # Average a and b
-                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
-                old_a = cellpar[0]
-                old_b = cellpar[1]
-
-                cellpar[0] = avg_ab
-                cellpar[1] = avg_ab
-                # cellpar[3:] = 90.0  # Ensure angles stay at 90
-
-                atoms.set_cell(cellpar, scale_atoms=True)
-
+                cell = atoms.get_cell().array.copy()
+                a_len = np.linalg.norm(cell[0])
+                b_len = np.linalg.norm(cell[1])
+                old_a = a_len
+                old_b = b_len
+                avg_ab = (a_len + b_len) / 2.0
+                cell[0] = cell[0] / a_len * avg_ab
+                cell[1] = cell[1] / b_len * avg_ab
+                atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
             return cell_filter, "cell_only", enforce_tetragonal
@@ -2305,20 +2300,15 @@ def setup_optimization_constraints(atoms, optimization_params):
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
             def enforce_tetragonal():
-                cell = atoms.get_cell()
-                cellpar = cell.cellpar()
-
-                # Average a and b
-                avg_ab = (cellpar[0] + cellpar[1]) / 2.0
-                old_a = cellpar[0]
-                old_b = cellpar[1]
-
-                cellpar[0] = avg_ab
-                cellpar[1] = avg_ab
-                # cellpar[3:] = 90.0  # Ensure angles stay at 90
-
-                atoms.set_cell(cellpar, scale_atoms=True)
-
+                cell = atoms.get_cell().array.copy()
+                a_len = np.linalg.norm(cell[0])
+                b_len = np.linalg.norm(cell[1])
+                old_a = a_len
+                old_b = b_len
+                avg_ab = (a_len + b_len) / 2.0
+                cell[0] = cell[0] / a_len * avg_ab
+                cell[1] = cell[1] / b_len * avg_ab
+                atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
             return cell_filter, "both", enforce_tetragonal
