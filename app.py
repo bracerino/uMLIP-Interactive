@@ -58,7 +58,8 @@ from helpers.nudge_elastic_band import (
     create_neb_plot,
     create_combined_neb_plot,
     export_neb_results,
-    display_neb_results
+    display_neb_results,
+    render_neb_script_button,
 )
 
 
@@ -4719,63 +4720,20 @@ with tab1:
                         5. Results (`_tensile_data.csv`, plots `.png`) will be saved in the `md_results` subdirectory.
                         """)
         if calc_type == "NEB Calculation":
-            st.subheader("NEB: Initial and Final States")
+            neb_params = setup_neb_parameters_ui()
 
-            st.info(
-                "Upload ONE initial structure and ONE or MORE final structures. NEB will compute the minimum energy path for each initial→final pair.")
-
-            if 'neb_initial_structure' not in st.session_state:
-                st.session_state.neb_initial_structure = None
-            if 'neb_final_structures' not in st.session_state:
-                st.session_state.neb_final_structures = {}
-
-            col_init, col_final = st.columns(2)
-
-            with col_init:
-                st.write("**Initial Structure**")
-                initial_file = st.file_uploader(
-                    "Upload initial structure",
-                    type=['vasp', 'cif', 'poscar', 'xyz'],
-                    key="neb_initial_uploader"
-                )
-
-                if initial_file:
-                    try:
-                        initial_structure = load_structure(initial_file)
-                        st.session_state.neb_initial_structure = initial_structure
-                        st.success(
-                            f"Initial: {initial_structure.composition.reduced_formula} ({len(initial_structure)} atoms)")
-                    except Exception as e:
-                        st.error(f"Error loading initial structure: {e}")
-
-            with col_final:
-                st.write("**Final Structure(s)**")
-                final_files = st.file_uploader(
-                    "Upload final structure(s)",
-                    type=['vasp', 'cif', 'poscar', 'xyz'],
-                    accept_multiple_files=True,
-                    key="neb_final_uploader"
-                )
-
-                if final_files:
-                    new_finals = {}
-                    for final_file in final_files:
-                        try:
-                            final_structure = load_structure(final_file)
-                            new_finals[final_file.name] = final_structure
-                        except Exception as e:
-                            st.error(f"Error loading {final_file.name}: {e}")
-
-                    if new_finals:
-                        st.session_state.neb_final_structures = new_finals
-                        st.success(f"{len(new_finals)} final structure(s) loaded")
-                        for name, struct in new_finals.items():
-                            st.write(f"  • {name}: {struct.composition.reduced_formula} ({len(struct)} atoms)")
-
-            if st.session_state.neb_initial_structure and st.session_state.neb_final_structures:
-                st.success(f"Ready to compute {len(st.session_state.neb_final_structures)} NEB path(s)")
-
-                neb_params = setup_neb_parameters_ui()
+            render_neb_script_button(
+                neb_params=neb_params,
+                selected_model=selected_model,
+                model_size=model_size,
+                device=device,
+                dtype=dtype,
+                thread_count=st.session_state.thread_count,
+                mace_head=mace_head,
+                mace_dispersion=mace_dispersion,
+                mace_dispersion_xc=mace_dispersion_xc,
+                custom_mace_path=custom_mace_path if is_custom_mace else None,
+            )
         optimization_params = {
             'optimizer': "BFGS",
             'fmax': 0.05,
