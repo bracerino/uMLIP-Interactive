@@ -3124,6 +3124,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     final_structure = structure
                     convergence_status = None
                     phonon_results = None
+                    rmscd_results = None
                     elastic_results = None
                     orb_confidence = None
                     if is_orb:
