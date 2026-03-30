@@ -3534,25 +3534,69 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             energy = atoms.get_potential_energy()
 
                     elif calc_type == "Elastic Properties":
-                        if optimization_params['max_steps'] > 0:
-                            log_queue.put(f"Running pre-elastic optimization for {name} to ensure stability.")
+                        pre_optimize = elastic_params.get('pre_optimize', True)
+                        pre_opt_steps = elastic_params.get('pre_opt_steps', 400)
+
+                        if pre_optimize and pre_opt_steps > 0:
+                            opt_name = elastic_params.get('pre_opt_optimizer', 'LBFGS')
+                            fmax_val = elastic_params.get('pre_opt_fmax', 0.01)
+                            log_queue.put(
+                                f"Running pre-elastic {opt_name} optimization for {name} "
+                                f"(fmax={fmax_val} eV/Å, max {pre_opt_steps} steps)..."
+                            )
                             temp_atoms = atoms.copy()
                             temp_atoms.calc = calculator
                             temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt")
                             try:
-                                temp_optimizer = LBFGS(temp_atoms, logfile=None)
-                                temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
-                                temp_optimizer.run(fmax=0.01, steps=400)
-                                atoms = temp_atoms
-                                energy = atoms.get_potential_energy()
-                                log_queue.put(
-                                    f"Pre-elastic optimization finished for {name}. Final energy: {energy:.6f} eV")
-                            except Exception as pre_opt_error:
-                                log_queue.put(f"⚠️ Pre-elastic optimization failed for {name}: {str(pre_opt_error)}")
-                                log_queue.put("Continuing with elastic calculation on potentially unoptimized structure.")
-                                energy = atoms.get_potential_energy()
+                                # Select optimizer
+                                if opt_name == "LBFGS":
+                                    temp_optimizer = LBFGS(temp_atoms, logfile=None)
+                                elif opt_name == "FIRE":
+                                    temp_optimizer = FIRE(temp_atoms, logfile=None)
+                                elif opt_name == "BFGSLineSearch (QuasiNewton)":
+                                    temp_optimizer = BFGSLineSearch(temp_atoms, logfile=None)
+                                elif opt_name == "LBFGSLineSearch":
+                                    temp_optimizer = LBFGSLineSearch(temp_atoms, logfile=None)
+                                elif opt_name == "MDMin":
+                                    temp_optimizer = MDMin(temp_atoms, logfile=None)
+                                elif opt_name == "SciPyFminBFGS":
+                                    temp_optimizer = SciPyFminBFGS(temp_atoms, logfile=None)
+                                elif opt_name == "SciPyFminCG":
+                                    temp_optimizer = SciPyFminCG(temp_atoms, logfile=None)
+                                else:  # BFGS default
+                                    temp_optimizer = BFGS(temp_atoms, logfile=None)
 
-                        elastic_results = calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, name)
+                                temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
+                                temp_optimizer.run(fmax=fmax_val, steps=pre_opt_steps)
+                                atoms = temp_atoms
+
+                                final_fmax = float(
+                                    np.max(np.linalg.norm(atoms.get_forces(), axis=1))
+                                )
+                                converged = final_fmax <= fmax_val
+                                energy = atoms.get_potential_energy()
+                                status = "✅ converged" if converged else f"⚠️ did NOT converge (F_max={final_fmax:.4f})"
+                                log_queue.put(
+                                    f"Pre-elastic optimization {status} for {name}: "
+                                    f"E={energy:.6f} eV, F_max={final_fmax:.4f} eV/Å "
+                                    f"({temp_optimizer.nsteps} steps)"
+                                )
+                            except Exception as pre_opt_error:
+                                log_queue.put(
+                                    f"⚠️ Pre-elastic optimization failed for {name}: {str(pre_opt_error)}"
+                                )
+                                log_queue.put(
+                                    "Continuing with elastic calculation on potentially unoptimized structure.")
+                                energy = atoms.get_potential_energy()
+                        else:
+                            log_queue.put(
+                                f"Skipping pre-optimization for {name} (disabled by user). "
+                                "Ensure the structure is already well-relaxed."
+                            )
+
+                        elastic_results = calculate_elastic_properties(
+                            atoms, calculator, elastic_params, log_queue, name
+                        )
                         if elastic_results['success']:
                             energy = atoms.get_potential_energy()
                     elif calc_type == "Molecular Dynamics":
@@ -3759,7 +3803,43 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 #st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
 colx1, colx2 = st.columns([2,1])
 with colx1:
-    st.markdown("## uMLIP-Interactive: Compute properties with universal MLIPs")
+    st.markdown("""
+    <div style="
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 10px 0;
+    ">
+        <!-- App Name -->
+        <span style="
+            font-size: 38px;
+            font-weight: 800;
+            color: #111;
+        ">
+            uMLIP-Interactive
+        </span>
+        <!-- Subtitle -->
+        <span style="
+            font-size: 18px;
+            color: #666;
+            font-weight: 400;
+        ">
+            Compute properties with universal MLIPs
+        </span>
+        <!-- Balanced Badge -->
+        <span style="
+            font-size: 13px;
+            font-weight: 600;
+            background-color: #e8f0ff;
+            color: #2f5fd0;
+            padding: 4px 11px;
+            border-radius: 10px;
+        ">
+            v0.8.4 · 3/30/2026
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 with colx2:
     # to cite the universal MLIPs
     show_citations = st.checkbox("📚 Show Model **Citations & GitHub** Repositories", value=False)
@@ -4381,7 +4461,7 @@ with tab1:
                     added_count = len(st.session_state.pending_structures)
                     st.session_state.pending_structures = {}
                     st.success(f"✅ Added {added_count} structures. Total: {len(st.session_state.structures)}")
-                    st.rerun()
+                    #st.rerun()
 
         if st.session_state.structures:
             st.success(f"✅ {len(st.session_state.structures)} structures loaded and ready to be locked.")
@@ -4397,7 +4477,7 @@ with tab1:
                                  disabled=len(st.session_state.structures) == 0, type='primary'):
                 st.session_state.structures_locked = True
                 st.success("🔒 Structures locked! You can now start calculations.")
-                st.rerun()
+                #st.rerun()
 
         with col2:
             if st.sidebar.button("🗑️ Clear All Structures", type='secondary'):
@@ -4422,12 +4502,11 @@ with tab1:
                 with col3:
                     st.write(f"{structure.num_sites} atoms")
 
-        if st.sidebar.button("🔓 Unlock Structures", type='secondary',
+        if st.sidebar.button("🔓 Unlock (Double-click)", type='secondary',
                              disabled=st.session_state.calculation_running):
             st.session_state.structures_locked = False
             st.info("🔓 Structures unlocked. You can now modify the structure list.")
-            st.rerun()
-
+            #st.rerun()
         if st.session_state.calculation_running:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
     st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
@@ -5245,17 +5324,61 @@ with tab1:
                     "⚠️ `ase.utils.eos` or `ase.build` not found. Elastic calculations require a full ASE installation.")
                 st.stop()
             st.subheader("Elastic Properties Parameters")
-            st.info(
-                "A brief pre-optimization (fmax=0.01 eV/Å, max 400 steps) will be performed for stability before elastic calculations.")
 
-            elastic_params['strain_magnitude'] = st.number_input("Strain Magnitude (e.g., 0.01 for 1%)",
-                                                                 min_value=0.001, max_value=0.1, value=0.01, step=0.001,
-                                                                 format="%.3f")
-            # elastic_params['density'] = st.number_input("Material Density (g/cm³)", min_value=0.1, value=None,
-            #                                            help="Optional: Provide if known. Otherwise, it will be estimated from the structure.",
-            #                                            format="%.3f")
+            elastic_params['strain_magnitude'] = st.number_input(
+                "Strain Magnitude (e.g., 0.01 for 1%)",
+                min_value=0.001, max_value=0.1, value=0.01, step=0.001, format="%.3f"
+            )
             elastic_params['density'] = None
-            save_trajectory= True
+
+            st.markdown("---")
+            st.subheader("🔧 Pre-Optimization Before Elastic Calculation")
+
+            elastic_params['pre_optimize'] = st.checkbox(
+                "Perform geometry optimization before elastic calculation",
+                value=True,
+                help="Recommended: ensures residual forces are minimized before straining the cell."
+            )
+
+            if elastic_params['pre_optimize']:
+                col_eo1, col_eo2, col_eo3 = st.columns(3)
+                with col_eo1:
+                    elastic_params['pre_opt_optimizer'] = st.selectbox(
+                        "Optimizer",
+                        ["LBFGS", "FIRE", "BFGS", "BFGSLineSearch (QuasiNewton)",
+                         "LBFGSLineSearch", "MDMin", "SciPyFminBFGS", "SciPyFminCG"],
+                        index=0,
+                        help="LBFGS is fast and reliable for most structures."
+                    )
+                with col_eo2:
+                    elastic_params['pre_opt_fmax'] = st.number_input(
+                        "Force convergence (eV/Å)",
+                        min_value=0.0001, max_value=1.0, value=0.01,
+                        step=0.001, format="%.4f",
+                        help="Stop pre-optimization when max atomic force is below this value."
+                    )
+                with col_eo3:
+                    elastic_params['pre_opt_steps'] = st.number_input(
+                        "Max steps",
+                        min_value=1, max_value=2000, value=400, step=50,
+                        help="Hard cap on pre-optimization steps."
+                    )
+
+                st.info(
+                    f"Pre-optimization: **{elastic_params['pre_opt_optimizer']}**, "
+                    f"fmax = **{elastic_params['pre_opt_fmax']} eV/Å**, "
+                    f"max **{elastic_params['pre_opt_steps']} steps**"
+                )
+            else:
+                elastic_params['pre_opt_optimizer'] = 'LBFGS'
+                elastic_params['pre_opt_fmax'] = 0.01
+                elastic_params['pre_opt_steps'] = 0
+                st.warning(
+                    "⚠️ Skipping pre-optimization. Make sure your structure is already well-relaxed, "
+                    "otherwise elastic constants may be inaccurate."
+                )
+
+            save_trajectory = True
 
 
 
