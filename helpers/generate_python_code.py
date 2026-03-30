@@ -2641,14 +2641,26 @@ def _generate_energy_only_code(calc_formation_energy):
 def _generate_elastic_code(elastic_params, optimization_params, calc_formation_energy):
     """Generate code for elastic property calculations."""
     strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
+    pre_optimize     = elastic_params.get('pre_optimize', True)
+    pre_opt_optimizer = elastic_params.get('pre_opt_optimizer', 'LBFGS')
+    pre_opt_fmax     = elastic_params.get('pre_opt_fmax', 0.01)
+    pre_opt_steps    = elastic_params.get('pre_opt_steps', 400)
 
     code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
-    strain_magnitude = {strain_magnitude}
-    pre_opt_steps = {optimization_params.get('max_steps', 400)}
-    print(f"⚙️ Using strain magnitude: {{strain_magnitude*100:.1f}}%")
+    strain_magnitude  = {strain_magnitude}
+    pre_optimize      = {str(pre_optimize)}
+    pre_opt_optimizer = "{pre_opt_optimizer}"
+    pre_opt_fmax      = {pre_opt_fmax}
+    pre_opt_steps     = {pre_opt_steps}
+
+    print(f"⚙️ Elastic settings:")
+    print(f"  - Strain magnitude: {{strain_magnitude*100:.1f}}%")
+    print(f"  - Pre-optimization: {{pre_optimize}}")
+    if pre_optimize:
+        print(f"  - Pre-opt optimizer: {{pre_opt_optimizer}}, fmax={{pre_opt_fmax}} eV/Å, max {{pre_opt_steps}} steps")
 
     reference_energies = {{}}'''
 
@@ -2679,53 +2691,78 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             atoms = read(filename)
             atoms.calc = calculator
             print(f"  📊 Structure has {len(atoms)} atoms")
+            if pre_optimize and pre_opt_steps > 0:
+                print(f"  🔧 Running {pre_opt_optimizer} pre-optimization "
+                      f"(fmax={pre_opt_fmax} eV/Å, max {pre_opt_steps} steps)...")
+                temp_atoms = atoms.copy()
+                temp_atoms.calc = calculator
 
+                class PreOptLogger:
+                    def __init__(self, max_steps):
+                        self.step_count = 0
+                        self.max_steps = max_steps
+                        self.previous_energy = None
 
+                    def __call__(self, optimizer=None):
+                        if optimizer is not None and hasattr(optimizer, 'atoms'):
+                            atoms_obj = optimizer.atoms
+                            forces = atoms_obj.get_forces()
+                            max_force = np.max(np.linalg.norm(forces, axis=1))
+                            energy = atoms_obj.get_potential_energy()
+                            energy_per_atom = energy / len(atoms_obj)
+                            if self.previous_energy is not None:
+                                energy_change = abs(energy - self.previous_energy)
+                                energy_change_per_atom = energy_change / len(atoms_obj)
+                            else:
+                                energy_change = float('inf')
+                                energy_change_per_atom = float('inf')
+                            self.previous_energy = energy
+                            try:
+                                stress = atoms_obj.get_stress(voigt=True)
+                                max_stress = np.max(np.abs(stress))
+                            except:
+                                max_stress = 0.0
+                            self.step_count += 1
+                            print(f"    Pre-opt step {self.step_count}: "
+                                  f"E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                                  f"F_max={max_force:.4f} eV/Å, "
+                                  f"Max_Stress={max_stress:.4f} GPa, "
+                                  f"ΔE={energy_change_per_atom:.2e} eV/atom")
 
-            print("  🔧 Running pre-optimization for stability...")
-            temp_atoms = atoms.copy()
-            temp_atoms.calc = calculator
+                pre_opt_logger = PreOptLogger(pre_opt_steps)
 
-            # Create a simple logger for pre-optimization
-            class PreOptLogger:
-                def __init__(self, max_steps=50):
-                    self.step_count = 0
-                    self.max_steps = max_steps
-                    self.previous_energy = None
+                if pre_opt_optimizer == "LBFGS":
+                    temp_optimizer = LBFGS(temp_atoms, logfile=None)
+                elif pre_opt_optimizer == "FIRE":
+                    temp_optimizer = FIRE(temp_atoms, logfile=None)
+                elif pre_opt_optimizer in ("BFGSLineSearch (QuasiNewton)", "BFGSLineSearch"):
+                    temp_optimizer = BFGSLineSearch(temp_atoms, logfile=None)
+                elif pre_opt_optimizer == "LBFGSLineSearch":
+                    temp_optimizer = LBFGSLineSearch(temp_atoms, logfile=None)
+                elif pre_opt_optimizer == "MDMin":
+                    temp_optimizer = MDMin(temp_atoms, logfile=None)
+                elif pre_opt_optimizer == "GPMin":
+                    temp_optimizer = GPMin(temp_atoms, logfile=None, update_hyperparams=True)
+                elif pre_opt_optimizer == "SciPyFminBFGS":
+                    temp_optimizer = SciPyFminBFGS(temp_atoms, logfile=None)
+                elif pre_opt_optimizer == "SciPyFminCG":
+                    temp_optimizer = SciPyFminCG(temp_atoms, logfile=None)
+                else:  # BFGS default
+                    temp_optimizer = BFGS(temp_atoms, logfile=None)
 
-                def __call__(self, optimizer=None):
-                    if optimizer is not None and hasattr(optimizer, 'atoms'):
-                        atoms_obj = optimizer.atoms
-                        forces = atoms_obj.get_forces()
-                        max_force = np.max(np.linalg.norm(forces, axis=1))
-                        energy = atoms_obj.get_potential_energy()
-                        energy_per_atom = energy / len(atoms_obj)
+                temp_optimizer.attach(lambda: pre_opt_logger(temp_optimizer), interval=1)
+                temp_optimizer.run(fmax=pre_opt_fmax, steps=pre_opt_steps)
+                atoms = temp_atoms
 
-                        if self.previous_energy is not None:
-                            energy_change = abs(energy - self.previous_energy)
-                            energy_change_per_atom = energy_change / len(atoms_obj)
-                        else:
-                            energy_change = float('inf')
-                            energy_change_per_atom = float('inf')
-                        self.previous_energy = energy
-
-                        try:
-                            stress = atoms_obj.get_stress(voigt=True)
-                            max_stress = np.max(np.abs(stress))
-                        except:
-                            max_stress = 0.0
-
-                        self.step_count += 1
-                        print(f"    Pre-opt step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
-                              f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
-                              f"ΔE={energy_change_per_atom:.2e} eV/atom")
-
-            pre_opt_logger = PreOptLogger(pre_opt_steps)
-            temp_optimizer = LBFGS(temp_atoms, logfile=None)
-            temp_optimizer.attach(lambda: pre_opt_logger(temp_optimizer), interval=1)
-            temp_optimizer.run(fmax=0.01, steps=pre_opt_steps)
-            atoms = temp_atoms
-            print(f"  ✅ Pre-optimization completed in {temp_optimizer.nsteps} steps")
+                final_fmax = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
+                converged  = final_fmax <= pre_opt_fmax
+                status     = "converged ✅" if converged else f"did NOT converge ⚠️ (F_max={final_fmax:.4f})"
+                print(f"  Pre-optimization {status}: "
+                      f"E={atoms.get_potential_energy():.6f} eV "
+                      f"in {temp_optimizer.nsteps} steps")
+            else:
+                print("  ⏭️ Skipping pre-optimization (disabled by user). "
+                      "Ensure the structure is already well-relaxed.")
 
 
 
