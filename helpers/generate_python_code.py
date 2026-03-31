@@ -1870,16 +1870,28 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
         return calc_code
     # Determine model type from selected model key
-    is_petmad = selected_model_key is not None and selected_model_key.startswith("PET-MAD")
-    is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
-    is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
-    is_nequix = selected_model_key is not None and selected_model_key.startswith("Nequix")
-    is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
-    is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
+    #is_petmad = selected_model_key is not None and selected_model_key.startswith("PET-MAD")
+    #is_chgnet = selected_model_key is not None and selected_model_key.startswith("CHGNet")
+    #is_sevennet = selected_model_key is not None and selected_model_key.startswith("SevenNet")
+    #is_nequix = selected_model_key is not None and selected_model_key.startswith("Nequix")
+    #is_mattersim = selected_model_key is not None and selected_model_key.startswith("MatterSim")
+    #is_orb = selected_model_key is not None and selected_model_key.startswith("ORB")
+    #is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
+    #is_url_model = isinstance(model_size, str) and (
+    #        model_size.startswith("http://") or model_size.startswith("https://"))
+    #is_upet = selected_model_key is not None and selected_model_key.startswith("UPET")
+
+    is_petmad = selected_model_key is not None and "PET-MAD" in selected_model_key
+    is_chgnet = selected_model_key is not None and "CHGNet" in selected_model_key
+    is_sevennet = selected_model_key is not None and "SevenNet" in selected_model_key
+    is_nequix = selected_model_key is not None and "Nequix" in selected_model_key
+    is_mattersim = selected_model_key is not None and "MatterSim" in selected_model_key
+    is_orb = selected_model_key is not None and "ORB" in selected_model_key
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
     is_url_model = isinstance(model_size, str) and (
-            model_size.startswith("http://") or model_size.startswith("https://"))
-    is_upet = selected_model_key is not None and selected_model_key.startswith("UPET")
+            "http://" in model_size or "https://" in model_size)
+    is_upet = selected_model_key is not None and "UPET" in selected_model_key
+
     if is_nequix:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing Nequix calculator...")
