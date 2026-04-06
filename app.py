@@ -2271,6 +2271,14 @@ def setup_optimization_constraints(atoms, optimization_params):
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
             # Create callback to enforce a=b after each step
+            _ic = atoms.get_cell().array.copy()
+            _a_hat = _ic[0] / np.linalg.norm(_ic[0])
+            _c_hat = _ic[2] / np.linalg.norm(_ic[2])
+            _b_perp = np.cross(_c_hat, _a_hat)
+            _b_perp = _b_perp / np.linalg.norm(_b_perp)
+            _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
+                                           (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
+
             def enforce_tetragonal():
                 cell = atoms.get_cell().array.copy()
                 a_len = np.linalg.norm(cell[0])
@@ -2278,8 +2286,8 @@ def setup_optimization_constraints(atoms, optimization_params):
                 old_a = a_len
                 old_b = b_len
                 avg_ab = (a_len + b_len) / 2.0
-                cell[0] = cell[0] / a_len * avg_ab
-                cell[1] = cell[1] / b_len * avg_ab
+                cell[0] = _a_hat * avg_ab
+                cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
                 atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
@@ -2300,6 +2308,14 @@ def setup_optimization_constraints(atoms, optimization_params):
 
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
+            _ic = atoms.get_cell().array.copy()
+            _a_hat = _ic[0] / np.linalg.norm(_ic[0])
+            _c_hat = _ic[2] / np.linalg.norm(_ic[2])
+            _b_perp = np.cross(_c_hat, _a_hat)
+            _b_perp = _b_perp / np.linalg.norm(_b_perp)
+            _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
+                                           (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
+
             def enforce_tetragonal():
                 cell = atoms.get_cell().array.copy()
                 a_len = np.linalg.norm(cell[0])
@@ -2307,8 +2323,8 @@ def setup_optimization_constraints(atoms, optimization_params):
                 old_a = a_len
                 old_b = b_len
                 avg_ab = (a_len + b_len) / 2.0
-                cell[0] = cell[0] / a_len * avg_ab
-                cell[1] = cell[1] / b_len * avg_ab
+                cell[0] = _a_hat * avg_ab
+                cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
                 atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
