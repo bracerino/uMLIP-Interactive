@@ -3902,17 +3902,24 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
                     # Define tetragonal enforcement callback
-                    def enforce_tetragonal():
-                        cell = atoms.get_cell()
-                        cellpar = cell.cellpar()
-                        avg_ab = (cellpar[0] + cellpar[1]) / 2.0
-                        old_a = cellpar[0]
-                        old_b = cellpar[1]
-                        cellpar[0] = avg_ab
-                        cellpar[1] = avg_ab
-                        # cellpar[3:] = 90.0  # Ensure angles stay at 90
+                    _ic = atoms.get_cell().array.copy()
+                    _a_hat = _ic[0] / np.linalg.norm(_ic[0])
+                    _c_hat = _ic[2] / np.linalg.norm(_ic[2])
+                    _b_perp = np.cross(_c_hat, _a_hat)
+                    _b_perp = _b_perp / np.linalg.norm(_b_perp)
+                    _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
+                                 (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
 
-                        atoms.set_cell(cellpar, scale_atoms=True)
+                    def enforce_tetragonal():
+                        cell = atoms.get_cell().array.copy()
+                        a_len = np.linalg.norm(cell[0])
+                        b_len = np.linalg.norm(cell[1])
+                        old_a = a_len
+                        old_b = b_len
+                        avg_ab = (a_len + b_len) / 2.0
+                        cell[0] = _a_hat * avg_ab
+                        cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
+                        atoms.set_cell(cell, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
                     tetragonal_callback = enforce_tetragonal
@@ -3932,6 +3939,14 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
                     # Define tetragonal enforcement callback
+                    _ic = atoms.get_cell().array.copy()
+                    _a_hat = _ic[0] / np.linalg.norm(_ic[0])
+                    _c_hat = _ic[2] / np.linalg.norm(_ic[2])
+                    _b_perp = np.cross(_c_hat, _a_hat)
+                    _b_perp = _b_perp / np.linalg.norm(_b_perp)
+                    _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
+                                 (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
+
                     def enforce_tetragonal():
                         cell = atoms.get_cell().array.copy()
                         a_len = np.linalg.norm(cell[0])
@@ -3939,8 +3954,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                         old_a = a_len
                         old_b = b_len
                         avg_ab = (a_len + b_len) / 2.0
-                        cell[0] = cell[0] / a_len * avg_ab
-                        cell[1] = cell[1] / b_len * avg_ab
+                        cell[0] = _a_hat * avg_ab
+                        cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
                         atoms.set_cell(cell, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
@@ -4027,11 +4042,15 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     except:
                         max_stress = 0.0
 
-                    # Check energy convergence
+                    # Check energy convergence, currently the energy is used also as parameter for convergence, probably better to modify later to just keep it for force, stress
                     energy_converged = False
                     if logger.trajectory and len(logger.trajectory) > 1:
                         energy_change = abs(logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
                         energy_converged = energy_change < ediff
+                    else:
+                        energy_change = 0
+                        energy_converged = True
+                        
 
                     # Determine convergence
                     if opt_mode == "atoms_only":
