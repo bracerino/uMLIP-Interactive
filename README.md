@@ -20,7 +20,7 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 #### Tutorials
 - 🎥 **For calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
 - 🎥 **For using the genetic algorithm with MACE to obtain candidates for the lowest energy distributions of point defects in crystal structure [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.
-- 🎥 **For calculating phonons [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.   
+- 🎥 **For calculating phonons [YouTube](https://www.youtube.com/watch?v=XG3N1fjijfA)**.   
 - 🎥 **For using the generated Python script for the calculations at [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw).** Make sure that before running the Python code, you activated the virtual Python environment with the installed necessary Python packages (Step 4 in the compilation manual below).
 
 
