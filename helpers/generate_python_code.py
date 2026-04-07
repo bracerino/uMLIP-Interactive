@@ -2602,11 +2602,11 @@ def _generate_energy_only_code(calc_formation_energy):
             # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
-                relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
+                rel_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
 
                 plt.figure(figsize=(16, 12))
-                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
-                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
+                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
                 plt.title('Relative Energy Comparison (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
@@ -2616,11 +2616,11 @@ def _generate_energy_only_code(calc_formation_energy):
 
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
-                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
-                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
+                y_range = max(rel_energies) if max(rel_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(rel_energies) + y_range * 0.15)
 
                 # Add vertical value labels above bars
-                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
+                for i, (bar, re) in enumerate(zip(bars, rel_energies)):
                     if re > 0:
                         y_pos = bar.get_height() + y_range * 0.02
                         va_align = 'bottom'
@@ -3100,11 +3100,11 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
-                relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
+                rel_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
 
                 plt.figure(figsize=(16, 10))
-                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
-                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
+                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
                 plt.title('Relative Energy Comparison (Elastic Properties, vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
@@ -3113,12 +3113,12 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 plt.yticks(fontsize=18, fontweight='bold')
 
                 # Add value labels on bars
-                for i, (bar, re, result) in enumerate(zip(bars, relative_energies, successful_results)):
-                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(relative_energies)*0.02, 
+                for i, (bar, re, result) in enumerate(zip(bars, rel_energies, successful_results)):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(rel_energies)*0.02, 
                             f'{re:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
                     # Add mechanical stability indicator
                     stable = result.get("mechanically_stable", False)
-                    plt.text(bar.get_x() + bar.get_width()/2, max(relative_energies)*0.1, 
+                    plt.text(bar.get_x() + bar.get_width()/2, max(rel_energies)*0.1, 
                             '✓' if stable else '✗', ha='center', va='center', 
                             fontsize=20, color='green' if stable else 'red', fontweight='bold')
 
@@ -4448,11 +4448,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             # 3. Relative Energy Plot
             if len(final_energies) > 1:
                 min_energy = min(final_energies)
-                relative_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
+                rel_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
 
                 plt.figure(figsize=(16, 12))
-                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
-                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
+                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
                 plt.title('Relative Energy Comparison After Optimization (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
@@ -4462,11 +4462,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
-                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
-                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
+                y_range = max(rel_energies) if max(rel_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(rel_energies) + y_range * 0.15)
 
                 # Add vertical value labels above bars
-                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
+                for i, (bar, re) in enumerate(zip(bars, rel_energies)):
                     if re > 0:
                         y_pos = bar.get_height() + y_range * 0.02
                         va_align = 'bottom'
