@@ -15,7 +15,7 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 #### References
 - If you like the app, 📖 **please cite** the following work: [Lebeda, M., Drahokoupil, J., Mazáčová, V., & Vlčák, P. (2026). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials. Journal of Materials Research and Technology.](https://www.sciencedirect.com/science/article/pii/S2238785426004540)
 - Please also 📖 cite the **[Atomic Simulation Environment (ASE)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e/meta?casa_token=ylmp7uEZ-BYAAAAA:SRe2v_QrxXhw5O0ZrwNP5yyNQ8HbaG5vcbvBK98BQ6aZIs-qJ6C_1gjYBQ552Y68eJhnK0vPOheT8-R2gyGlaxCsnhGs)** and 📖 the employed uMLIP (you can see the corresponding publications for each model in the right corner of the app).
-- When using calculated phonons, please cite also **[Implementation strategies in phonopy and phono3py]**(https://iopscience.iop.org/article/10.1088/1361-648X/acd831/meta).  
+- When using calculated phonons, please cite also **[Implementation strategies in phonopy and phono3py](https://iopscience.iop.org/article/10.1088/1361-648X/acd831/meta)**.  
 
 #### Tutorials
 - 🎥 **Video tutorial for calculations within the interface at [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.   
