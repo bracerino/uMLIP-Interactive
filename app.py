@@ -504,165 +504,289 @@ def create_wrapped_poscar_content(structure):
 
     return wrapped_structure.to(fmt="poscar")
 
-
 def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, structure_name):
     try:
         log_queue.put(f"Starting elastic tensor calculation for {structure_name}")
-
         atoms.calc = calculator
-        log_queue.put("  Calculating equilibrium energy and stress...")
+
+        forces = atoms.get_forces()
+        max_force = np.max(np.linalg.norm(forces, axis=1))
+        if max_force > 0.05:
+            log_queue.put(
+                f"  ⚠️ Warning: max force = {max_force:.4f} eV/Å "
+                f"— structure may not be well relaxed. "
+                f"Elastic constants may be inaccurate."
+            )
+
         E0 = atoms.get_potential_energy()
-        stress0 = atoms.get_stress(voigt=True)  # Voigt notation: [xx, yy, zz, yz, xz, xy]
-
-        log_queue.put(f"  Equilibrium energy: {E0:.6f} eV")
-        log_queue.put(f"  Equilibrium stress: {np.max(np.abs(stress0)):.6f} GPa")
-
-        strain_magnitude = elastic_params.get('strain_magnitude', 0.01)  # 1% strain
-        log_queue.put(f"  Using strain magnitude: {strain_magnitude * 100:.1f}%")
-
-        # Initialize elastic tensor (6x6 in Voigt notation)
-        C = np.zeros((6, 6))
-        log_queue.put("  Applying strains and calculating stress response...")
-
-        original_cell = atoms.get_cell().copy()
         volume = atoms.get_volume()
+        log_queue.put(f"  Equilibrium energy: {E0:.6f} eV, Volume: {volume:.4f} Å³")
 
-        strain_tensors = []
+        eV_to_GPa = 160.21766208
 
-        for i in range(3):
-            strain = np.zeros((3, 3))
-            strain[i, i] = strain_magnitude
-            strain_tensors.append(strain)
-
-        shear_pairs = [(1, 2), (0, 2), (0, 1)]  # (yz, xz, xy)
-        for i, j in shear_pairs:
-            strain = np.zeros((3, 3))
-            strain[i, j] = strain[j, i] = strain_magnitude / 2  # Engineering shear strain
-            strain_tensors.append(strain)
-
-        for strain_idx, strain_tensor in enumerate(strain_tensors):
-            log_queue.put(f"    Strain {strain_idx + 1}/6...")
-            deformed_cell = original_cell @ (np.eye(3) + strain_tensor)
-            atoms.set_cell(deformed_cell, scale_atoms=True)
-            stress_pos = atoms.get_stress(voigt=True)
-            deformed_cell = original_cell @ (np.eye(3) - strain_tensor)
-            atoms.set_cell(deformed_cell, scale_atoms=True)
-            stress_neg = atoms.get_stress(voigt=True)
-
-            # C_ij = d(stress_i)/d(strain_j)
-            stress_derivative = (stress_pos - stress_neg) / (2 * strain_magnitude)
-
-            C[strain_idx, :] = stress_derivative
-            atoms.set_cell(original_cell, scale_atoms=True)
-
-        # Convert from eV/Å³ to GPa
-        eV_to_GPa = 160.2176  # Conversion factor
-        C_GPa = C * eV_to_GPa
-
-        log_queue.put("  Calculating elastic moduli...")
-
-        K_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] + 2 * (C_GPa[0, 1] + C_GPa[0, 2] + C_GPa[1, 2])) / 9
-
-        G_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] - C_GPa[0, 1] - C_GPa[0, 2] - C_GPa[1, 2] + 3 * (
-                C_GPa[3, 3] + C_GPa[4, 4] + C_GPa[5, 5])) / 15
-
-        try:
-            S_GPa = np.linalg.inv(C_GPa)
-
-            # Bulk modulus (Reuss)
-            K_reuss = 1 / (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2] + 2 * (S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]))
-
-            # Shear modulus (Reuss)
-            G_reuss = 15 / (4 * (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2]) - 4 * (
-                    S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]) + 3 * (S_GPa[3, 3] + S_GPa[4, 4] + S_GPa[5, 5]))
-
-            K_hill = (K_voigt + K_reuss) / 2
-            G_hill = (G_voigt + G_reuss) / 2
-
-        except np.linalg.LinAlgError:
-            log_queue.put("  ⚠️ Warning: Elastic tensor is singular - using Voigt averages only")
-            K_reuss = G_reuss = K_hill = G_hill = None
-            S_GPa = None
-
-        K = K_hill if K_hill is not None else K_voigt
-        G = G_hill if G_hill is not None else G_voigt
-
-        # Young's modulus
-        E = (9 * K * G) / (3 * K + G)
-
-        # Poisson's ratio
-        nu = (3 * K - 2 * G) / (2 * (3 * K + G))
-
-        # Wave velocities
-        density = elastic_params.get('density', None)
-        if density is None:
-            # Estimate density from structure if not provided by user
-            total_mass_amu = np.sum(atoms.get_masses())  # amu
-            # Convert atomic mass units to grams (1 amu = 1.66053906660 × 10^-24 g)
-            # Convert Å^3 to cm^3 (1 Å^3 = 10^-24 cm^3)
-            # Density (g/cm^3) = (total_mass_amu * 1.66053906660e-24 g/amu) / (volume_A3 * 1e-24 cm^3/A3)
-            # Simplifies to: density = total_mass_amu * 1.66053906660 / volume_A3
-            density = (total_mass_amu * 1.66053906660) / volume  # amu / A^3 to g/cm^3
-            log_queue.put(f"  Estimated density from structure: {density:.3f} g/cm³")
+        use_multi_strain = elastic_params.get('use_multi_strain', True)
+        if use_multi_strain and elastic_params.get('strain_magnitudes'):
+            strain_magnitudes = elastic_params['strain_magnitudes']
+            log_queue.put(
+                f"  Strain sampling: linear fit over "
+                f"{strain_magnitudes}"
+            )
         else:
-            log_queue.put(f"  Using user-provided density: {density:.3f} g/cm³")
+            delta = elastic_params.get('strain_magnitude', 0.01)
+            strain_magnitudes = [-delta, +delta]
+            log_queue.put(f"  Strain sampling: central difference ±{delta}")
 
-        density_kg_m3 = density * 1000
+        ionic_relax = elastic_params.get('ionic_relax_after_strain', True)
+        ionic_fmax  = elastic_params.get('ionic_relax_fmax', 0.01)
+        ionic_steps = elastic_params.get('ionic_relax_steps', 50)
+        ionic_opt   = elastic_params.get('ionic_relax_optimizer', 'LBFGS')
+        ionic_log_interval = elastic_params.get('ionic_relax_log_interval', 1)
 
-        v_l = np.sqrt((K + 4 * G / 3) * 1e9 / density_kg_m3)  # m/s
-        v_t = np.sqrt(G * 1e9 / density_kg_m3)  # m/s
+        if ionic_relax:
+            log_queue.put(
+                f"  Ionic relaxation: ON "
+                f"(fmax={ionic_fmax} eV/Å, max {ionic_steps} steps, {ionic_opt})"
+            )
+        else:
+            log_queue.put(
+                f"  Ionic relaxation: OFF — "
+                f"results may be less accurate for multi-atom cells"
+            )
 
-        v_avg = ((1 / v_l ** 3 + 2 / v_t ** 3) / 3) ** (-1 / 3)
+        n_atoms = len(atoms)
+        if n_atoms > 1 and not ionic_relax:
+            log_queue.put(
+                f"  ⚠️ {n_atoms}-atom cell without ionic relaxation — "
+                f"consider enabling it for accurate off-diagonal constants"
+            )
 
-        h = 6.626e-34  # J⋅s
-        kB = 1.381e-23  # J/K
-        N_atoms = len(atoms)
-        total_mass_kg = np.sum(atoms.get_masses()) * 1.66054e-27
-        theta_D = (h / kB) * v_avg * (3 * N_atoms * density_kg_m3 / (4 * np.pi * total_mass_kg)) ** (1 / 3)
+        original_cell      = atoms.get_cell().copy()
+        original_positions = atoms.get_positions().copy()
+
+        def voigt_strain_tensor(voigt_idx, delta):
+            e = np.zeros((3, 3))
+            if voigt_idx == 0:    e[0, 0] = delta
+            elif voigt_idx == 1:  e[1, 1] = delta
+            elif voigt_idx == 2:  e[2, 2] = delta
+            elif voigt_idx == 3:  e[1, 2] = e[2, 1] = delta / 2
+            elif voigt_idx == 4:  e[0, 2] = e[2, 0] = delta / 2
+            elif voigt_idx == 5:  e[0, 1] = e[1, 0] = delta / 2
+            return e
+
+        def relax_ions(atoms, fmax, max_steps, opt_name,
+                       log_queue=None, label="", log_interval=1):
+            if opt_name == 'FIRE':
+                from ase.optimize import FIRE
+                opt = FIRE(atoms, logfile=None)
+            elif opt_name == 'BFGS':
+                from ase.optimize import BFGS
+                opt = BFGS(atoms, logfile=None)
+            else:
+                from ase.optimize import LBFGS
+                opt = LBFGS(atoms, logfile=None)
+
+            step_counter = [0]
+
+            def observer():
+                step_counter[0] += 1
+                if step_counter[0] % log_interval == 0:
+                    current_forces = atoms.get_forces()
+                    current_fmax = float(np.max(np.linalg.norm(current_forces, axis=1)))
+                    if log_queue is not None:
+                        log_queue.put(
+                            f"        {label}ionic step {step_counter[0]:3d}: "
+                            f"fmax = {current_fmax:.6f} eV/Å"
+                            + (" ✅" if current_fmax <= fmax else "")
+                        )
+
+            opt.attach(observer, interval=1)
+            opt.run(fmax=fmax, steps=max_steps)
+
+            final_fmax = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
+            converged = final_fmax <= fmax
+            return opt.nsteps, final_fmax, converged
+
+        def apply_strain(atoms, original_cell, original_positions, voigt_idx, delta):
+            e = voigt_strain_tensor(voigt_idx, delta)
+            T = np.eye(3) + e
+            new_cell = np.dot(T, original_cell.T).T
+            atoms.set_cell(new_cell, scale_atoms=False)
+            atoms.set_positions(np.dot(T, original_positions.T).T)
+
+        def restore(atoms, original_cell, original_positions, calculator):
+            atoms.set_cell(original_cell, scale_atoms=False)
+            atoms.set_positions(original_positions)
+            atoms.calc = calculator
+
+        C = np.zeros((6, 6))
+        n_total = 6 * len(strain_magnitudes)
+        calc_idx = 0
+        voigt_names = ['xx', 'yy', 'zz', 'yz', 'xz', 'xy']
+
+        log_queue.put(
+            f"  Computing elastic tensor: "
+            f"6 strain components × {len(strain_magnitudes)} magnitudes "
+            f"= {n_total} deformed structures..."
+        )
+
+        for j in range(6):
+            stresses_j = []
+            deltas_j   = []
+
+            for delta in strain_magnitudes:
+                calc_idx += 1
+                log_queue.put(
+                    f"    [{calc_idx}/{n_total}] "
+                    f"ε_{voigt_names[j]} = {delta:+.4f}"
+                )
+
+                apply_strain(atoms, original_cell, original_positions, j, delta)
+                atoms.calc = calculator
+
+                if ionic_relax and n_atoms > 1:
+                    label = f"ε_{voigt_names[j]}={delta:+.4f} "
+                    steps_taken, fmax_after, converged = relax_ions(
+                        atoms,
+                        ionic_fmax,
+                        ionic_steps,
+                        ionic_opt,
+                        log_queue=log_queue,
+                        label=label,
+                        log_interval=ionic_log_interval
+                    )
+
+                    atoms.calc = calculator
+
+                sigma = atoms.get_stress(voigt=True)
+                stresses_j.append(sigma)
+                deltas_j.append(delta)
+
+                restore(atoms, original_cell, original_positions, calculator)
+
+            stresses_array = np.array(stresses_j)
+            deltas_array   = np.array(deltas_j)
+
+            if len(deltas_j) >= 3:
+                for i in range(6):
+                    slope, _ = np.polyfit(deltas_array, stresses_array[:, i], 1)
+                    C[i, j]  = slope * eV_to_GPa
+
+                residuals = []
+                for i in range(6):
+                    fitted = np.polyval(
+                        np.polyfit(deltas_array, stresses_array[:, i], 1),
+                        deltas_array
+                    )
+                    residuals.append(np.max(np.abs(stresses_array[:, i] - fitted)))
+                max_residual_GPa = max(residuals) * eV_to_GPa
+                if max_residual_GPa > 1.0:
+                    log_queue.put(
+                        f"    ⚠️ Non-linear stress response for ε_{voigt_names[j]}: "
+                        f"max residual = {max_residual_GPa:.2f} GPa "
+                        f"(consider smaller strain magnitude)"
+                    )
+            else:
+                for i in range(6):
+                    C[i, j] = (
+                        (stresses_j[1][i] - stresses_j[0][i])
+                        / (deltas_j[1] - deltas_j[0])
+                        * eV_to_GPa
+                    )
+
+        asymmetry = float(np.max(np.abs(C - C.T)))
+        C_GPa = (C + C.T) / 2.0
+        log_queue.put(f"  Max asymmetry |C_ij - C_ji|: {asymmetry:.3f} GPa")
+        if asymmetry > 5.0:
+            log_queue.put(
+                f"  ⚠️ Large asymmetry — consider tighter pre-relaxation "
+                f"or enabling ionic relaxation after strain"
+            )
+
+        K_voigt = (
+            C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
+            + 2*(C_GPa[0,1] + C_GPa[0,2] + C_GPa[1,2])
+        ) / 9.0
+
+        G_voigt = (
+            C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
+            - C_GPa[0,1] - C_GPa[0,2] - C_GPa[1,2]
+            + 3*(C_GPa[3,3] + C_GPa[4,4] + C_GPa[5,5])
+        ) / 15.0
+
+        K_reuss = G_reuss = K_hill = G_hill = S_GPa = None
+        try:
+            S_GPa   = np.linalg.inv(C_GPa)
+            K_reuss = 1.0 / (
+                S_GPa[0,0] + S_GPa[1,1] + S_GPa[2,2]
+                + 2*(S_GPa[0,1] + S_GPa[0,2] + S_GPa[1,2])
+            )
+            G_reuss = 15.0 / (
+                4*(S_GPa[0,0] + S_GPa[1,1] + S_GPa[2,2])
+                - 4*(S_GPa[0,1] + S_GPa[0,2] + S_GPa[1,2])
+                + 3*(S_GPa[3,3] + S_GPa[4,4] + S_GPa[5,5])
+            )
+            K_hill  = (K_voigt + K_reuss) / 2.0
+            G_hill  = (G_voigt + G_reuss) / 2.0
+        except np.linalg.LinAlgError:
+            log_queue.put("  ⚠️ Elastic tensor is singular — Voigt averages only")
+
+        K  = K_hill  if K_hill  is not None else K_voigt
+        G  = G_hill  if G_hill  is not None else G_voigt
+        E  = (9*K*G) / (3*K + G)
+        nu = (3*K - 2*G) / (2*(3*K + G))
+
+        total_mass_amu = np.sum(atoms.get_masses())
+        density        = (total_mass_amu * 1.66053906660) / volume
+        density_kg_m3  = density * 1000.0
+        v_l   = np.sqrt((K + 4*G/3) * 1e9 / density_kg_m3)
+        v_t   = np.sqrt(G * 1e9 / density_kg_m3)
+        v_avg = ((1/v_l**3 + 2/v_t**3) / 3) ** (-1/3)
+
+        h  = 6.626e-34
+        kB = 1.381e-23
+        total_mass_kg = total_mass_amu * 1.66054e-27
+        theta_D = (h/kB) * v_avg * (
+            3 * n_atoms * density_kg_m3 / (4*np.pi*total_mass_kg)
+        ) ** (1/3)
 
         stability_criteria = check_mechanical_stability(C_GPa, log_queue)
 
         log_queue.put(f"✅ Elastic calculation completed for {structure_name}")
-        log_queue.put(f"  Bulk modulus: {K:.1f} GPa")
-        log_queue.put(f"  Shear modulus: {G:.1f} GPa")
-        log_queue.put(f"  Young's modulus: {E:.1f} GPa")
-        log_queue.put(f"  Poisson's ratio: {nu:.3f}")
+        log_queue.put(f"  Bulk modulus  (Hill): {K:.1f} GPa")
+        log_queue.put(f"  Shear modulus (Hill): {G:.1f} GPa")
+        log_queue.put(f"  Young's modulus:      {E:.1f} GPa")
+        log_queue.put(f"  Poisson's ratio:      {nu:.3f}")
+        log_queue.put(f"  Density:              {density:.3f} g/cm³")
+        log_queue.put(f"  Debye temperature:    {theta_D:.1f} K")
+        log_queue.put(
+            f"  Method: "
+            f"{'linear fit (4 strains)' if use_multi_strain else 'central difference'}, "
+            f"ionic relax {'ON' if ionic_relax else 'OFF'}"
+        )
 
         return {
-            'success': True,
-            'elastic_tensor': C_GPa.tolist(),  # 6x6 matrix in GPa
-            'compliance_matrix': S_GPa.tolist() if S_GPa is not None else None,
-
-            'bulk_modulus': {
-                'voigt': K_voigt,
-                'reuss': K_reuss,
-                'hill': K_hill
-            },
-            'shear_modulus': {
-                'voigt': G_voigt,
-                'reuss': G_reuss,
-                'hill': G_hill
-            },
-            'youngs_modulus': E,
-            'poisson_ratio': nu,
-            'wave_velocities': {
-                'longitudinal': v_l,
-                'transverse': v_t,
-                'average': v_avg
-            },
-            'debye_temperature': theta_D,
-            'density': density,
+            'success':            True,
+            'elastic_tensor':     C_GPa.tolist(),
+            'compliance_matrix':  S_GPa.tolist() if S_GPa is not None else None,
+            'bulk_modulus':  {'voigt': K_voigt, 'reuss': K_reuss, 'hill': K_hill},
+            'shear_modulus': {'voigt': G_voigt, 'reuss': G_reuss, 'hill': G_hill},
+            'youngs_modulus':     E,
+            'poisson_ratio':      nu,
+            'wave_velocities':    {'longitudinal': v_l, 'transverse': v_t, 'average': v_avg},
+            'debye_temperature':  theta_D,
+            'density':            density,
             'mechanical_stability': stability_criteria,
-            'strain_magnitude': strain_magnitude
+            'strain_magnitude':   elastic_params.get('strain_magnitude', 0.01),
+            'asymmetry_GPa':      asymmetry,
+            'ionic_relax_used':   ionic_relax,
+            'multi_strain_used':  use_multi_strain,
         }
 
     except Exception as e:
+        import traceback
         log_queue.put(f"❌ Elastic calculation failed for {structure_name}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
+        log_queue.put(traceback.format_exc())
+        return {'success': False, 'error': str(e)}
 
 def append_to_backup_file(result, backup_file_path):
     try:
@@ -2271,14 +2395,6 @@ def setup_optimization_constraints(atoms, optimization_params):
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
             # Create callback to enforce a=b after each step
-            _ic = atoms.get_cell().array.copy()
-            _a_hat = _ic[0] / np.linalg.norm(_ic[0])
-            _c_hat = _ic[2] / np.linalg.norm(_ic[2])
-            _b_perp = np.cross(_c_hat, _a_hat)
-            _b_perp = _b_perp / np.linalg.norm(_b_perp)
-            _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
-                                           (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
-
             def enforce_tetragonal():
                 cell = atoms.get_cell().array.copy()
                 a_len = np.linalg.norm(cell[0])
@@ -2286,8 +2402,8 @@ def setup_optimization_constraints(atoms, optimization_params):
                 old_a = a_len
                 old_b = b_len
                 avg_ab = (a_len + b_len) / 2.0
-                cell[0] = _a_hat * avg_ab
-                cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
+                cell[0] = cell[0] / a_len * avg_ab
+                cell[1] = cell[1] / b_len * avg_ab
                 atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
@@ -2308,14 +2424,6 @@ def setup_optimization_constraints(atoms, optimization_params):
 
             cell_filter = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
-            _ic = atoms.get_cell().array.copy()
-            _a_hat = _ic[0] / np.linalg.norm(_ic[0])
-            _c_hat = _ic[2] / np.linalg.norm(_ic[2])
-            _b_perp = np.cross(_c_hat, _a_hat)
-            _b_perp = _b_perp / np.linalg.norm(_b_perp)
-            _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
-                                           (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
-
             def enforce_tetragonal():
                 cell = atoms.get_cell().array.copy()
                 a_len = np.linalg.norm(cell[0])
@@ -2323,8 +2431,8 @@ def setup_optimization_constraints(atoms, optimization_params):
                 old_a = a_len
                 old_b = b_len
                 avg_ab = (a_len + b_len) / 2.0
-                cell[0] = _a_hat * avg_ab
-                cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
+                cell[0] = cell[0] / a_len * avg_ab
+                cell[1] = cell[1] / b_len * avg_ab
                 atoms.set_cell(cell, scale_atoms=True)
                 return old_a, old_b, avg_ab
 
@@ -3852,7 +3960,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.8.6 · 3/30/2026
+            v0.8.7 · 3/30/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5355,7 +5463,6 @@ with tab1:
                 value=True,
                 help="Recommended: ensures residual forces are minimized before straining the cell."
             )
-
             if elastic_params['pre_optimize']:
                 col_eo1, col_eo2, col_eo3 = st.columns(3)
                 with col_eo1:
@@ -5393,6 +5500,102 @@ with tab1:
                     "⚠️ Skipping pre-optimization. Make sure your structure is already well-relaxed, "
                     "otherwise elastic constants may be inaccurate."
                 )
+
+            st.markdown("---")
+            st.subheader("🔬 Ionic Relaxation After Each Deformation")
+
+            col_ion1, col_ion2 = st.columns([1, 2])
+
+            with col_ion1:
+                elastic_params['ionic_relax_after_strain'] = st.checkbox(
+                    "Relax ionic positions after each strain",
+                    value=True,
+                    help=(
+                        "After straining the cell, re-optimize atomic positions "
+                        "before reading the stress. Critical for multi-atom and "
+                        "low-symmetry (P1/triclinic) structures. Increases "
+                        "computation time by ~(steps × 12 strains)."
+                    )
+                )
+
+            if elastic_params['ionic_relax_after_strain']:
+                with col_ion2:
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    with col_r1:
+                        elastic_params['ionic_relax_fmax'] = st.number_input(
+                            "Force convergence (eV/Å)",
+                            min_value=0.0001, max_value=0.5,
+                            value=0.01, step=0.001, format="%.4f",
+                            help="Stop ionic relaxation when max force is below this"
+                        )
+                    with col_r2:
+                        elastic_params['ionic_relax_steps'] = st.number_input(
+                            "Max ionic relax steps",
+                            min_value=1, max_value=500,
+                            value=50, step=10,
+                            help="Hard cap on steps per deformation"
+                        )
+                    with col_r3:
+                        elastic_params['ionic_relax_optimizer'] = st.selectbox(
+                            "Optimizer",
+                            ["LBFGS", "FIRE", "BFGS"],
+                            index=0,
+                            help="LBFGS is fastest for most cases"
+                        )
+                st.info(
+                    f"ℹ️ Each of the 12 deformed structures (6 strains × ±δ) will be "
+                    f"relaxed up to {elastic_params['ionic_relax_steps']} steps "
+                    f"before stress is read. Recommended for multi-atom / P1 cells."
+                )
+            else:
+                elastic_params['ionic_relax_fmax'] = 0.01
+                elastic_params['ionic_relax_steps'] = 0
+                elastic_params['ionic_relax_optimizer'] = 'LBFGS'
+                st.warning(
+                    "⚠️ Skipping ionic relaxation. Results may be inaccurate for "
+                    "multi-atom or low-symmetry structures."
+                )
+
+            st.markdown("---")
+            st.subheader("📐 Strain Sampling")
+
+            use_multi_strain = st.checkbox(
+                "Use multiple strain magnitudes + linear fit (recommended)",
+                value=True,
+                help=(
+                    "Apply 4 strain magnitudes per component and fit stress vs strain "
+                    "linearly. More accurate than "
+                    "a single central difference."
+                )
+            )
+            elastic_params['use_multi_strain'] = use_multi_strain
+
+            if use_multi_strain:
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    max_delta = st.number_input(
+                        "Max strain magnitude",
+                        min_value=0.001, max_value=0.05,
+                        value=0.01, step=0.001, format="%.3f",
+                        help="Will use ±max and ±max/2, e.g. ±0.01 and ±0.005"
+                    )
+                    elastic_params['strain_magnitude'] = max_delta
+                    elastic_params['strain_magnitudes'] = [
+                        -max_delta, -max_delta / 2, +max_delta / 2, +max_delta
+                    ]
+                with col_s2:
+                    st.info(
+                        f"Strain values: "
+                        f"{-max_delta:.3f}, {-max_delta / 2:.4f}, "
+                        f"{+max_delta / 2:.4f}, {+max_delta:.3f}\n\n"
+                        f"Total deformed structures: "
+                        f"6 components × 4 magnitudes = **24**"
+                    )
+            else:
+                elastic_params['strain_magnitudes'] = None  # signals central diff only
+                st.info("Single central difference: 6 × 2 = 12 deformed structures")
+
+
 
             save_trajectory = True
 
