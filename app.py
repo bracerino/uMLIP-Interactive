@@ -5629,8 +5629,8 @@ with tab_st:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
         st.info(
-            f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`.\n"
-            "Calculations of phonons currently works only within the GUI.")
+            f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`."
+            "..")
         col1, col2, col3 = st.columns(3)
 
         st.markdown("""
