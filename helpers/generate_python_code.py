@@ -1893,6 +1893,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_upet = selected_model_key is not None and "UPET" in selected_model_key
 
     if is_nequix:
+
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing Nequix calculator...")
     try:
@@ -2602,11 +2603,11 @@ def _generate_energy_only_code(calc_formation_energy):
             # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
-                rel_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
+                relative_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
 
                 plt.figure(figsize=(16, 12))
-                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
-                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
                 plt.title('Relative Energy Comparison (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
@@ -2616,11 +2617,11 @@ def _generate_energy_only_code(calc_formation_energy):
 
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
-                y_range = max(rel_energies) if max(rel_energies) > 0 else 1
-                plt.ylim(-y_range * 0.1, max(rel_energies) + y_range * 0.15)
+                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
 
                 # Add vertical value labels above bars
-                for i, (bar, re) in enumerate(zip(bars, rel_energies)):
+                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
                     if re > 0:
                         y_pos = bar.get_height() + y_range * 0.02
                         va_align = 'bottom'
@@ -2649,30 +2650,121 @@ def _generate_energy_only_code(calc_formation_energy):
 '''
     return code
 
-
 def _generate_elastic_code(elastic_params, optimization_params, calc_formation_energy):
-    """Generate code for elastic property calculations."""
     strain_magnitude = elastic_params.get('strain_magnitude', 0.01)
-    pre_optimize     = elastic_params.get('pre_optimize', True)
+    use_multi_strain = elastic_params.get('use_multi_strain', True)
+    ionic_relax = elastic_params.get('ionic_relax_after_strain', True)
+    ionic_fmax = elastic_params.get('ionic_relax_fmax', 0.01)
+    ionic_steps = elastic_params.get('ionic_relax_steps', 50)
+    ionic_opt = elastic_params.get('ionic_relax_optimizer', 'LBFGS')
+    ionic_log_interval = elastic_params.get('ionic_relax_log_interval', 1)
+    pre_optimize = elastic_params.get('pre_optimize', True)
+    pre_opt_steps = elastic_params.get('pre_opt_steps', 400)
+    pre_opt_fmax = elastic_params.get('pre_opt_fmax', 0.01)
     pre_opt_optimizer = elastic_params.get('pre_opt_optimizer', 'LBFGS')
-    pre_opt_fmax     = elastic_params.get('pre_opt_fmax', 0.01)
-    pre_opt_steps    = elastic_params.get('pre_opt_steps', 400)
+
+    if use_multi_strain:
+        strain_magnitudes_list = [-strain_magnitude, -strain_magnitude/2, strain_magnitude/2, strain_magnitude]
+    else:
+        strain_magnitudes_list = [-strain_magnitude, strain_magnitude]
+
+    strain_magnitudes_str = str(strain_magnitudes_list)
 
     code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
-    strain_magnitude  = {strain_magnitude}
-    pre_optimize      = {str(pre_optimize)}
+    eV_to_GPa = 160.21766208
+    strain_magnitudes = {strain_magnitudes_str}
+    use_multi_strain = {use_multi_strain}
+    ionic_relax = {ionic_relax}
+    ionic_fmax = {ionic_fmax}
+    ionic_steps = {ionic_steps}
+    ionic_opt = "{ionic_opt}"
+    ionic_log_interval = {ionic_log_interval}
+    pre_optimize = {pre_optimize}
+    pre_opt_steps = {pre_opt_steps}
+    pre_opt_fmax = {pre_opt_fmax}
     pre_opt_optimizer = "{pre_opt_optimizer}"
-    pre_opt_fmax      = {pre_opt_fmax}
-    pre_opt_steps     = {pre_opt_steps}
 
-    print(f"⚙️ Elastic settings:")
-    print(f"  - Strain magnitude: {{strain_magnitude*100:.1f}}%")
-    print(f"  - Pre-optimization: {{pre_optimize}}")
-    if pre_optimize:
-        print(f"  - Pre-opt optimizer: {{pre_opt_optimizer}}, fmax={{pre_opt_fmax}} eV/Å, max {{pre_opt_steps}} steps")
+    print(f"⚙️ Strain magnitudes: {{strain_magnitudes}}")
+    print(f"⚙️ Method: {{'linear fit' if use_multi_strain else 'central difference'}}")
+    print(f"⚙️ Ionic relaxation after strain: {{ionic_relax}}")
+    if ionic_relax:
+        print(f"⚙️   fmax={{ionic_fmax}} eV/Å, max {{ionic_steps}} steps, {{ionic_opt}}")
+
+    def voigt_strain_tensor(voigt_idx, delta):
+        e = np.zeros((3, 3))
+        if voigt_idx == 0:    e[0, 0] = delta
+        elif voigt_idx == 1:  e[1, 1] = delta
+        elif voigt_idx == 2:  e[2, 2] = delta
+        elif voigt_idx == 3:  e[1, 2] = e[2, 1] = delta / 2
+        elif voigt_idx == 4:  e[0, 2] = e[2, 0] = delta / 2
+        elif voigt_idx == 5:  e[0, 1] = e[1, 0] = delta / 2
+        return e
+
+    def apply_strain(atoms, original_cell, original_positions, voigt_idx, delta):
+        e = voigt_strain_tensor(voigt_idx, delta)
+        T = np.eye(3) + e
+        new_cell = np.dot(T, original_cell.T).T
+        atoms.set_cell(new_cell, scale_atoms=False)
+        atoms.set_positions(np.dot(T, original_positions.T).T)
+
+    def restore_structure(atoms, original_cell, original_positions, calculator):
+        atoms.set_cell(original_cell, scale_atoms=False)
+        atoms.set_positions(original_positions)
+        atoms.calc = calculator
+
+    def relax_ions_after_strain(atoms, fmax, max_steps, opt_name, log_interval, label=""):
+        if opt_name == "FIRE":
+            opt = FIRE(atoms, logfile=None)
+        elif opt_name == "BFGS":
+            opt = BFGS(atoms, logfile=None)
+        else:
+            opt = LBFGS(atoms, logfile=None)
+
+        step_counter = [0]
+
+        def observer():
+            step_counter[0] += 1
+            if step_counter[0] % log_interval == 0:
+                current_fmax = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
+                print(f"        {{label}}ionic step {{step_counter[0]:3d}}: fmax = {{current_fmax:.6f}} eV/Å"
+                      + (" ✅" if current_fmax <= fmax else ""))
+
+        opt.attach(observer, interval=1)
+        opt.run(fmax=fmax, steps=max_steps)
+
+        final_fmax = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
+        converged = final_fmax <= fmax
+        return opt.nsteps, final_fmax, converged
+
+    def _xyz_frame(atoms, voigt_name, delta, frame_type):
+        cell = atoms.get_cell()
+        lattice_str = " ".join([f"{{x:.6f}}" for row in cell for x in row])
+        symbols = atoms.get_chemical_symbols()
+        positions = atoms.get_positions()
+        forces = atoms.get_forces()
+        energy = atoms.get_potential_energy()
+        fmax = float(np.max(np.linalg.norm(forces, axis=1)))
+        lines = []
+        lines.append(str(len(atoms)))
+        lines.append(
+            f'Lattice="{{lattice_str}}" '
+            f'Properties=species:S:1:pos:R:3:forces:R:3 '
+            f'strain_component="{{voigt_name}}" '
+            f'strain_magnitude={{delta:+.6f}} '
+            f'frame_type="{{frame_type}}" '
+            f'energy={{energy:.6f}} '
+            f'max_force={{fmax:.6f}} '
+            f'pbc="T T T"'
+        )
+        for sym, pos, force in zip(symbols, positions, forces):
+            lines.append(
+                f"{{sym}} {{pos[0]:12.6f}} {{pos[1]:12.6f}} {{pos[2]:12.6f}} "
+                f"{{force[0]:12.6f}} {{force[1]:12.6f}} {{force[2]:12.6f}}"
+            )
+        return lines
 
     reference_energies = {{}}'''
 
@@ -2684,9 +2776,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
         atoms = read(filename)
         for symbol in atoms.get_chemical_symbols():
             all_elements.add(symbol)
-
     print(f"🧪 Found elements: {', '.join(sorted(all_elements))}")
-
     for i, element in enumerate(sorted(all_elements)):
         print(f"  📍 Calculating reference for {element} ({i+1}/{len(all_elements)})...")
         atom = Atoms(element, positions=[(0, 0, 0)], cell=[20, 20, 20], pbc=True)
@@ -2696,6 +2786,8 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     code += '''
 
+    voigt_names = ['xx', 'yy', 'zz', 'yz', 'xz', 'xy']
+
     for i, filename in enumerate(structure_files):
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
@@ -2703,193 +2795,231 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             atoms = read(filename)
             atoms.calc = calculator
             print(f"  📊 Structure has {len(atoms)} atoms")
+
+            forces_init = atoms.get_forces()
+            max_force_init = np.max(np.linalg.norm(forces_init, axis=1))
+            if max_force_init > 0.05:
+                print(f"  ⚠️ Warning: max force = {max_force_init:.4f} eV/Å — structure may not be well relaxed")
+
+            base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+
             if pre_optimize and pre_opt_steps > 0:
-                print(f"  🔧 Running {pre_opt_optimizer} pre-optimization "
+                print(f"  🔧 Running pre-elastic {pre_opt_optimizer} optimization "
                       f"(fmax={pre_opt_fmax} eV/Å, max {pre_opt_steps} steps)...")
-                temp_atoms = atoms.copy()
-                temp_atoms.calc = calculator
+                if pre_opt_optimizer == "FIRE":
+                    pre_opt = FIRE(atoms, logfile=None)
+                elif pre_opt_optimizer == "BFGS":
+                    pre_opt = BFGS(atoms, logfile=None)
+                else:
+                    pre_opt = LBFGS(atoms, logfile=None)
 
-                class PreOptLogger:
-                    def __init__(self, max_steps):
-                        self.step_count = 0
-                        self.max_steps = max_steps
-                        self.previous_energy = None
+                step_counter_pre = [0]
+                prev_energy_pre = [None]
 
-                    def __call__(self, optimizer=None):
-                        if optimizer is not None and hasattr(optimizer, 'atoms'):
-                            atoms_obj = optimizer.atoms
-                            forces = atoms_obj.get_forces()
-                            max_force = np.max(np.linalg.norm(forces, axis=1))
-                            energy = atoms_obj.get_potential_energy()
-                            energy_per_atom = energy / len(atoms_obj)
-                            if self.previous_energy is not None:
-                                energy_change = abs(energy - self.previous_energy)
-                                energy_change_per_atom = energy_change / len(atoms_obj)
-                            else:
-                                energy_change = float('inf')
-                                energy_change_per_atom = float('inf')
-                            self.previous_energy = energy
-                            try:
-                                stress = atoms_obj.get_stress(voigt=True)
-                                max_stress = np.max(np.abs(stress))
-                            except:
-                                max_stress = 0.0
-                            self.step_count += 1
-                            print(f"    Pre-opt step {self.step_count}: "
-                                  f"E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
-                                  f"F_max={max_force:.4f} eV/Å, "
-                                  f"Max_Stress={max_stress:.4f} GPa, "
-                                  f"ΔE={energy_change_per_atom:.2e} eV/atom")
+                def pre_opt_observer():
+                    step_counter_pre[0] += 1
+                    f = atoms.get_forces()
+                    fmax_now = float(np.max(np.linalg.norm(f, axis=1)))
+                    e = atoms.get_potential_energy()
+                    de = abs(e - prev_energy_pre[0]) if prev_energy_pre[0] is not None else float('inf')
+                    prev_energy_pre[0] = e
+                    print(f"    Pre-opt step {step_counter_pre[0]}: E={e:.6f} eV, "
+                          f"fmax={fmax_now:.4f} eV/Å, ΔE={de:.2e} eV")
 
-                pre_opt_logger = PreOptLogger(pre_opt_steps)
+                pre_opt.attach(pre_opt_observer, interval=1)
+                pre_opt.run(fmax=pre_opt_fmax, steps=pre_opt_steps)
 
-                if pre_opt_optimizer == "LBFGS":
-                    temp_optimizer = LBFGS(temp_atoms, logfile=None)
-                elif pre_opt_optimizer == "FIRE":
-                    temp_optimizer = FIRE(temp_atoms, logfile=None)
-                elif pre_opt_optimizer in ("BFGSLineSearch (QuasiNewton)", "BFGSLineSearch"):
-                    temp_optimizer = BFGSLineSearch(temp_atoms, logfile=None)
-                elif pre_opt_optimizer == "LBFGSLineSearch":
-                    temp_optimizer = LBFGSLineSearch(temp_atoms, logfile=None)
-                elif pre_opt_optimizer == "MDMin":
-                    temp_optimizer = MDMin(temp_atoms, logfile=None)
-                elif pre_opt_optimizer == "GPMin":
-                    temp_optimizer = GPMin(temp_atoms, logfile=None, update_hyperparams=True)
-                elif pre_opt_optimizer == "SciPyFminBFGS":
-                    temp_optimizer = SciPyFminBFGS(temp_atoms, logfile=None)
-                elif pre_opt_optimizer == "SciPyFminCG":
-                    temp_optimizer = SciPyFminCG(temp_atoms, logfile=None)
-                else:  # BFGS default
-                    temp_optimizer = BFGS(temp_atoms, logfile=None)
+                final_fmax_pre = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
+                converged_pre = final_fmax_pre <= pre_opt_fmax
+                print(f"  {'✅' if converged_pre else '⚠️'} Pre-optimization done: "
+                      f"{pre_opt.nsteps} steps, fmax={final_fmax_pre:.4f} eV/Å "
+                      f"{'(converged)' if converged_pre else '(not converged)'}")
 
-                temp_optimizer.attach(lambda: pre_opt_logger(temp_optimizer), interval=1)
-                temp_optimizer.run(fmax=pre_opt_fmax, steps=pre_opt_steps)
-                atoms = temp_atoms
-
-                final_fmax = float(np.max(np.linalg.norm(atoms.get_forces(), axis=1)))
-                converged  = final_fmax <= pre_opt_fmax
-                status     = "converged ✅" if converged else f"did NOT converge ⚠️ (F_max={final_fmax:.4f})"
-                print(f"  Pre-optimization {status}: "
-                      f"E={atoms.get_potential_energy():.6f} eV "
-                      f"in {temp_optimizer.nsteps} steps")
+                pre_opt_filename = f"optimized_structures/pre_optimized_{base_name}.vasp"
+                write(pre_opt_filename, atoms, format='vasp', direct=True, sort=True)
+                print(f"  💾 Saved pre-optimized structure: {pre_opt_filename}")
             else:
-                print("  ⏭️ Skipping pre-optimization (disabled by user). "
-                      "Ensure the structure is already well-relaxed.")
+                print("  ⏭️ Skipping pre-optimization (disabled or 0 steps)")
 
-
-
-            print("  ⚖️ Calculating equilibrium energy and stress...")
             E0 = atoms.get_potential_energy()
-            stress0 = atoms.get_stress(voigt=True)
+            volume = atoms.get_volume()
+            print(f"  Equilibrium energy: {E0:.6f} eV, Volume: {volume:.4f} Å³")
 
-            print(f"    Equilibrium energy: {E0:.6f} eV")
-            print(f"    Equilibrium stress: {np.max(np.abs(stress0)):.6f} GPa")
+            original_cell = atoms.get_cell().copy()
+            original_positions = atoms.get_positions().copy()
+            n_atoms = len(atoms)
+            n_total = 6 * len(strain_magnitudes)
+
+            print(f"  Computing elastic tensor: 6 components × {len(strain_magnitudes)} magnitudes = {n_total} deformed structures...")
+            if ionic_relax and n_atoms > 1:
+                print(f"  Ionic relaxation ON (fmax={ionic_fmax} eV/Å, max {ionic_steps} steps, {ionic_opt})")
+            elif n_atoms > 1:
+                print(f"  ⚠️ Ionic relaxation OFF — clamped-ion elastic constants")
 
             C = np.zeros((6, 6))
-            original_cell = atoms.get_cell().copy()
-            volume = atoms.get_volume()
+            calc_idx = 0
+            frames_before_relax = []
+            frames_after_relax = []
 
-            print(f"  📏 Applying strains and calculating elastic constants...")
+            for j in range(6):
+                stresses_j = []
+                deltas_j = []
 
-            strain_tensors = []
+                for delta in strain_magnitudes:
+                    calc_idx += 1
+                    print(f"    [{calc_idx}/{n_total}] ε_{voigt_names[j]} = {delta:+.4f}")
 
-            for idx in range(3):
-                strain = np.zeros((3, 3))
-                strain[idx, idx] = strain_magnitude
-                strain_tensors.append(strain)
+                    apply_strain(atoms, original_cell, original_positions, j, delta)
+                    atoms.calc = calculator
 
-            shear_pairs = [(1, 2), (0, 2), (0, 1)]
-            for i, j in shear_pairs:
-                strain = np.zeros((3, 3))
-                strain[i, j] = strain[j, i] = strain_magnitude / 2
-                strain_tensors.append(strain)
+                    frames_before_relax.extend(
+                        _xyz_frame(atoms, voigt_names[j], delta, "before_ionic_relax")
+                    )
 
-            for strain_idx, strain_tensor in enumerate(strain_tensors):
-                print(f"    📐 Strain {strain_idx + 1}/6...")
+                    if ionic_relax and n_atoms > 1:
+                        label = f"ε_{voigt_names[j]}={delta:+.4f} "
+                        steps_taken, fmax_after, converged = relax_ions_after_strain(
+                            atoms, ionic_fmax, ionic_steps, ionic_opt, ionic_log_interval, label
+                        )
+                        print(f"      → ionic relax done: {steps_taken} steps, "
+                              f"fmax={fmax_after:.6f} eV/Å "
+                              f"{'✅ converged' if converged else '⚠️ NOT converged'}")
+                        atoms.calc = calculator
 
-                deformed_cell = original_cell @ (np.eye(3) + strain_tensor)
-                atoms.set_cell(deformed_cell, scale_atoms=True)
-                stress_pos = atoms.get_stress(voigt=True)
+                        frames_after_relax.extend(
+                            _xyz_frame(atoms, voigt_names[j], delta, "after_ionic_relax")
+                        )
 
-                deformed_cell = original_cell @ (np.eye(3) - strain_tensor)
-                atoms.set_cell(deformed_cell, scale_atoms=True)
-                stress_neg = atoms.get_stress(voigt=True)
+                    sigma = atoms.get_stress(voigt=True)
+                    stresses_j.append(sigma)
+                    deltas_j.append(delta)
 
-                stress_derivative = (stress_pos - stress_neg) / (2 * strain_magnitude)
-                C[strain_idx, :] = stress_derivative
+                    restore_structure(atoms, original_cell, original_positions, calculator)
 
-                atoms.set_cell(original_cell, scale_atoms=True)
+                stresses_array = np.array(stresses_j)
+                deltas_array = np.array(deltas_j)
 
-            eV_to_GPa = 160.2176
-            C_GPa = C * eV_to_GPa
+                if len(deltas_j) >= 3:
+                    for ii in range(6):
+                        slope, _ = np.polyfit(deltas_array, stresses_array[:, ii], 1)
+                        C[ii, j] = slope * eV_to_GPa
 
-            print("  📊 Calculating elastic moduli...")
+                    residuals = []
+                    for ii in range(6):
+                        fitted = np.polyval(
+                            np.polyfit(deltas_array, stresses_array[:, ii], 1),
+                            deltas_array
+                        )
+                        residuals.append(np.max(np.abs(stresses_array[:, ii] - fitted)))
+                    max_residual_GPa = max(residuals) * eV_to_GPa
+                    if max_residual_GPa > 1.0:
+                        print(f"    ⚠️ Non-linear stress response for ε_{voigt_names[j]}: "
+                              f"max residual = {max_residual_GPa:.2f} GPa")
+                else:
+                    for ii in range(6):
+                        C[ii, j] = (
+                            (stresses_j[1][ii] - stresses_j[0][ii])
+                            / (deltas_j[1] - deltas_j[0])
+                            * eV_to_GPa
+                        )
 
-            K_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] +
-                       2*(C_GPa[0, 1] + C_GPa[0, 2] + C_GPa[1, 2])) / 9
-            G_voigt = (C_GPa[0, 0] + C_GPa[1, 1] + C_GPa[2, 2] - C_GPa[0, 1] - C_GPa[0, 2] - C_GPa[1, 2] +
-                       3*(C_GPa[3, 3] + C_GPa[4, 4] + C_GPa[5, 5])) / 15
+            traj_before_filename = f"optimized_structures/elastic_deformations_before_relax_{base_name}.xyz"
+            with open(traj_before_filename, 'w') as traj_f:
+                traj_f.write("\\n".join(frames_before_relax) + "\\n")
+            print(f"  💾 Saved deformation trajectory (before ionic relax): {traj_before_filename}")
+            print(f"      {n_total} frames — one per deformed structure, raw affine positions")
+
+            if ionic_relax and n_atoms > 1 and frames_after_relax:
+                traj_after_filename = f"optimized_structures/elastic_deformations_after_relax_{base_name}.xyz"
+                with open(traj_after_filename, 'w') as traj_f:
+                    traj_f.write("\\n".join(frames_after_relax) + "\\n")
+                print(f"  💾 Saved deformation trajectory (after ionic relax):  {traj_after_filename}")
+                print(f"      {n_total} frames — one per deformed structure, ionically relaxed positions")
+            else:
+                print(f"  ℹ️ No after-relax trajectory saved "
+                      f"({'ionic relax OFF' if not ionic_relax else 'single-atom cell — nothing to relax'})")
+
+            asymmetry = float(np.max(np.abs(C - C.T)))
+            C_GPa = (C + C.T) / 2.0
+            print(f"  Max asymmetry |C_ij - C_ji|: {asymmetry:.3f} GPa")
+            if asymmetry > 5.0:
+                print(f"  ⚠️ Large asymmetry — consider tighter pre-relaxation or enabling ionic relaxation")
+
+            K_voigt = (C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
+                       + 2*(C_GPa[0,1] + C_GPa[0,2] + C_GPa[1,2])) / 9.0
+            G_voigt = (C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
+                       - C_GPa[0,1] - C_GPa[0,2] - C_GPa[1,2]
+                       + 3*(C_GPa[3,3] + C_GPa[4,4] + C_GPa[5,5])) / 15.0
 
             try:
                 S_GPa = np.linalg.inv(C_GPa)
-                K_reuss = 1 / (S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2] +
-                               2*(S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]))
-                G_reuss = 15 / (4*(S_GPa[0, 0] + S_GPa[1, 1] + S_GPa[2, 2]) - 4*(S_GPa[0, 1] + S_GPa[0, 2] + S_GPa[1, 2]) +
-                               3*(S_GPa[3, 3] + S_GPa[4, 4] + S_GPa[5, 5]))
-                K_hill = (K_voigt + K_reuss) / 2
-                G_hill = (G_voigt + G_reuss) / 2
+                K_reuss = 1.0 / (S_GPa[0,0] + S_GPa[1,1] + S_GPa[2,2]
+                                  + 2*(S_GPa[0,1] + S_GPa[0,2] + S_GPa[1,2]))
+                G_reuss = 15.0 / (4*(S_GPa[0,0] + S_GPa[1,1] + S_GPa[2,2])
+                                   - 4*(S_GPa[0,1] + S_GPa[0,2] + S_GPa[1,2])
+                                   + 3*(S_GPa[3,3] + S_GPa[4,4] + S_GPa[5,5]))
+                K_hill = (K_voigt + K_reuss) / 2.0
+                G_hill = (G_voigt + G_reuss) / 2.0
                 reuss_available = True
             except np.linalg.LinAlgError:
-                print("    ⚠️ Elastic tensor is singular - using Voigt averages only")
+                print("  ⚠️ Elastic tensor is singular — using Voigt averages only")
                 K_reuss = G_reuss = K_hill = G_hill = None
+                S_GPa = None
                 reuss_available = False
 
             K = K_hill if K_hill is not None else K_voigt
             G = G_hill if G_hill is not None else G_voigt
-
-            E = (9 * K * G) / (3 * K + G)
-            nu = (3 * K - 2 * G) / (2 * (3 * K + G))
+            E = (9*K*G) / (3*K + G)
+            nu = (3*K - 2*G) / (2*(3*K + G))
 
             total_mass_amu = np.sum(atoms.get_masses())
             density = (total_mass_amu * 1.66053906660) / volume
-            density_kg_m3 = density * 1000
-
+            density_kg_m3 = density * 1000.0
             v_l = np.sqrt((K + 4*G/3) * 1e9 / density_kg_m3)
             v_t = np.sqrt(G * 1e9 / density_kg_m3)
-            v_avg = ((1/v_l**3 + 2/v_t**3) / 3)**(-1/3)
+            v_avg = ((1/v_l**3 + 2/v_t**3) / 3) ** (-1/3)
 
             h = 6.626e-34
             kB = 1.381e-23
-            N_atoms = len(atoms)
             total_mass_kg = total_mass_amu * 1.66054e-27
-            theta_D = (h / kB) * v_avg * (3 * N_atoms * density_kg_m3 / (4 * np.pi * total_mass_kg))**(1/3)
+            theta_D = (h/kB) * v_avg * (3 * n_atoms * density_kg_m3 / (4*np.pi*total_mass_kg))**(1/3)
 
             eigenvals = np.linalg.eigvals(C_GPa)
             mechanically_stable = bool(np.all(eigenvals > 0) and np.linalg.det(C_GPa) > 0)
 
+            final_filename = f"optimized_structures/elastic_relaxed_{base_name}.vasp"
+            write(final_filename, atoms, format='vasp', direct=True, sort=True)
+            print(f"  💾 Saved structure used for elastic constants: {final_filename}")
 
             result = {
-                "structure": filename,
-                "energy_eV": float(E0),
-                "calculation_type": "elastic_properties",
-                "elastic_tensor_GPa": C_GPa.tolist(),
-                "bulk_modulus_voigt_GPa": float(K_voigt),
-                "bulk_modulus_reuss_GPa": float(K_reuss) if reuss_available else None,
-                "bulk_modulus_hill_GPa": float(K_hill) if reuss_available else None,
-                "shear_modulus_voigt_GPa": float(G_voigt),
-                "shear_modulus_reuss_GPa": float(G_reuss) if reuss_available else None,
-                "shear_modulus_hill_GPa": float(G_hill) if reuss_available else None,
-                "youngs_modulus_GPa": float(E),
-                "poisson_ratio": float(nu),
-                "density_g_cm3": float(density),
+                "structure":                filename,
+                "output_structure":         final_filename,
+                "traj_before_relax":        traj_before_filename,
+                "energy_eV":                float(E0),
+                "calculation_type":         "elastic_properties",
+                "method":                   "linear_fit_4_strains" if use_multi_strain else "central_difference",
+                "ionic_relax_used":         ionic_relax,
+                "asymmetry_GPa":            asymmetry,
+                "elastic_tensor_GPa":       C_GPa.tolist(),
+                "bulk_modulus_voigt_GPa":   float(K_voigt),
+                "bulk_modulus_reuss_GPa":   float(K_reuss) if reuss_available else None,
+                "bulk_modulus_hill_GPa":    float(K_hill)  if reuss_available else None,
+                "shear_modulus_voigt_GPa":  float(G_voigt),
+                "shear_modulus_reuss_GPa":  float(G_reuss) if reuss_available else None,
+                "shear_modulus_hill_GPa":   float(G_hill)  if reuss_available else None,
+                "youngs_modulus_GPa":       float(E),
+                "poisson_ratio":            float(nu),
+                "density_g_cm3":            float(density),
                 "longitudinal_velocity_ms": float(v_l),
-                "transverse_velocity_ms": float(v_t),
-                "average_velocity_ms": float(v_avg),
-                "debye_temperature_K": float(theta_D),
-                "mechanically_stable": bool(mechanically_stable),
-                "strain_magnitude": float(strain_magnitude),
-                "num_atoms": int(len(atoms))
-            }'''
+                "transverse_velocity_ms":   float(v_t),
+                "average_velocity_ms":      float(v_avg),
+                "debye_temperature_K":      float(theta_D),
+                "mechanically_stable":      bool(mechanically_stable),
+                "strain_magnitudes":        strain_magnitudes,
+                "num_atoms":                int(n_atoms),
+            }
+            if ionic_relax and n_atoms > 1:
+                result["traj_after_relax"] = traj_after_filename'''
 
     if calc_formation_energy:
         code += '''
@@ -2900,34 +3030,40 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     code += '''
 
             save_elastic_constants_to_csv(filename, C_GPa)
+
             elastic_data_dict = {
-                "structure_name": [filename],
-                "energy_eV": [float(E0)],
-                "C11_GPa": [float(C_GPa[0, 0])],
-                "C22_GPa": [float(C_GPa[1, 1])],
-                "C33_GPa": [float(C_GPa[2, 2])],
-                "C44_GPa": [float(C_GPa[3, 3])],
-                "C55_GPa": [float(C_GPa[4, 4])],
-                "C66_GPa": [float(C_GPa[5, 5])],
-                "C12_GPa": [float(C_GPa[0, 1])],
-                "C13_GPa": [float(C_GPa[0, 2])],
-                "C23_GPa": [float(C_GPa[1, 2])],
-                "bulk_modulus_voigt_GPa": [float(K_voigt)],
-                "bulk_modulus_reuss_GPa": [float(K_reuss) if reuss_available else None],
-                "bulk_modulus_hill_GPa": [float(K_hill) if reuss_available else None],
-                "shear_modulus_voigt_GPa": [float(G_voigt)],
-                "shear_modulus_reuss_GPa": [float(G_reuss) if reuss_available else None],
-                "shear_modulus_hill_GPa": [float(G_hill) if reuss_available else None],
-                "youngs_modulus_GPa": [float(E)],
-                "poisson_ratio": [float(nu)],
-                "density_g_cm3": [float(density)],
-                "longitudinal_velocity_ms": [float(v_l)],
-                "transverse_velocity_ms": [float(v_t)],
-                "average_velocity_ms": [float(v_avg)],
-                "debye_temperature_K": [float(theta_D)],
-                "mechanically_stable": [bool(mechanically_stable)],
-                "strain_magnitude": [float(strain_magnitude)],
-                "num_atoms": [int(len(atoms))]
+                "structure_name":             [filename],
+                "output_structure":           [final_filename],
+                "energy_eV":                  [float(E0)],
+                "method":                     ["linear_fit_4_strains" if use_multi_strain else "central_difference"],
+                "ionic_relax_used":           [ionic_relax],
+                "asymmetry_GPa":              [asymmetry],
+                "C11_GPa": [float(C_GPa[0,0])], "C22_GPa": [float(C_GPa[1,1])],
+                "C33_GPa": [float(C_GPa[2,2])], "C44_GPa": [float(C_GPa[3,3])],
+                "C55_GPa": [float(C_GPa[4,4])], "C66_GPa": [float(C_GPa[5,5])],
+                "C12_GPa": [float(C_GPa[0,1])], "C13_GPa": [float(C_GPa[0,2])],
+                "C23_GPa": [float(C_GPa[1,2])], "C14_GPa": [float(C_GPa[0,3])],
+                "C15_GPa": [float(C_GPa[0,4])], "C16_GPa": [float(C_GPa[0,5])],
+                "C24_GPa": [float(C_GPa[1,3])], "C25_GPa": [float(C_GPa[1,4])],
+                "C26_GPa": [float(C_GPa[1,5])], "C34_GPa": [float(C_GPa[2,3])],
+                "C35_GPa": [float(C_GPa[2,4])], "C36_GPa": [float(C_GPa[2,5])],
+                "C45_GPa": [float(C_GPa[3,4])], "C46_GPa": [float(C_GPa[3,5])],
+                "C56_GPa": [float(C_GPa[4,5])],
+                "bulk_modulus_voigt_GPa":     [float(K_voigt)],
+                "bulk_modulus_reuss_GPa":     [float(K_reuss) if reuss_available else None],
+                "bulk_modulus_hill_GPa":      [float(K_hill)  if reuss_available else None],
+                "shear_modulus_voigt_GPa":    [float(G_voigt)],
+                "shear_modulus_reuss_GPa":    [float(G_reuss) if reuss_available else None],
+                "shear_modulus_hill_GPa":     [float(G_hill)  if reuss_available else None],
+                "youngs_modulus_GPa":         [float(E)],
+                "poisson_ratio":              [float(nu)],
+                "density_g_cm3":              [float(density)],
+                "longitudinal_velocity_ms":   [float(v_l)],
+                "transverse_velocity_ms":     [float(v_t)],
+                "average_velocity_ms":        [float(v_avg)],
+                "debye_temperature_K":        [float(theta_D)],
+                "mechanically_stable":        [bool(mechanically_stable)],
+                "num_atoms":                  [int(n_atoms)],
             }'''
 
     if calc_formation_energy:
@@ -2937,22 +3073,23 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     code += '''
 
-            df_elastic = pd.DataFrame(elastic_data_dict)
-            df_elastic.to_csv(f"results/elastic_data_{filename.replace('.', '_')}.csv", index=False)
-
-            elastic_tensor_df = pd.DataFrame(C_GPa,
-                                           columns=['C11', 'C22', 'C33', 'C23', 'C13', 'C12'],
-                                           index=['C11', 'C22', 'C33', 'C23', 'C13', 'C12'])
-            elastic_tensor_df.to_csv(f"results/elastic_tensor_{filename.replace('.', '_')}.csv")
+            pd.DataFrame(elastic_data_dict).to_csv(
+                f"results/elastic_data_{filename.replace('.', '_')}.csv", index=False)
+            pd.DataFrame(C_GPa,
+                         columns=['C_1','C_2','C_3','C_4','C_5','C_6'],
+                         index=['C_1','C_2','C_3','C_4','C_5','C_6']
+            ).to_csv(f"results/elastic_tensor_{filename.replace('.', '_')}.csv")
 
             structure_time = time.time() - structure_start_time
             print(f"  ✅ Elastic calculation completed in {structure_time:.1f}s")
-            print(f"  ✅ Energy: {E0:.6f} eV")
-            print(f"  ✅ Bulk modulus: {K:.1f} GPa")
-            print(f"  ✅ Shear modulus: {G:.1f} GPa")
-            print(f"  ✅ Young's modulus: {E:.1f} GPa")
-            print(f"  ✅ Poisson's ratio: {nu:.3f}")
-            print(f"  ✅ Mechanically stable: {mechanically_stable}")'''
+            print(f"  ✅ Bulk modulus  (Hill): {K:.1f} GPa")
+            print(f"  ✅ Shear modulus (Hill): {G:.1f} GPa")
+            print(f"  ✅ Young's modulus:      {E:.1f} GPa")
+            print(f"  ✅ Poisson's ratio:      {nu:.3f}")
+            print(f"  ✅ Density:              {density:.3f} g/cm³")
+            print(f"  ✅ Debye temperature:    {theta_D:.1f} K")
+            print(f"  ✅ Mechanically stable:  {mechanically_stable}")
+            print(f"  ✅ Max asymmetry:        {asymmetry:.3f} GPa")'''
 
     if calc_formation_energy:
         code += '''
@@ -2962,55 +3099,56 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     code += '''
 
             results.append(result)
-
-            # Save results after each structure completes
-            df_results = pd.DataFrame(results)
-            df_results.to_csv("results/elastic_results.csv", index=False)
+            pd.DataFrame(results).to_csv("results/elastic_results.csv", index=False)
             print(f"  💾 Results updated and saved")
 
         except Exception as e:
+            import traceback
             print(f"  ❌ Elastic calculation failed: {e}")
-            results.append({{"structure": filename, "error": str(e)}})
+            print(traceback.format_exc())
+            results.append({"structure": filename, "error": str(e)})
+            pd.DataFrame(results).to_csv("results/elastic_results.csv", index=False)
 
-            # Save results even for failed structures
-            df_results = pd.DataFrame(results)
-            df_results.to_csv("results/elastic_results.csv", index=False)
-            print(f"  💾 Results updated and saved(with error)")
-
-    # Final summary save
-    df_results = pd.DataFrame(results)
-    df_results.to_csv("results/elastic_results.csv", index=False)
-
+    pd.DataFrame(results).to_csv("results/elastic_results.csv", index=False)
     print(f"\\n💾 Saved results to results/elastic_results.csv")
 
     with open("results/elastic_summary.txt", "w") as f:
-        f.write("MACE Elastic Properties Results\\n")
-        f.write("=" * 40 + "\\n\\n")
+        f.write("Elastic Properties Results\\n")
+        f.write("=" * 50 + "\\n\\n")
         for result in results:
             if "error" not in result:
                 f.write(f"Structure: {result['structure']}\\n")
+                f.write(f"Output structure: {result.get('output_structure', 'N/A')}\\n")
+                f.write(f"Trajectory (before relax): {result.get('traj_before_relax', 'N/A')}\\n")
+                if "traj_after_relax" in result:
+                    f.write(f"Trajectory (after relax):  {result['traj_after_relax']}\\n")
+                f.write(f"Method: {result['method']}\\n")
+                f.write(f"Ionic relaxation used: {result['ionic_relax_used']}\\n")
+                f.write(f"Asymmetry: {result['asymmetry_GPa']:.3f} GPa\\n")
                 f.write(f"Energy: {result['energy_eV']:.6f} eV\\n")
-                bulk_mod = result.get('bulk_modulus_hill_GPa') or result.get('bulk_modulus_voigt_GPa')
-                shear_mod = result.get('shear_modulus_hill_GPa') or result.get('shear_modulus_voigt_GPa')
-                f.write(f"Bulk Modulus: {bulk_mod:.1f} GPa\\n")
-                f.write(f"Shear Modulus: {shear_mod:.1f} GPa\\n")
+                K_out = result.get('bulk_modulus_hill_GPa') or result.get('bulk_modulus_voigt_GPa')
+                G_out = result.get('shear_modulus_hill_GPa') or result.get('shear_modulus_voigt_GPa')
+                f.write(f"Bulk Modulus (Hill): {K_out:.1f} GPa\\n")
+                f.write(f"Shear Modulus (Hill): {G_out:.1f} GPa\\n")
                 f.write(f"Young's Modulus: {result['youngs_modulus_GPa']:.1f} GPa\\n")
                 f.write(f"Poisson's Ratio: {result['poisson_ratio']:.3f}\\n")
                 f.write(f"Density: {result['density_g_cm3']:.3f} g/cm³\\n")
                 f.write(f"Debye Temperature: {result['debye_temperature_K']:.1f} K\\n")
                 f.write(f"Mechanically Stable: {result['mechanically_stable']}\\n")
-                f.write(f"Atoms: {result['num_atoms']}\\n")
+                f.write(f"Atoms: {result['num_atoms']}\\n")'''
+
+    if calc_formation_energy:
+        code += '''
                 if "formation_energy_eV_per_atom" in result and result["formation_energy_eV_per_atom"] is not None:
-                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")
+                    f.write(f"Formation Energy: {result['formation_energy_eV_per_atom']:.6f} eV/atom\\n")'''
+
+    code += '''
                 f.write("\\n")
             else:
                 f.write(f"Structure: {result['structure']} - ERROR: {result['error']}\\n\\n")
 
-    print(f"💾 Saved summary to results/elastic_summary.txt")'''
+    print(f"💾 Saved summary to results/elastic_summary.txt")
 
-    # Add plotting functionality for elastic properties
-    code += '''
-    # Generate elastic properties plots
     print("\\n📊 Generating elastic properties plots...")
     successful_results = [r for r in results if "error" not in r]
 
@@ -3018,175 +3156,265 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
         try:
             import matplotlib.pyplot as plt
 
-            # Set global font sizes
             plt.rcParams.update({
-                'font.size': 18,
-                'axes.titlesize': 24,
-                'axes.labelsize': 20,
-                'xtick.labelsize': 18,
-                'ytick.labelsize': 18,
-                'legend.fontsize': 18,
-                'figure.titlesize': 26
+                'font.size': 18, 'axes.titlesize': 24, 'axes.labelsize': 20,
+                'xtick.labelsize': 18, 'ytick.labelsize': 18,
+                'legend.fontsize': 18, 'figure.titlesize': 26
             })
 
-            # Prepare data
             structure_names = [r["structure"] for r in successful_results]
             energies = [r["energy_eV"] for r in successful_results]
 
-            # 1. Total Energy Plot
             plt.figure(figsize=(16, 10))
             bars = plt.bar(range(len(structure_names)), energies, color='steelblue', alpha=0.7)
             plt.xlabel('Structure', fontsize=22, fontweight='bold')
             plt.ylabel('Total Energy (eV)', fontsize=22, fontweight='bold')
             plt.title('Total Energy (Elastic Properties Calculation)', fontsize=26, fontweight='bold', pad=20)
-            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
-                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.xticks(range(len(structure_names)),
+                       [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names],
+                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-
-            # Add value labels and stability indicators
             for i, (bar, energy, result) in enumerate(zip(bars, energies, successful_results)):
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(energies)*0.01, 
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(energies)*0.01,
                         f'{energy:.3f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
-                # Add mechanical stability indicator
                 stable = result.get("mechanically_stable", False)
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(energies)-min(energies))*0.05, 
-                        '✓' if stable else '✗', ha='center', va='center', 
+                plt.text(bar.get_x() + bar.get_width()/2,
+                        bar.get_height() - abs(max(energies)-min(energies))*0.05,
+                        '✓' if stable else '✗', ha='center', va='center',
                         fontsize=20, color='green' if stable else 'red', fontweight='bold')
-
             plt.tight_layout()
             plt.savefig('results/elastic_total_energy_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
-            print("  ✅ Saved total energy plot: results/elastic_total_energy_comparison.png")'''
+            print("  ✅ Saved: results/elastic_total_energy_comparison.png")'''
 
     if calc_formation_energy:
         code += '''
 
-            # 2. Formation Energy Plot
             formation_energies = [r.get("formation_energy_eV_per_atom") for r in successful_results]
-            valid_formation = [(name, fe, result) for name, fe, result in zip(structure_names, formation_energies, successful_results) if fe is not None]
-
+            valid_formation = [(name, fe, result) for name, fe, result
+                               in zip(structure_names, formation_energies, successful_results)
+                               if fe is not None]
             if valid_formation:
                 valid_names, valid_fe, valid_results = zip(*valid_formation)
-
                 plt.figure(figsize=(16, 10))
                 colors = ['green' if fe == min(valid_fe) else 'orange' for fe in valid_fe]
                 bars = plt.bar(range(len(valid_names)), valid_fe, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Formation Energy (eV/atom)', fontsize=22, fontweight='bold')
                 plt.title('Formation Energy per Atom (Elastic Properties)', fontsize=26, fontweight='bold', pad=20)
-                plt.xticks(range(len(valid_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names], 
-                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.xticks(range(len(valid_names)),
+                           [name.replace('.vasp', '').replace('POSCAR_', '') for name in valid_names],
+                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-
-                # Add value labels on bars
                 for i, (bar, fe, result) in enumerate(zip(bars, valid_fe, valid_results)):
-                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(valid_fe)-min(valid_fe))*0.02, 
+                    plt.text(bar.get_x() + bar.get_width()/2,
+                            bar.get_height() + (max(valid_fe)-min(valid_fe))*0.02,
                             f'{fe:.4f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
-                    # Add mechanical stability indicator
                     stable = result.get("mechanically_stable", False)
-                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() - abs(max(valid_fe)-min(valid_fe))*0.08, 
-                            '✓' if stable else '✗', ha='center', va='center', 
+                    plt.text(bar.get_x() + bar.get_width()/2,
+                            bar.get_height() - abs(max(valid_fe)-min(valid_fe))*0.08,
+                            '✓' if stable else '✗', ha='center', va='center',
                             fontsize=20, color='green' if stable else 'red', fontweight='bold')
-
                 plt.axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=2)
-                plt.legend(['Stability line'], fontsize=18)
                 plt.tight_layout()
                 plt.savefig('results/elastic_formation_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
-                print("  ✅ Saved formation energy plot: results/elastic_formation_energy_comparison.png")'''
+                print("  ✅ Saved: results/elastic_formation_energy_comparison.png")'''
 
     code += '''
 
-            # 3. Relative Energy Plot
             if len(energies) > 1:
                 min_energy = min(energies)
-                rel_energies = [(e - min_energy) * 1000 for e in energies]  # Convert to meV
-
+                relative_energies = [(e - min_energy) * 1000 for e in energies]
                 plt.figure(figsize=(16, 10))
-                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
-                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
-                plt.title('Relative Energy Comparison (Elastic Properties, vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
-                plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
-                          rotation=45, ha='right', fontsize=18, fontweight='bold')
+                plt.title('Relative Energy Comparison (Elastic Properties, vs. Lowest Energy)',
+                          fontsize=26, fontweight='bold', pad=20)
+                plt.xticks(range(len(structure_names)),
+                           [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names],
+                           rotation=45, ha='right', fontsize=18, fontweight='bold')
                 plt.yticks(fontsize=18, fontweight='bold')
-
-                # Add value labels on bars
-                for i, (bar, re, result) in enumerate(zip(bars, rel_energies, successful_results)):
-                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(rel_energies)*0.02, 
-                            f'{re:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
-                    # Add mechanical stability indicator
-                    stable = result.get("mechanically_stable", False)
-                    plt.text(bar.get_x() + bar.get_width()/2, max(rel_energies)*0.1, 
-                            '✓' if stable else '✗', ha='center', va='center', 
-                            fontsize=20, color='green' if stable else 'red', fontweight='bold')
-
+                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
+                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
+                    y_pos = bar.get_height() + y_range * 0.02 if re > 0 else y_range * 0.05
+                    plt.text(bar.get_x() + bar.get_width()/2, y_pos,
+                            f'{re:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold',
+                            rotation=90)
                 plt.tight_layout()
                 plt.savefig('results/elastic_relative_energy_comparison.png', dpi=300, bbox_inches='tight')
                 plt.close()
-                print("  ✅ Saved relative energy plot: results/elastic_relative_energy_comparison.png")
+                print("  ✅ Saved: results/elastic_relative_energy_comparison.png")
 
-            # 4. Bulk Modulus Comparison Plot
             bulk_moduli = []
             for result in successful_results:
-                # Use Hill average if available, otherwise Voigt
-                bulk_hill = result.get("bulk_modulus_hill_GPa")
+                bulk_hill  = result.get("bulk_modulus_hill_GPa")
                 bulk_voigt = result.get("bulk_modulus_voigt_GPa")
-                bulk_value = bulk_hill if bulk_hill is not None else bulk_voigt
-                bulk_moduli.append(bulk_value)
+                bulk_moduli.append(bulk_hill if bulk_hill is not None else bulk_voigt)
 
             plt.figure(figsize=(16, 10))
-            # Color based on mechanical stability
-            colors = ['green' if result.get("mechanically_stable", False) else 'red' for result in successful_results]
+            colors = ['green' if result.get("mechanically_stable", False) else 'red'
+                      for result in successful_results]
             bars = plt.bar(range(len(structure_names)), bulk_moduli, color=colors, alpha=0.7)
             plt.xlabel('Structure', fontsize=22, fontweight='bold')
             plt.ylabel('Bulk Modulus (GPa)', fontsize=22, fontweight='bold')
             plt.title('Bulk Modulus Comparison', fontsize=26, fontweight='bold', pad=20)
-            plt.xticks(range(len(structure_names)), [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names], 
-                      rotation=45, ha='right', fontsize=18, fontweight='bold')
+            plt.xticks(range(len(structure_names)),
+                       [name.replace('.vasp', '').replace('POSCAR_', '') for name in structure_names],
+                       rotation=45, ha='right', fontsize=18, fontweight='bold')
             plt.yticks(fontsize=18, fontweight='bold')
-
-            # Add value labels on bars
             for i, (bar, bulk, result) in enumerate(zip(bars, bulk_moduli, successful_results)):
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(bulk_moduli)*0.01, 
+                plt.text(bar.get_x() + bar.get_width()/2,
+                        bar.get_height() + max(bulk_moduli)*0.01,
                         f'{bulk:.1f}', ha='center', va='bottom', fontsize=16, fontweight='bold')
-
-                # Add shear and Young's modulus as smaller text
-                shear_hill = result.get("shear_modulus_hill_GPa")
+                shear_hill  = result.get("shear_modulus_hill_GPa")
                 shear_voigt = result.get("shear_modulus_voigt_GPa")
                 shear_value = shear_hill if shear_hill is not None else shear_voigt
                 youngs_value = result.get("youngs_modulus_GPa")
-
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height()*0.5, 
-                        f'G: {shear_value:.0f}\\nE: {youngs_value:.0f}', 
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height()*0.5,
+                        f'G: {shear_value:.0f}\\nE: {youngs_value:.0f}',
                         ha='center', va='center', fontsize=14, fontweight='bold',
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
-
-            # Add legend for colors
             import matplotlib.patches as mpatches
-            stable_patch = mpatches.Patch(color='green', alpha=0.7, label='Mechanically Stable')
-            unstable_patch = mpatches.Patch(color='red', alpha=0.7, label='Mechanically Unstable')
+            stable_patch   = mpatches.Patch(color='green', alpha=0.7, label='Mechanically Stable')
+            unstable_patch = mpatches.Patch(color='red',   alpha=0.7, label='Mechanically Unstable')
             plt.legend(handles=[stable_patch, unstable_patch], loc='upper right', fontsize=18)
-
             plt.grid(True, alpha=0.3, axis='y')
             plt.tight_layout()
             plt.savefig('results/bulk_modulus_comparison.png', dpi=300, bbox_inches='tight')
             plt.close()
-            print("  ✅ Saved bulk modulus plot: results/bulk_modulus_comparison.png")
+            print("  ✅ Saved: results/bulk_modulus_comparison.png")
 
-            # Reset matplotlib settings
+            if len(successful_results) > 1:
+                shear_moduli  = []
+                youngs_moduli = []
+                poisson_ratios = []
+                debye_temps   = []
+                for result in successful_results:
+                    shear_hill  = result.get("shear_modulus_hill_GPa")
+                    shear_voigt = result.get("shear_modulus_voigt_GPa")
+                    shear_moduli.append(shear_hill if shear_hill is not None else shear_voigt)
+                    youngs_moduli.append(result.get("youngs_modulus_GPa", 0))
+                    poisson_ratios.append(result.get("poisson_ratio", 0))
+                    debye_temps.append(result.get("debye_temperature_K", 0))
+
+                fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+                fig.suptitle('Elastic Properties Comparison', fontsize=28, fontweight='bold')
+                short_names = [name.replace('.vasp', '').replace('POSCAR_', '')
+                               for name in structure_names]
+
+                axes[0, 0].bar(range(len(short_names)), shear_moduli, color='orange', alpha=0.7)
+                axes[0, 0].set_title('Shear Modulus (Hill)', fontsize=22, fontweight='bold')
+                axes[0, 0].set_ylabel('G (GPa)', fontsize=20, fontweight='bold')
+                axes[0, 0].set_xticks(range(len(short_names)))
+                axes[0, 0].set_xticklabels(short_names, rotation=45, ha='right', fontsize=16)
+                for i, val in enumerate(shear_moduli):
+                    axes[0, 0].text(i, val + max(shear_moduli)*0.01, f'{val:.1f}',
+                                   ha='center', va='bottom', fontsize=14, fontweight='bold')
+
+                axes[0, 1].bar(range(len(short_names)), youngs_moduli, color='purple', alpha=0.7)
+                axes[0, 1].set_title("Young's Modulus", fontsize=22, fontweight='bold')
+                axes[0, 1].set_ylabel('E (GPa)', fontsize=20, fontweight='bold')
+                axes[0, 1].set_xticks(range(len(short_names)))
+                axes[0, 1].set_xticklabels(short_names, rotation=45, ha='right', fontsize=16)
+                for i, val in enumerate(youngs_moduli):
+                    axes[0, 1].text(i, val + max(youngs_moduli)*0.01, f'{val:.1f}',
+                                   ha='center', va='bottom', fontsize=14, fontweight='bold')
+
+                axes[1, 0].bar(range(len(short_names)), poisson_ratios, color='teal', alpha=0.7)
+                axes[1, 0].set_title("Poisson's Ratio", fontsize=22, fontweight='bold')
+                axes[1, 0].set_ylabel('ν', fontsize=20, fontweight='bold')
+                axes[1, 0].set_xticks(range(len(short_names)))
+                axes[1, 0].set_xticklabels(short_names, rotation=45, ha='right', fontsize=16)
+                axes[1, 0].axhline(y=0.25, color='red', linestyle='--', alpha=0.5,
+                                   linewidth=2, label='ν = 0.25')
+                axes[1, 0].legend(fontsize=16)
+                for i, val in enumerate(poisson_ratios):
+                    axes[1, 0].text(i, val + max(poisson_ratios)*0.01, f'{val:.3f}',
+                                   ha='center', va='bottom', fontsize=14, fontweight='bold')
+
+                axes[1, 1].bar(range(len(short_names)), debye_temps, color='brown', alpha=0.7)
+                axes[1, 1].set_title('Debye Temperature', fontsize=22, fontweight='bold')
+                axes[1, 1].set_ylabel('θ_D (K)', fontsize=20, fontweight='bold')
+                axes[1, 1].set_xticks(range(len(short_names)))
+                axes[1, 1].set_xticklabels(short_names, rotation=45, ha='right', fontsize=16)
+                for i, val in enumerate(debye_temps):
+                    axes[1, 1].text(i, val + max(debye_temps)*0.01, f'{val:.0f}',
+                                   ha='center', va='bottom', fontsize=14, fontweight='bold')
+
+                for ax in axes.flat:
+                    ax.tick_params(axis='both', labelsize=16)
+                    ax.grid(True, alpha=0.3, axis='y')
+
+                plt.tight_layout()
+                plt.savefig('results/elastic_properties_overview.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved: results/elastic_properties_overview.png")
+
+                fig, ax = plt.subplots(figsize=(10, 8))
+                scatter_colors = ['green' if result.get("mechanically_stable", False) else 'red'
+                                  for result in successful_results]
+                ax.scatter(bulk_moduli, shear_moduli, c=scatter_colors,
+                           s=200, alpha=0.8, edgecolors='black', linewidth=1.5, zorder=5)
+                for i, name in enumerate(short_names):
+                    ax.annotate(name, (bulk_moduli[i], shear_moduli[i]),
+                               textcoords="offset points", xytext=(8, 8),
+                               fontsize=14, fontweight='bold')
+                ax.set_xlabel('Bulk Modulus K (GPa)', fontsize=20, fontweight='bold')
+                ax.set_ylabel('Shear Modulus G (GPa)', fontsize=20, fontweight='bold')
+                ax.set_title('Pugh Diagram: K vs G', fontsize=24, fontweight='bold', pad=15)
+                ax.tick_params(axis='both', labelsize=16)
+                ax.grid(True, alpha=0.3)
+                stable_p   = mpatches.Patch(color='green', alpha=0.8, label='Mechanically Stable')
+                unstable_p = mpatches.Patch(color='red',   alpha=0.8, label='Mechanically Unstable')
+                ax.legend(handles=[stable_p, unstable_p], fontsize=16)
+                plt.tight_layout()
+                plt.savefig('results/pugh_diagram_K_vs_G.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved: results/pugh_diagram_K_vs_G.png")
+
+                pugh_ratios = [K_val/G_val if G_val != 0 else 0
+                               for K_val, G_val in zip(bulk_moduli, shear_moduli)]
+                colors_pugh = ['red' if ratio > 1.75 else 'green' for ratio in pugh_ratios]
+                fig, ax = plt.subplots(figsize=(10, 8))
+                bars = ax.bar(range(len(short_names)), pugh_ratios, color=colors_pugh, alpha=0.7)
+                ax.axhline(y=1.75, color='black', linestyle='--', linewidth=2,
+                          label='Pugh criterion (K/G = 1.75)')
+                ax.set_xlabel('Structure', fontsize=20, fontweight='bold')
+                ax.set_ylabel('K/G ratio', fontsize=20, fontweight='bold')
+                ax.set_title('Pugh Ratio (K/G): Ductile vs Brittle', fontsize=24, fontweight='bold', pad=15)
+                ax.set_xticks(range(len(short_names)))
+                ax.set_xticklabels(short_names, rotation=45, ha='right', fontsize=16)
+                ax.tick_params(axis='both', labelsize=16)
+                ax.grid(True, alpha=0.3, axis='y')
+                for i, (bar, ratio) in enumerate(zip(bars, pugh_ratios)):
+                    behavior = 'Ductile' if ratio > 1.75 else 'Brittle'
+                    ax.text(bar.get_x() + bar.get_width()/2,
+                           bar.get_height() + max(pugh_ratios)*0.02,
+                           f'{ratio:.2f}\\n({behavior})',
+                           ha='center', va='bottom', fontsize=13, fontweight='bold')
+                ductile_p = mpatches.Patch(color='red',   alpha=0.7, label='Ductile (K/G > 1.75)')
+                brittle_p = mpatches.Patch(color='green', alpha=0.7, label='Brittle (K/G < 1.75)')
+                ax.legend(handles=[ductile_p, brittle_p], fontsize=16)
+                plt.tight_layout()
+                plt.savefig('results/pugh_ratio_ductile_brittle.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                print("  ✅ Saved: results/pugh_ratio_ductile_brittle.png")
+
             plt.rcParams.update(plt.rcParamsDefault)
 
         except ImportError:
             print("  ⚠️ Matplotlib not available. Install with: pip install matplotlib")
         except Exception as e:
             print(f"  ⚠️ Error generating plots: {e}")
-
+            import traceback
+            print(traceback.format_exc())
     else:
         print("  ℹ️ No successful calculations to plot")
 '''
-
     return code
 
 
@@ -3902,24 +4130,17 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
                     # Define tetragonal enforcement callback
-                    _ic = atoms.get_cell().array.copy()
-                    _a_hat = _ic[0] / np.linalg.norm(_ic[0])
-                    _c_hat = _ic[2] / np.linalg.norm(_ic[2])
-                    _b_perp = np.cross(_c_hat, _a_hat)
-                    _b_perp = _b_perp / np.linalg.norm(_b_perp)
-                    _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
-                                 (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
-
                     def enforce_tetragonal():
-                        cell = atoms.get_cell().array.copy()
-                        a_len = np.linalg.norm(cell[0])
-                        b_len = np.linalg.norm(cell[1])
-                        old_a = a_len
-                        old_b = b_len
-                        avg_ab = (a_len + b_len) / 2.0
-                        cell[0] = _a_hat * avg_ab
-                        cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
-                        atoms.set_cell(cell, scale_atoms=True)
+                        cell = atoms.get_cell()
+                        cellpar = cell.cellpar()
+                        avg_ab = (cellpar[0] + cellpar[1]) / 2.0
+                        old_a = cellpar[0]
+                        old_b = cellpar[1]
+                        cellpar[0] = avg_ab
+                        cellpar[1] = avg_ab
+                        # cellpar[3:] = 90.0  # Ensure angles stay at 90
+
+                        atoms.set_cell(cellpar, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
                     tetragonal_callback = enforce_tetragonal
@@ -3939,14 +4160,6 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     optimization_object = UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
 
                     # Define tetragonal enforcement callback
-                    _ic = atoms.get_cell().array.copy()
-                    _a_hat = _ic[0] / np.linalg.norm(_ic[0])
-                    _c_hat = _ic[2] / np.linalg.norm(_ic[2])
-                    _b_perp = np.cross(_c_hat, _a_hat)
-                    _b_perp = _b_perp / np.linalg.norm(_b_perp)
-                    _gamma_rad = np.arccos(np.clip(np.dot(_ic[0], _ic[1]) /
-                                 (np.linalg.norm(_ic[0]) * np.linalg.norm(_ic[1])), -1, 1))
-
                     def enforce_tetragonal():
                         cell = atoms.get_cell().array.copy()
                         a_len = np.linalg.norm(cell[0])
@@ -3954,8 +4167,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                         old_a = a_len
                         old_b = b_len
                         avg_ab = (a_len + b_len) / 2.0
-                        cell[0] = _a_hat * avg_ab
-                        cell[1] = avg_ab * (np.cos(_gamma_rad) * _a_hat + np.sin(_gamma_rad) * _b_perp)
+                        cell[0] = cell[0] / a_len * avg_ab
+                        cell[1] = cell[1] / b_len * avg_ab
                         atoms.set_cell(cell, scale_atoms=True)
                         return old_a, old_b, avg_ab
 
@@ -4042,15 +4255,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     except:
                         max_stress = 0.0
 
-                    # Check energy convergence, currently the energy is used also as parameter for convergence, probably better to modify later to just keep it for force, stress
+                    # Check energy convergence
                     energy_converged = False
                     if logger.trajectory and len(logger.trajectory) > 1:
                         energy_change = abs(logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
                         energy_converged = energy_change < ediff
-                    else:
-                        energy_change = 0
-                        energy_converged = True
-                        
 
                     # Determine convergence
                     if opt_mode == "atoms_only":
@@ -4448,11 +4657,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             # 3. Relative Energy Plot
             if len(final_energies) > 1:
                 min_energy = min(final_energies)
-                rel_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
+                relative_energies = [(e - min_energy) * 1000 for e in final_energies]  # Convert to meV
 
                 plt.figure(figsize=(16, 12))
-                colors = ['green' if re == 0 else 'orange' for re in rel_energies]
-                bars = plt.bar(range(len(structure_names)), rel_energies, color=colors, alpha=0.7)
+                colors = ['green' if re == 0 else 'orange' for re in relative_energies]
+                bars = plt.bar(range(len(structure_names)), relative_energies, color=colors, alpha=0.7)
                 plt.xlabel('Structure', fontsize=22, fontweight='bold')
                 plt.ylabel('Relative Energy (meV)', fontsize=22, fontweight='bold')
                 plt.title('Relative Energy Comparison After Optimization (vs. Lowest Energy)', fontsize=26, fontweight='bold', pad=20)
@@ -4462,11 +4671,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
                 # Extend y-axis to accommodate labels above bars
                 y_min, y_max = plt.ylim()
-                y_range = max(rel_energies) if max(rel_energies) > 0 else 1
-                plt.ylim(-y_range * 0.1, max(rel_energies) + y_range * 0.15)
+                y_range = max(relative_energies) if max(relative_energies) > 0 else 1
+                plt.ylim(-y_range * 0.1, max(relative_energies) + y_range * 0.15)
 
                 # Add vertical value labels above bars
-                for i, (bar, re) in enumerate(zip(bars, rel_energies)):
+                for i, (bar, re) in enumerate(zip(bars, relative_energies)):
                     if re > 0:
                         y_pos = bar.get_height() + y_range * 0.02
                         va_align = 'bottom'
