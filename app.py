@@ -696,11 +696,7 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
         asymmetry = float(np.max(np.abs(C - C.T)))
         C_GPa = (C + C.T) / 2.0
         log_queue.put(f"  Max asymmetry |C_ij - C_ji|: {asymmetry:.3f} GPa")
-        if asymmetry > 5.0:
-            log_queue.put(
-                f"  ⚠️ Large asymmetry — consider tighter pre-relaxation "
-                f"or enabling ionic relaxation after strain"
-            )
+
 
         K_voigt = (
             C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
