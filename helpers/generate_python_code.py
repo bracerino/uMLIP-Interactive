@@ -2881,9 +2881,6 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                         steps_taken, fmax_after, converged = relax_ions_after_strain(
                             atoms, ionic_fmax, ionic_steps, ionic_opt, ionic_log_interval, label
                         )
-                        print(f"      → ionic relax done: {steps_taken} steps, "
-                              f"fmax={fmax_after:.6f} eV/Å "
-                              f"{'✅ converged' if converged else '⚠️ NOT converged'}")
                         atoms.calc = calculator
 
                         frames_after_relax.extend(
@@ -2941,10 +2938,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
             asymmetry = float(np.max(np.abs(C - C.T)))
             C_GPa = (C + C.T) / 2.0
-            print(f"  Max asymmetry |C_ij - C_ji|: {asymmetry:.3f} GPa")
-            if asymmetry > 5.0:
-                print(f"  ⚠️ Large asymmetry — consider tighter pre-relaxation or enabling ionic relaxation")
-
+            #print(f"  Max asymmetry |C_ij - C_ji|: {asymmetry:.3f} GPa")
             K_voigt = (C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
                        + 2*(C_GPa[0,1] + C_GPa[0,2] + C_GPa[1,2])) / 9.0
             G_voigt = (C_GPa[0,0] + C_GPa[1,1] + C_GPa[2,2]
