@@ -5,7 +5,8 @@ import copy  # Import copy
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
-                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",custom_mace_path=None):
+                              mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
+                              custom_mace_path=None, custom_upet_path=None):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -552,34 +553,26 @@ except ImportError:
     print("Error: UPET not found. Please install with: pip install upet")
     exit()
 """
-        upet_raw = actual_model_size
-        if upet_raw.startswith("upet:"):
-            upet_raw = upet_raw[len("upet:"):]
-        if "::" in upet_raw:
-            upet_model_name, upet_version = upet_raw.split("::", 1)
-        elif ":" in upet_raw:
-            upet_model_name, upet_version = upet_raw.split(":", 1)
-        else:
-            upet_model_name = upet_raw
-            upet_version = "latest"
+        is_custom_upet_md = (actual_model_size == "upet:custom")
 
-        d3_block_gpu = ""
-        d3_block_cpu = ""
-        if mace_dispersion:
-            d3_block_gpu = f"""
+        if is_custom_upet_md:
+            d3_block_gpu = ""
+            d3_block_cpu = ""
+            if mace_dispersion:
+                d3_block_gpu = f'''
     try:
         from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
         from ase.calculators.mixing import SumCalculator
         print("  Adding D3-BJ dispersion ({mace_dispersion_xc})...")
         dft_d3 = TorchDFTD3Calculator(device="{device}", xc="{mace_dispersion_xc}", damping="bj")
         calculator = SumCalculator([calculator, dft_d3])
-        print("  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on {device}")
+        print(f"  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on {device}")
     except ImportError:
         print("  ⚠️ torch-dftd not installed — skipping dispersion. Run: pip install torch-dftd")
     except Exception as d3_err:
-        print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")"""
+        print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
 
-            d3_block_cpu = f"""
+                d3_block_cpu = f'''
         try:
             from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
             from ase.calculators.mixing import SumCalculator
@@ -590,33 +583,117 @@ except ImportError:
         except ImportError:
             print("  ⚠️ torch-dftd not installed — skipping dispersion.")
         except Exception as d3_err:
-            print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")"""
+            print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
 
-        calculator_setup_str = f"""
-print("Setting up UPET calculator...")
+            _upet_ckpt_path = custom_upet_path or "/path/to/your/model.ckpt"
+            calculator_setup_str = f"""
+print("Setting up custom UPET calculator from local .ckpt file...")
+upet_local_path = "{_upet_ckpt_path}"
+
+if not os.path.exists(upet_local_path):
+    print(f"❌ Custom UPET .ckpt file not found: {{upet_local_path}}")
+    print("Please edit the 'upet_local_path' variable at the top of this script.")
+    exit()
+
+print(f"📁 Loading from: {{upet_local_path}}")
+print(f"⚙️  Device: {device}")
+
 try:
+    from upet.calculator import UPETCalculator
+    calculator = UPETCalculator(
+        checkpoint_path=upet_local_path,
+        device="{device}",
+    )
+    print(f"✅ Custom UPET model initialized successfully on {device}")
+    {d3_block_gpu}
+except Exception as e:
+    print(f"❌ Custom UPET initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        from upet.calculator import UPETCalculator
+        calculator = UPETCalculator(
+            checkpoint_path=upet_local_path,
+            device="cpu",
+        )
+        print("✅ Custom UPET initialized on CPU (fallback)")
+        {d3_block_cpu}
+    except Exception as cpu_e:
+        print(f"❌ UPET CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
+        else:
+            # Standard named UPET model
+            upet_raw = actual_model_size
+            if upet_raw.startswith("upet:"):
+                upet_raw = upet_raw[len("upet:"):]
+            if "::" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split("::", 1)
+            elif ":" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split(":", 1)
+            else:
+                upet_model_name = upet_raw
+                upet_version = "latest"
+
+            d3_block_gpu = ""
+            d3_block_cpu = ""
+            if mace_dispersion:
+                d3_block_gpu = f'''
+    try:
+        from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+        from ase.calculators.mixing import SumCalculator
+        print("  Adding D3-BJ dispersion ({mace_dispersion_xc})...")
+        dft_d3 = TorchDFTD3Calculator(device="{device}", xc="{mace_dispersion_xc}", damping="bj")
+        calculator = SumCalculator([calculator, dft_d3])
+        print(f"  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on {device}")
+    except ImportError:
+        print("  ⚠️ torch-dftd not installed — skipping dispersion. Run: pip install torch-dftd")
+    except Exception as d3_err:
+        print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
+
+                d3_block_cpu = f'''
+        try:
+            from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+            from ase.calculators.mixing import SumCalculator
+            print("  Adding D3-BJ dispersion ({mace_dispersion_xc}) on CPU...")
+            dft_d3 = TorchDFTD3Calculator(device="cpu", xc="{mace_dispersion_xc}", damping="bj")
+            calculator = SumCalculator([calculator, dft_d3])
+            print("  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on CPU")
+        except ImportError:
+            print("  ⚠️ torch-dftd not installed — skipping dispersion.")
+        except Exception as d3_err:
+            print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
+
+            calculator_setup_str = f"""
+print("Setting up UPET calculator...")
+print(f"🎯 Model: {upet_model_name}, Version: {upet_version}")
+print(f"⚙️  Device: {device}")
+
+try:
+    from upet.calculator import UPETCalculator
     calculator = UPETCalculator(
         model="{upet_model_name}",
         version="{upet_version}",
         device="{device}",
     )
-    print(f"✅ UPET {upet_model_name} v{upet_version} initialized on {device}")
+    print(f"✅ UPET {upet_model_name} v{upet_version} initialized successfully on {device}")
     {d3_block_gpu}
 except Exception as e:
     print(f"❌ UPET initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
+        from upet.calculator import UPETCalculator
         calculator = UPETCalculator(
             model="{upet_model_name}",
             version="{upet_version}",
             device="cpu",
         )
         print("✅ UPET initialized on CPU (fallback)")
-    {d3_block_cpu}
+        {d3_block_cpu}
     except Exception as cpu_e:
         print(f"❌ UPET CPU fallback failed: {{cpu_e}}")
         exit()
-    """
+"""
 
     else:
         calculator_setup_str = f"print('Error: Could not determine calculator type for {actual_selected_model}.')\ncalculator = None\nexit()"
