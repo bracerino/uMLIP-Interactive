@@ -2,10 +2,11 @@ import streamlit as st
 
 # Default geometry optimization settings
 DEFAULT_GEOMETRY_SETTINGS = {
-    'optimizer': "BFGS",
+    'optimizer': "LBFGS",
     'fmax': 0.005,
     'ediff': 1e-4,
     'max_steps': 800,
+    'force_divergence_threshold': 500,
     'optimization_type': "Both atoms and cell",
     'cell_constraint': "Lattice parameters only (fix angles)",
     'optimize_lattice': {'a': True, 'b': True, 'c': True},
@@ -36,7 +37,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
     if not cell_opt_available:
         st.error("⚠️ Cell optimization features require ASE constraints. Some features may be limited.")
 
-    col_opt1, col_opt2, col_opt3, col_opt4 = st.columns(4)
+    col_opt1, col_opt2, col_opt3, col_opt4, col_opt5 = st.columns(5)
 
     with col_opt1:
         optimizer_options = [
@@ -93,7 +94,15 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             step=10,
             help="Maximum number of optimization steps"
         )
-
+    with col_opt5:
+        force_divergence_threshold = st.number_input(
+            "Force divergence threshold (eV/Å)",
+            min_value=10,
+            max_value=100000,
+            value=geom_defaults.get('force_divergence_threshold', 500),
+            step=10,
+            help="Stop optimization immediately if max force exceeds this value. Prevents runaway calculations."
+        )
     st.subheader("Cell Optimization Parameters")
 
     optimization_types = ["Atoms only (fixed cell)", "Cell only (fixed atoms)", "Both atoms and cell"]
@@ -229,6 +238,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'fmax': fmax,
         'ediff': ediff,
         'max_steps': max_steps,
+        'force_divergence_threshold': force_divergence_threshold,
         'optimization_type': optimization_type,
         'cell_constraint': cell_constraint,
         'optimize_lattice': optimize_lattice,
