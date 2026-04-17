@@ -522,6 +522,28 @@ except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
+    elif "GRACE" in actual_selected_model:
+        imports_str += """
+try:
+    from tensorpotential.calculator.foundation_models import grace_fm
+except ImportError:
+    print("Error: GRACE (tensorpotential) not found. Please install with: pip install grace-tensorpotential")
+    exit()
+"""
+        calculator_setup_str = f"""
+print("Setting up GRACE calculator...")
+print(f"Model: {actual_model_size}")
+print("Note: GRACE uses TensorFlow and auto-detects GPU.")
+
+try:
+    calculator = grace_fm("{actual_model_size}")
+    print(f"✅ GRACE {actual_model_size} initialized successfully")
+except Exception as e:
+    print(f"❌ GRACE initialization failed: {{e}}")
+    print("   Make sure the model name is correct.")
+    print("   You can list available models by running: grace_models list")
+    exit()
+"""
     elif "UPET" in actual_selected_model:
         imports_str += """
 try:
@@ -858,6 +880,8 @@ class CSVLogger:
         mace_header_lines += f"\nMACE Head: {mace_head}"
     if "MACE" in actual_selected_model and mace_dispersion:
         mace_header_lines += f"\nMACE Dispersion: D3-{mace_dispersion_xc}"
+    if "GRACE" in actual_selected_model:
+        mace_header_lines += f"\nGRACE Model: {actual_model_size}"
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
