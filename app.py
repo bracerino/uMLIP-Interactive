@@ -141,6 +141,12 @@ except ImportError:
     UPET_AVAILABLE = False
 
 try:
+    from tensorpotential.calculator.foundation_models import grace_fm
+    GRACE_AVAILABLE = True
+except ImportError:
+    GRACE_AVAILABLE = False
+
+try:
     from alignn.ff.ff import AlignnAtomwiseCalculator, default_path
     ALIGNN_AVAILABLE = True
 except ImportError:
@@ -164,7 +170,8 @@ SETTINGS_FILE = "default_settings.json"
 
 DEFAULT_SETTINGS = {
     'thread_count': 1,
-    'selected_model': "MACE-MP-0b3 (medium) - Latest",
+    'selected_model': "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐",
+    'selected_family': "MACE",
     'device': "cpu",
     'dtype': "float64",
     'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS,
@@ -2009,104 +2016,121 @@ def create_xyz_content(trajectory_data, structure_name):
 
     return xyz_content
 
-
-MACE_MODELS = {
-    "UPET PET-MAD-1.5 (XS) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
-    "⭐ UPET PET-MAD-1.5 (S) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-s:1.5.0",
-    "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
-    "UPET PET-OMAD (XS) - Materials & Molecules [PBEsol]": "upet:pet-omad-xs:1.0.0",
-    "UPET PET-OMAD (S) - Materials & Molecules [PBEsol]": "upet:pet-omad-s:1.0.0",
-    "UPET PET-OMAD (L) - Materials & Molecules [PBEsol]": "upet:pet-omad-l:0.1.0",
-    "UPET PET-OAM (L) - Materials Discovery [PBE]": "upet:pet-oam-l:1.0.0",
-    "UPET PET-OAM (XL) - Materials Discovery [PBE]": "upet:pet-oam-xl:1.0.0",
-    "UPET PET-OMat (XS) - Materials [PBE]": "upet:pet-omat-xs:1.0.0",
-    "UPET PET-OMat (S) - Materials [PBE]": "upet:pet-omat-s:1.0.0",
-    "UPET PET-OMat (M) - Materials [PBE]": "upet:pet-omat-m:1.0.0",
-    "UPET PET-OMat (L) - Materials [PBE]": "upet:pet-omat-l:0.1.0",
-    "UPET PET-OMat (XL) - Materials [PBE]": "upet:pet-omat-xl:1.0.0",
-    "UPET PET-OMATPES (L) - Materials [r2SCAN]": "upet:pet-omatpes-l:0.1.0",
-    "UPET PET-SPICE (S) - Molecules [wB97M-D3]": "upet:pet-spice-s:1.0.0",
-    "UPET PET-SPICE (L) - Molecules [wB97M-D3]": "upet:pet-spice-l:0.1.0",
-    "Custom MACE Model 🔧": "custom",
-    "MACE-MP-0b3 (medium) - Latest": "medium-0b3",
-    "MACE-MP-0 (small) - Original": "small",
-    "MACE-MP-0 (medium) - Original": "medium",
-    "MACE-MP-0 (large) - Original": "large",
-
-    "MACE-MP-0b (small) - Improved": "small-0b",
-    "MACE-MP-0b (medium) - Improved": "medium-0b",
-
-    "MACE-MP-0b2 (small) - Enhanced": "small-0b2",
-    "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
-    "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
-
-    "MACE-MPA-0 (medium) - Latest": "medium-mpa-0",
-
-    "MACE-OMAT-0 (medium)": "medium-omat-0",
-
-    # ========== MATPES MODELS (need full URLs) ==========
-    "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
-    "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
-
-    # ========== MACE-OFF MODELS (Organic Force Fields) ==========
-    "MACE-OFF23 (small) - Organic": "small",
-    "MACE-OFF23 (medium) - Organic": "medium",
-    "MACE-OFF23 (large) - Organic": "large",
-
-    "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
-    "⭐ MACE-MH-1 (Multi-head Foundation) - Non-linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
-
-
-
-    # ========== MACE-OFF MODELS (Organic Force Fields) ==========
-    "CHGNet-0.3.0 (Latest Universal)": "chgnet-0.3.0",
-    "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
-
-    # ========== SEVENNET MODELS ==========
-    "SevenNet-0": "7net-0",
-    "SevenNet-MF-OMPA (MPA Modal)": "7net-mf-ompa-mpa",
-    "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
-    "SevenNet-OMAT24": "7net-omat",
-    "SevenNet-L3I5": "7net-l3i5",
-    "⭐ SevenNet-Omni (mpa) - PBE(+U)": "7net-omni-mpa",
-    "SevenNet-Omni (omat24) - PBE(+U)": "7net-omni-omat24",
-    "SevenNet-Omni (matpes_pbe) - PBE": "7net-omni-matpes_pbe",
-    "SevenNet-Omni (oc20) - RPBE": "7net-omni-oc20",
-    "SevenNet-Omni (oc22) - PBE(+U)": "7net-omni-oc22",
-    "SevenNet-Omni (odac23) - PBE-D3": "7net-omni-odac23",
-    "SevenNet-Omni (omol25_low) - ωB97M-V": "7net-omni-omol25_low",
-    "SevenNet-Omni (omol25_high) - ωB97M-V*": "7net-omni-omol25_high",
-    "SevenNet-Omni (spice) - ωB97M": "7net-omni-spice",
-    "SevenNet-Omni (qcml) - PBE0": "7net-omni-qcml",
-    "SevenNet-Omni (pet_mad) - PBEsol": "7net-omni-pet_mad",
-    "SevenNet-Omni (mp_r2scan) - r²SCAN": "7net-omni-mp_r2scan",
-    "SevenNet-Omni (matpes_r2scan) - r²SCAN": "7net-omni-matpes_r2scan",
-
-    # ========== MATTERSIM MODELS ==========
-    "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
-    "⭐ MatterSim-v1.0.0-5M (Accurate Universal)": "mattersim-5m",
-    # ========== ORB MODELS ==========
-    "⭐ ORB-v3 Conservative OMAT (Recommended)": "orb_v3_conservative_inf_omat",
-    "ORB-v3 Conservative OMol (Molecular)": "orb_v3_conservative_omol",
-    "ORB-v3 Direct OMAT (Fast)": "orb_v3_direct_inf_omat",
-    "ORB-v3 Direct OMol (Molecular Fast)": "orb_v3_direct_omol",
-    "ORB-v3 Conservative 20-neighbors OMAT": "orb_v3_conservative_20_omat",
-    "ORB-v3 Direct 20-neighbors OMAT": "orb_v3_direct_20_omat",
-    "ORB-v2 (Legacy)": "orb_v2",
-
-    # ========== NEQUIX MODELS ==========
-    "Nequix-MP-1 (Universal Materials)": "nequix-mp-1",
-
-    # ========== DeepMD-kit MODELS ==========
-    #"DeePMD DPA-2 (Small)": "dpa2-small",
-    #"DeePMD DPA-2 (Medium)": "dpa2-medium",
-    #"DeePMD DPA-2 (Large)": "dpa2-large",
-    #"DeePMD DPA-3 (Universal)": "dpa3-universal",
-
-    #"AlignN-FF (JARVIS-DFT)": "alignn-ff-jarvis",
-    #"AlignN-FF (Custom)": "alignn-ff-custom",
-
+MODEL_FAMILIES = {
+    "MACE": {
+        "Custom MACE Model 🔧": "custom",
+        "MACE-MP-0b3 (medium) - Latest ⭐": "medium-0b3",
+        "MACE-MP-0 (small) - Original": "small",
+        "MACE-MP-0 (medium) - Original": "medium",
+        "MACE-MP-0 (large) - Original": "large",
+        "MACE-MP-0b (small) - Improved": "small-0b",
+        "MACE-MP-0b (medium) - Improved": "medium-0b",
+        "MACE-MP-0b2 (small) - Enhanced": "small-0b2",
+        "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
+        "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
+        "MACE-MPA-0 (medium) - Latest": "medium-mpa-0",
+        "MACE-OMAT-0 (medium)": "medium-omat-0",
+        "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
+        "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
+        "MACE-OFF23 (small) - Organic": "small",
+        "MACE-OFF23 (medium) - Organic": "medium",
+        "MACE-OFF23 (large) - Organic": "large",
+        "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
+        "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+    },
+    "UPET / PET-MAD": {
+        "UPET PET-MAD-1.5 (XS) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
+        "UPET PET-MAD-1.5 (S) - Materials & Molecules 102 elem [r2SCAN] ⭐": "upet:pet-mad-s:1.5.0",
+        "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
+        "UPET PET-OMAD (XS) - Materials & Molecules [PBEsol]": "upet:pet-omad-xs:1.0.0",
+        "UPET PET-OMAD (S) - Materials & Molecules [PBEsol]": "upet:pet-omad-s:1.0.0",
+        "UPET PET-OMAD (L) - Materials & Molecules [PBEsol]": "upet:pet-omad-l:0.1.0",
+        "UPET PET-OAM (L) - Materials Discovery [PBE]": "upet:pet-oam-l:1.0.0",
+        "UPET PET-OAM (XL) - Materials Discovery [PBE]": "upet:pet-oam-xl:1.0.0",
+        "UPET PET-OMat (XS) - Materials [PBE]": "upet:pet-omat-xs:1.0.0",
+        "UPET PET-OMat (S) - Materials [PBE]": "upet:pet-omat-s:1.0.0",
+        "UPET PET-OMat (M) - Materials [PBE]": "upet:pet-omat-m:1.0.0",
+        "UPET PET-OMat (L) - Materials [PBE]": "upet:pet-omat-l:0.1.0",
+        "UPET PET-OMat (XL) - Materials [PBE]": "upet:pet-omat-xl:1.0.0",
+        "UPET PET-OMATPES (L) - Materials [r2SCAN]": "upet:pet-omatpes-l:0.1.0",
+        "UPET PET-SPICE (S) - Molecules [wB97M-D3]": "upet:pet-spice-s:1.0.0",
+        "UPET PET-SPICE (L) - Molecules [wB97M-D3]": "upet:pet-spice-l:0.1.0",
+    },
+    "CHGNet": {
+        "CHGNet-0.3.0 (Latest Universal) ⭐": "chgnet-0.3.0",
+        "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
+    },
+    "SevenNet": {
+        "SevenNet-0": "7net-0",
+        "SevenNet-MF-OMPA (MPA Modal)": "7net-mf-ompa-mpa",
+        "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
+        "SevenNet-OMAT24": "7net-omat",
+        "SevenNet-L3I5": "7net-l3i5",
+        "SevenNet-Omni (mpa) - PBE(+U) ⭐": "7net-omni-mpa",
+        "SevenNet-Omni (omat24) - PBE(+U)": "7net-omni-omat24",
+        "SevenNet-Omni (matpes_pbe) - PBE": "7net-omni-matpes_pbe",
+        "SevenNet-Omni (oc20) - RPBE": "7net-omni-oc20",
+        "SevenNet-Omni (oc22) - PBE(+U)": "7net-omni-oc22",
+        "SevenNet-Omni (odac23) - PBE-D3": "7net-omni-odac23",
+        "SevenNet-Omni (omol25_low) - ωB97M-V": "7net-omni-omol25_low",
+        "SevenNet-Omni (omol25_high) - ωB97M-V*": "7net-omni-omol25_high",
+        "SevenNet-Omni (spice) - ωB97M": "7net-omni-spice",
+        "SevenNet-Omni (qcml) - PBE0": "7net-omni-qcml",
+        "SevenNet-Omni (pet_mad) - PBEsol": "7net-omni-pet_mad",
+        "SevenNet-Omni (mp_r2scan) - r²SCAN": "7net-omni-mp_r2scan",
+        "SevenNet-Omni (matpes_r2scan) - r²SCAN": "7net-omni-matpes_r2scan",
+    },
+    "MatterSim": {
+        "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
+        "MatterSim-v1.0.0-5M (Accurate Universal) ⭐": "mattersim-5m",
+    },
+    "ORB": {
+        "ORB-v3 Conservative OMAT (Recommended) ⭐": "orb_v3_conservative_inf_omat",
+        "ORB-v3 Conservative OMol (Molecular)": "orb_v3_conservative_omol",
+        "ORB-v3 Direct OMAT (Fast)": "orb_v3_direct_inf_omat",
+        "ORB-v3 Direct OMol (Molecular Fast)": "orb_v3_direct_omol",
+        "ORB-v3 Conservative 20-neighbors OMAT": "orb_v3_conservative_20_omat",
+        "ORB-v3 Direct 20-neighbors OMAT": "orb_v3_direct_20_omat",
+        "ORB-v2 (Legacy)": "orb_v2",
+    },
+    "Nequix": {
+        "Nequix-MP-1 (Universal Materials) ⭐": "nequix-mp-1",
+    },
+    "GRACE": {
+        # --- SMAX models (recommended for general use) ---
+        "GRACE-1L-SMAX-large (SMAX only, 1L)": "GRACE-1L-SMAX-large",
+        "GRACE-1L-SMAX-OMAT-large (SMAX+OMat24, 1L) ⭐": "GRACE-1L-SMAX-OMAT-large",
+        "GRACE-2L-SMAX-medium (SMAX only, 2L)": "GRACE-2L-SMAX-medium",
+        "GRACE-2L-SMAX-large (SMAX only, 2L)": "GRACE-2L-SMAX-large",
+        "GRACE-2L-SMAX-OMAT-medium (SMAX+OMat24, 2L) ⭐": "GRACE-2L-SMAX-OMAT-medium",
+        "GRACE-2L-SMAX-OMAT-large (SMAX+OMat24, 2L) ⭐": "GRACE-2L-SMAX-OMAT-large",
+        # --- OMAT models ---
+        "GRACE-1L-OMAT (OMat24, small)": "GRACE-1L-OMAT",
+        "GRACE-1L-OMAT-medium-base (OMat24, medium base)": "GRACE-1L-OMAT-medium-base",
+        "GRACE-1L-OMAT-medium-ft-E (OMat24, medium, energy fine-tuned) ⭐": "GRACE-1L-OMAT-medium-ft-E",
+        "GRACE-1L-OMAT-large-base (OMat24, large base)": "GRACE-1L-OMAT-large-base",
+        "GRACE-1L-OMAT-large-ft-E (OMat24, large, energy fine-tuned)": "GRACE-1L-OMAT-large-ft-E",
+        "GRACE-2L-OMAT (OMat24, small)": "GRACE-2L-OMAT",
+        "GRACE-2L-OMAT-medium-base (OMat24, medium base)": "GRACE-2L-OMAT-medium-base",
+        "GRACE-2L-OMAT-medium-ft-E (OMat24, medium, energy fine-tuned) ⭐": "GRACE-2L-OMAT-medium-ft-E",
+        "GRACE-2L-OMAT-large-base (OMat24, large base)": "GRACE-2L-OMAT-large-base",
+        "GRACE-2L-OMAT-large-ft-E (OMat24, large, energy fine-tuned)": "GRACE-2L-OMAT-large-ft-E",
+        # --- OAM models (OMat24 + sAlex + MPtraj) ---
+        "GRACE-1L-OAM (OAM, small)": "GRACE-1L-OAM",
+        "GRACE-1L-OMAT-medium-ft-AM (OAM, medium)": "GRACE-1L-OMAT-medium-ft-AM",
+        "GRACE-1L-OMAT-large-ft-AM (OAM, large)": "GRACE-1L-OMAT-large-ft-AM",
+        "GRACE-2L-OAM (OAM, small)": "GRACE-2L-OAM",
+        "GRACE-2L-OMAT-medium-ft-AM (OAM, medium) ⭐": "GRACE-2L-OMAT-medium-ft-AM",
+        "GRACE-2L-OMAT-large-ft-AM (OAM, large) ⭐": "GRACE-2L-OMAT-large-ft-AM",
+        # --- Legacy MP models ---
+        "GRACE-1L-MP-r6 (MPtraj, 6Å cutoff)": "GRACE-1L-MP-r6",
+        "GRACE-2L-MP-r5 (MPtraj, 5Å cutoff)": "GRACE-2L-MP-r5",
+        "GRACE-2L-MP-r6 (MPtraj, 6Å cutoff)": "GRACE-2L-MP-r6",
+    },
 }
+
+# Flat dict kept for backward compatibility (script generation, etc.)
+MACE_MODELS = {k: v for family in MODEL_FAMILIES.values() for k, v in family.items()}
 
 
 def is_url_model(model_size):
@@ -2616,6 +2640,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_deepmd = selected_model.startswith("DeePMD")
         is_alignn = selected_model.startswith("AlignN")
 
+        #GRACE
+        is_grace = selected_model.startswith("GRACE")
         #PET-MAD
         is_upet = model_size.startswith("upet:")
 
@@ -2701,6 +2727,28 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
             except Exception as e:
                 log_queue.put(f"❌ Nequix initialization failed: {str(e)}")
+                return
+
+        elif is_grace:
+            log_queue.put("Setting up GRACE calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Model ID: {model_size}")
+            log_queue.put(f"Device: {device}")
+
+            if not GRACE_AVAILABLE:
+                log_queue.put("❌ GRACE (tensorpotential) not available!")
+                log_queue.put("   Install with: pip install grace-tensorpotential")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+
+            try:
+                calculator = grace_fm(model_size)
+                log_queue.put(f"✅ GRACE {model_size} initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ GRACE initialization failed: {str(e)}")
+                log_queue.put("   Make sure the model name is correct.")
+                log_queue.put("   Available models: run 'grace_models list' in your terminal.")
+                log_queue.put("CALCULATION_FINISHED")
                 return
         elif is_deepmd:
             log_queue.put("Setting up DeePMD calculator...")
@@ -3956,7 +4004,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.8.7 · 3/30/2026
+            v0.8.8 · 4/17/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -4006,29 +4054,35 @@ def format_duration(seconds):
 with st.sidebar:
     st.header("Model Selection")
 
-    #if not MACE_AVAILABLE and not CHGNET_AVAILABLE and not MATTERSIM_AVAILABLE and not ORB_AVAILABLE:
-    #    st.error("⚠️ No calculators available!")
-    #    st.error("Please install MACE: `pip install mace-torch`")
-    #    st.error("Or install CHGNet: `pip install chgnet`")
-    #    st.error("Or install MatterSim: `pip install mattersim`")
-    #    st.error("Or install ORB: `pip install orb-models`")
-    #    st.error("Or install SevenNet: `pip install sevenn`")
-    # st.stop()
-
-
     defaults = st.session_state.default_settings
-    model_keys = list(MACE_MODELS.keys())
+    family_names = list(MODEL_FAMILIES.keys())
+
+    default_family = "MACE"
+    for fam, models in MODEL_FAMILIES.items():
+        if defaults.get('selected_model') in models:
+            default_family = fam
+            break
+
+    selected_family = st.selectbox(
+        "Model Family",
+        family_names,
+        index=family_names.index(default_family),
+        help="Choose the calculator family first, then pick a specific version below."
+    )
+
+    family_models = MODEL_FAMILIES[selected_family]
+    model_keys = list(family_models.keys())
 
     default_model_index = 0
-    if defaults['selected_model'] in model_keys:
+    if defaults.get('selected_model') in model_keys:
         default_model_index = model_keys.index(defaults['selected_model'])
 
     selected_model = st.selectbox(
-        "Choose MLIP Model (MACE, CHGNet, SevenNet, Nequix, Orb-v3, MatterSim, PET-MAD)",
+        f"Select {selected_family} Model",
         model_keys,
         index=default_model_index
     )
-    model_size = MACE_MODELS[selected_model]
+    model_size = family_models[selected_model]
 
     is_custom_mace = (selected_model == "Custom MACE Model 🔧")
     custom_mace_path = None
@@ -4091,6 +4145,7 @@ with st.sidebar:
             "ORB": ORB_AVAILABLE,
             "Nequix": NEQUIX_AVAILABLE,
             "UPET": UPET_AVAILABLE,
+            "GRACE": GRACE_AVAILABLE,
         }
         available = [name for name, ok in availability.items() if ok]
         not_available = [name for name, ok in availability.items() if not ok]
@@ -5683,14 +5738,14 @@ with tab_st:
 
         with col2:
             but_script = st.button(
-                "📝 Generate Python Script (Will automatically create structures from the uploaded ones)",
+                "📝 Generate Python Script (automatically creates structures from the uploaded ones)",
                 type="tertiary",
                 disabled=len(st.session_state.structures) == 0,
             )
 
         with col3:
             but_local_script = st.button(
-                "📂 Generate Python Script (Will use POSCAR files in the same folder where the script will be placed)",
+                "📂 Generate Python Script (Will use POSCAR/CIF files in the same folder where the script will be placed)",
                 type="secondary",
                 disabled=False,
             )
