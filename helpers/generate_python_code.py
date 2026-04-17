@@ -111,13 +111,16 @@ else:
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
-                           mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"
-                           ):
+                           mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
+                           custom_mace_path=None, custom_upet_path=None):
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
-        mace_dispersion_xc=mace_dispersion_xc)
+        mace_dispersion_xc=mace_dispersion_xc,
+        custom_mace_path=custom_mace_path,
+        custom_upet_path=custom_upet_path
+    )
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(calc_formation_energy)
@@ -240,7 +243,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                                       custom_mace_path=None):
+                                       custom_mace_path=None,custom_upet_path=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -249,7 +252,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
         mace_dispersion_xc=mace_dispersion_xc,
-        custom_mace_path=custom_mace_path
+        custom_mace_path=custom_mace_path,
+        custom_upet_path=custom_upet_path
     )
 
     if calc_type == "Energy Only":
@@ -1810,7 +1814,7 @@ def _generate_structure_creation_code(structures):
 
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                                    custom_mace_path=None
+                                    custom_mace_path=None, custom_upet_path=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
     if custom_mace_path:
@@ -1937,21 +1941,14 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         print("   Check model name is correct. Run: grace_models list")
         raise e'''
     elif is_upet:
-        upet_raw = model_size
-        if upet_raw.startswith("upet:"):
-            upet_raw = upet_raw[len("upet:"):]
-        if "::" in upet_raw:
-            upet_model_name, upet_version = upet_raw.split("::", 1)
-        elif ":" in upet_raw:
-            upet_model_name, upet_version = upet_raw.split(":", 1)
-        else:
-            upet_model_name = upet_raw
-            upet_version = "latest"
+        is_custom_upet_local = (model_size == "upet:custom")
+        if is_custom_upet_local:
+            upet_local_path = custom_upet_path or "/path/to/your/model.ckpt"
 
-        d3_block_gpu = ""
-        d3_block_cpu = ""
-        if mace_dispersion:
-            d3_block_gpu = f'''
+            d3_block_gpu = ""
+            d3_block_cpu = ""
+            if mace_dispersion:
+                d3_block_gpu = f'''
         try:
             from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
             from ase.calculators.mixing import SumCalculator
@@ -1964,7 +1961,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         except Exception as d3_err:
             print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
 
-            d3_block_cpu = f'''
+                d3_block_cpu = f'''
                 try:
                     from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
                     from ase.calculators.mixing import SumCalculator
@@ -1977,18 +1974,92 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 except Exception as d3_err:
                     print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
 
-        calc_code = f'''    device = "{device}"
-    print(f"🔧 Initializing UPET calculator on {{device}}...")
+            calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing custom UPET calculator from local .ckpt file...")
+    print(f"📁 Model path: {upet_local_path}")
+
+    if not os.path.exists("{upet_local_path}"):
+        print(f"❌ Custom UPET .ckpt file not found: {upet_local_path}")
+        raise FileNotFoundError(f"Model file not found: {upet_local_path}")
+
     try:
         from upet.calculator import UPETCalculator
 
+        calculator = UPETCalculator(
+            checkpoint_path="{upet_local_path}",
+            device=device,
+        )
+        print(f"✅ Custom UPET model initialized successfully on {{device}}")
+        {d3_block_gpu}
+    except Exception as e:
+        print(f"❌ Custom UPET initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ Falling back to CPU...")
+            try:
+                calculator = UPETCalculator(
+                    checkpoint_path="{upet_local_path}",
+                    device="cpu",
+                )
+                print("✅ Custom UPET initialized on CPU (fallback)")
+                {d3_block_cpu}
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+
+        else:
+            upet_raw = model_size
+            if upet_raw.startswith("upet:"):
+                upet_raw = upet_raw[len("upet:"):]
+            if "::" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split("::", 1)
+            elif ":" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split(":", 1)
+            else:
+                upet_model_name = upet_raw
+                upet_version = "latest"
+
+            d3_block_gpu = ""
+            d3_block_cpu = ""
+            if mace_dispersion:
+                d3_block_gpu = f'''
+        try:
+            from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+            from ase.calculators.mixing import SumCalculator
+            print("  Adding D3-BJ dispersion ({mace_dispersion_xc})...")
+            dft_d3 = TorchDFTD3Calculator(device=device, xc="{mace_dispersion_xc}", damping="bj")
+            calculator = SumCalculator([calculator, dft_d3])
+            print(f"  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on {{device}}")
+        except ImportError:
+            print("  ⚠️ torch-dftd not installed — skipping dispersion. Run: pip install torch-dftd")
+        except Exception as d3_err:
+            print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
+                d3_block_cpu = f'''
+                try:
+                    from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+                    from ase.calculators.mixing import SumCalculator
+                    print("  Adding D3-BJ dispersion ({mace_dispersion_xc}) on CPU...")
+                    dft_d3 = TorchDFTD3Calculator(device="cpu", xc="{mace_dispersion_xc}", damping="bj")
+                    calculator = SumCalculator([calculator, dft_d3])
+                    print("  ✅ D3-BJ/{mace_dispersion_xc} dispersion applied on CPU")
+                except ImportError:
+                    print("  ⚠️ torch-dftd not installed — skipping dispersion.")
+                except Exception as d3_err:
+                    print(f"  ⚠️ D3 dispersion failed ({{d3_err}}) — continuing without it")'''
+
+            calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing UPET calculator on {{device}}...")
+    try:
+        from upet.calculator import UPETCalculator
+    
         upet_model_name = "{upet_model_name}"
         upet_version = "{upet_version}"
-
+    
         print(f"🎯 Model: {{upet_model_name}}, Version: {{upet_version}}")
         print(f"⚙️  Device: {{device}}")
         print(f"⚙️  Dtype: {dtype}")
-
+    
         calculator = UPETCalculator(
             model=upet_model_name,
             version=upet_version,
@@ -2013,8 +2084,6 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
-
-
     elif is_petmad:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing PET-MAD calculator...")
