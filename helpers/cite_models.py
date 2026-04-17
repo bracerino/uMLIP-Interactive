@@ -74,14 +74,32 @@ def create_citation_info():
         }
         </style>
 
-        <div class="model-section" style="border-left-color: #4CAF50;">
+        <div class="model-section" style="border-left-color: #FF6F00;">
             <div class="model-title">
                 <span class="model-icon">1️⃣</span>
+                <span>uMLIP – Interactive Interface</span>
+            </div>
+            <div class="link-container">
+                <a href="https://www.sciencedirect.com/science/article/pii/S2238785426004540?via%3Dihub" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> Journal of Materials Research and Technology, 2026
+                </a>
+                <a href="https://github.com/bracerino/uMLIP-Interactive" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+            </div>
+        </div>
+
+        <div class="model-section" style="border-left-color: #4CAF50;">
+            <div class="model-title">
+                <span class="model-icon">2️⃣</span>
                 <span>MACE-MP</span>
             </div>
             <div class="link-container">
+                <a href="https://arxiv.org/abs/2206.07697" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> NeurIPS 2022 (MACE)
+                </a>
                 <a href="https://arxiv.org/abs/2401.00096" target="_blank" class="citation-link">
-                    <span class="paper-icon"></span> arXiv paper, 2025
+                    <span class="paper-icon"></span> arXiv Paper, 2025
                 </a>
                 <a href="https://github.com/ACEsuit/mace-foundations" target="_blank" class="github-link">
                     <span class="github-icon"></span> GitHub
@@ -91,10 +109,13 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #FF9800;">
             <div class="model-title">
-                <span class="model-icon">2️⃣</span>
+                <span class="model-icon">3️⃣</span>
                 <span>MACE-OFF (Organic)</span>
             </div>
             <div class="link-container">
+                <a href="https://arxiv.org/abs/2206.07697" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> NeurIPS 2022 (MACE)
+                </a>
                 <a href="https://pubs.acs.org/doi/abs/10.1021/jacs.4c07099" target="_blank" class="citation-link">
                     <span class="paper-icon"></span> JACS MACE-OFF Paper, 2025
                 </a>
@@ -106,10 +127,13 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #9C27B0;">
             <div class="model-title">
-                <span class="model-icon">3️⃣</span>
+                <span class="model-icon">4️⃣</span>
                 <span>MACE-MH (Multi-Head Foundation)</span>
             </div>
             <div class="link-container">
+                <a href="https://arxiv.org/abs/2206.07697" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> NeurIPS 2022 (MACE)
+                </a>
                 <a href="https://arxiv.org/abs/2510.25380" target="_blank" class="citation-link">
                     <span class="paper-icon"></span> arXiv Paper, 2025
                 </a>
@@ -121,7 +145,7 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #2196F3;">
             <div class="model-title">
-                <span class="model-icon">4️⃣</span>
+                <span class="model-icon">5️⃣</span>
                 <span>CHGNet</span>
             </div>
             <div class="link-container">
@@ -136,7 +160,7 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #FF5722;">
             <div class="model-title">
-                <span class="model-icon">5️⃣</span>
+                <span class="model-icon">6️⃣</span>
                 <span>SevenNet</span>
             </div>
             <div class="link-container">
@@ -151,7 +175,7 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #00BCD4;">
             <div class="model-title">
-                <span class="model-icon">6️⃣</span>
+                <span class="model-icon">7️⃣</span>
                 <span>MatterSim</span>
             </div>
             <div class="link-container">
@@ -166,7 +190,7 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #E91E63;">
             <div class="model-title">
-                <span class="model-icon">7️⃣</span>
+                <span class="model-icon">8️⃣</span>
                 <span>ORB-v3 Models</span>
             </div>
             <div class="link-container">
@@ -181,7 +205,7 @@ def create_citation_info():
 
         <div class="model-section" style="border-left-color: #795548;">
             <div class="model-title">
-                <span class="model-icon">8️⃣</span>
+                <span class="model-icon">9️⃣</span>
                 <span>Nequix</span>
             </div>
             <div class="link-container">
@@ -193,17 +217,35 @@ def create_citation_info():
                 </a>
             </div>
         </div>
-        
+
         <div class="model-section" style="border-left-color: #E91E63;">
             <div class="model-title">
-                <span class="model-icon">9️⃣</span>
-                <span>PET-MAD</span>
+                <span class="model-icon">🔟</span>
+                <span>UPET</span>
             </div>
             <div class="link-container">
-                <a href="https://arxiv.org/abs/2503.14118" target="_blank" class="citation-link">
-                    <span class="paper-icon"></span> arXiv Paper, 2025
+                <a href="https://www.nature.com/articles/s41467-025-65662-7" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> Nature Communications, 2025 (PET-MAD)
                 </a>
-                <a href="https://github.com/lab-cosmo/pet-mad" target="_blank" class="github-link">
+                <a href="https://arxiv.org/abs/2603.02089" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> arXiv Paper, 2026 (UPET)
+                </a>
+                <a href="https://github.com/lab-cosmo/upet" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+            </div>
+        </div>
+
+        <div class="model-section" style="border-left-color: #26A69A;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣1️⃣</span>
+                <span>GRACE (Graph Atomic Cluster Expansion)</span>
+            </div>
+            <div class="link-container">
+                <a href="https://www.nature.com/articles/s41524-026-01979-1" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> npj Computational Materials, 2026
+                </a>
+                <a href="https://github.com/ICAMS/grace-tensorpotential" target="_blank" class="github-link">
                     <span class="github-icon"></span> GitHub
                 </a>
             </div>
