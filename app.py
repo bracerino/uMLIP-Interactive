@@ -4009,7 +4009,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.8.8 · 4/17/2026
+            v0.8.9 · 4/17/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
