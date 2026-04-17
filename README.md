@@ -1,4 +1,4 @@
-# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim, UPET
+# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim, UPET, GRACE
 
 Run basic molecular dynamics/static simulations:
 - **Single-point energy**
@@ -35,7 +35,8 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
 - [MatterSim](https://github.com/microsoft/mattersim)
 - [Nequix](https://github.com/atomicarchitects/nequix)
-- [UPET](https://github.com/lab-cosmo/pet-mad)
+- [UPET](https://github.com/lab-cosmo/pet-mad)  
+- [GRACE](https://github.com/ICAMS/grace-tensorpotential)
 
 ---
 ![MACE GUI illustration](images/Mace-1.png)
@@ -75,7 +76,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **UPET**:  
+#### To run simulations with **MatterSim** / **UPET** / **GRACE**:  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -88,7 +89,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
-   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  
+   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt** (for GRACE)  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  
