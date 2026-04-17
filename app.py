@@ -174,6 +174,7 @@ DEFAULT_SETTINGS = {
     'selected_family': "MACE",
     'device': "cpu",
     'dtype': "float64",
+    'custom_upet_path': "",
     'geometry_optimization': DEFAULT_GEOMETRY_SETTINGS,
 'tensile_test': {  # Add this
         'strain_direction': 0,  # x-axis
@@ -2039,6 +2040,7 @@ MODEL_FAMILIES = {
         "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
     },
     "UPET / PET-MAD": {
+        "Custom UPET Model (.ckpt) 🔧": "upet:custom",
         "UPET PET-MAD-1.5 (XS) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
         "UPET PET-MAD-1.5 (S) - Materials & Molecules 102 elem [r2SCAN] ⭐": "upet:pet-mad-s:1.5.0",
         "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
@@ -2617,7 +2619,8 @@ class CellOptimizationLogger:
 
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
-                         ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe"):
+                         ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
+                         custom_upet_path=None):
     import time
     try:
         total_start_time = time.time()
@@ -2644,6 +2647,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_grace = selected_model.startswith("GRACE")
         #PET-MAD
         is_upet = model_size.startswith("upet:")
+        is_custom_upet_model = (model_size == "upet:custom")
 
         if is_upet:
             log_queue.put("Setting up UPET calculator...")
@@ -2656,16 +2660,28 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 return
 
             try:
-                _, upet_model_name, upet_version = model_size.split(":")
+                if is_custom_upet_model:
+                    if not custom_upet_path or not os.path.exists(custom_upet_path):
+                        log_queue.put("❌ Custom UPET model path is invalid or not provided")
+                        log_queue.put("CALCULATION_FINISHED")
+                        return
 
-                log_queue.put(f"  Model: {upet_model_name}, Version: {upet_version}")
+                    log_queue.put(f"Loading custom UPET model from: {custom_upet_path}")
+                    calculator = UPETCalculator(
+                        checkpoint_path=custom_upet_path,
+                        device=device,
+                    )
+                    log_queue.put(f"✅ Custom UPET model initialized successfully on {device}")
 
-                calculator = UPETCalculator(
-                    model=upet_model_name,
-                    version=upet_version,
-                    device=device,
-                )
-                log_queue.put(f"✅ UPET {upet_model_name} v{upet_version} initialized successfully on {device}")
+                else:
+                    _, upet_model_name, upet_version = model_size.split(":")
+                    log_queue.put(f"  Model: {upet_model_name}, Version: {upet_version}")
+                    calculator = UPETCalculator(
+                        model=upet_model_name,
+                        version=upet_version,
+                        device=device,
+                    )
+                    log_queue.put(f"✅ UPET {upet_model_name} v{upet_version} initialized successfully on {device}")
 
                 if mace_dispersion:
                     try:
@@ -2677,7 +2693,6 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         log_queue.put(f"✅ D3-BJ/{mace_dispersion_xc} dispersion applied successfully on {device}")
                     except ImportError:
                         log_queue.put("⚠️ torch-dftd not installed — skipping dispersion correction.")
-                        log_queue.put("   Install with: pip install torch-dftd")
                     except Exception as d3_err:
                         log_queue.put(f"⚠️ D3 dispersion setup failed ({d3_err}) — continuing without it")
 
@@ -2686,28 +2701,18 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 if device == "cuda":
                     log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
                     try:
-                        calculator = UPETCalculator(
-                            model=upet_model_name,
-                            version=upet_version,
-                            device="cpu",
-                        )
+                        if is_custom_upet_model:
+                            calculator = UPETCalculator(
+                                checkpoint_path=custom_upet_path,
+                                device="cpu",
+                            )
+                        else:
+                            calculator = UPETCalculator(
+                                model=upet_model_name,
+                                version=upet_version,
+                                device="cpu",
+                            )
                         log_queue.put("✅ UPET initialized successfully on CPU (fallback)")
-
-                        if mace_dispersion:
-                            try:
-                                from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
-                                from ase.calculators.mixing import SumCalculator
-                                log_queue.put(f"  Adding D3-BJ dispersion correction ({mace_dispersion_xc}) on CPU...")
-                                dft_d3 = TorchDFTD3Calculator(device="cpu", xc=mace_dispersion_xc, damping="bj")
-                                calculator = SumCalculator([calculator, dft_d3])
-                                log_queue.put(
-                                    f"✅ D3-BJ/{mace_dispersion_xc} dispersion applied successfully on CPU (fallback)")
-                            except ImportError:
-                                log_queue.put("⚠️ torch-dftd not installed — skipping dispersion correction.")
-                                log_queue.put("   Install with: pip install torch-dftd")
-                            except Exception as d3_err:
-                                log_queue.put(f"⚠️ D3 dispersion setup failed ({d3_err}) — continuing without it")
-
                     except Exception as cpu_error:
                         log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
                         log_queue.put("CALCULATION_FINISHED")
@@ -4127,7 +4132,35 @@ with st.sidebar:
                 st.error("❌ File not found at this path")
         else:
             st.warning("⚠️ Please provide a path to your custom .model file")
+    is_custom_upet = (selected_model == "Custom UPET Model (.ckpt) 🔧")
+    custom_upet_path = None
 
+    if is_custom_upet:
+        st.markdown("---")
+        st.markdown("### 🔧 Custom UPET Model Configuration")
+
+        custom_upet_path = st.text_input(
+            "Path to .ckpt file *",
+            value="",
+            placeholder="/path/to/your/model.ckpt",
+            help="Provide the full path to your custom UPET .ckpt checkpoint file"
+        )
+
+        if custom_upet_path:
+            if os.path.exists(custom_upet_path):
+                if os.path.isfile(custom_upet_path):
+                    if custom_upet_path.endswith('.ckpt'):
+                        st.success(f"✅ Model file found")
+                        st.info(
+                            f"**Name:** `{os.path.basename(custom_upet_path)}`\n\n**Path:** `{os.path.dirname(custom_upet_path)}`")
+                    else:
+                        st.warning("⚠️ File should have .ckpt extension")
+                else:
+                    st.error("❌ This is a directory. Please provide the full path to the .ckpt file.")
+            else:
+                st.error("❌ File not found at this path")
+        else:
+            st.warning("⚠️ Please provide a path to your custom UPET .ckpt file")
     is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
@@ -4882,7 +4915,8 @@ with tab1:
                         mace_head=mace_head_for_script,
                         mace_dispersion=mace_dispersion_for_script,
                         mace_dispersion_xc=mace_dispersion_xc_for_script,
-                        custom_mace_path=custom_mace_path
+                        custom_mace_path=custom_mace_path,
+                        custom_upet_path=custom_upet_path if is_custom_upet else None,
                     )
                     st.session_state.generated_md_script = generated_script
                     st.success("✅ MD script generated successfully!")
@@ -5803,7 +5837,8 @@ with tab_st:
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
-                custom_mace_path=custom_mace_path_for_script
+                custom_mace_path=custom_mace_path_for_script,
+                custom_upet_path=custom_upet_path if is_custom_upet else None
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
@@ -5892,7 +5927,9 @@ with tab_st:
                 thread_count=thread_count,
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
-                mace_dispersion_xc=mace_dispersion_xc_for_script
+                mace_dispersion_xc=mace_dispersion_xc_for_script,
+                #custom_mace_path=custom_mace_path_for_script,
+                custom_upet_path=custom_upet_path if is_custom_upet else None
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -5964,7 +6001,9 @@ with tab_st:
                 target=run_mace_calculation,
                 args=(structures_to_pass, calc_type, model_size, device, optimization_params,
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
-                      st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass, neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc)
+                      st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass,
+                      neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
+                      custom_upet_path)
             )
             thread.start()
             st.rerun()
