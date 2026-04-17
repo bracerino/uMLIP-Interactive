@@ -65,9 +65,15 @@ try:
 except ImportError:
     PETMAD_AVAILABLE = False
 
+# GRACE imports
+try:
+    from tensorpotential.calculator.foundation_models import grace_fm
+    GRACE_AVAILABLE = True
+except ImportError:
+    GRACE_AVAILABLE = False
 
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -81,6 +87,8 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILAB
     exit(1)
 else:
     available_models = []
+    if GRACE_AVAILABLE:
+        available_models.append("GRACE")
     if MACE_AVAILABLE:
         available_models.append("MACE")
     if CHGNET_AVAILABLE:
@@ -1891,6 +1899,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_url_model = isinstance(model_size, str) and (
             "http://" in model_size or "https://" in model_size)
     is_upet = selected_model_key is not None and "UPET" in selected_model_key
+    is_grace = selected_model_key is not None and "GRACE" in selected_model_key
 
     if is_nequix:
 
@@ -1906,6 +1915,26 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
     except Exception as e:
         print(f"❌ Nequix initialization failed: {{e}}")
+        raise e'''
+    elif is_grace:
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing GRACE calculator...")
+    print(f"🎯 Model: {model_size}")
+    print("   Note: GRACE uses TensorFlow and auto-detects GPU.")
+
+    try:
+        from tensorpotential.calculator.foundation_models import grace_fm
+
+        calculator = grace_fm("{model_size}")
+        print(f"✅ GRACE {model_size} initialized successfully")
+
+    except ImportError:
+        print("❌ GRACE (tensorpotential) not available!")
+        print("   Install with: pip install grace-tensorpotential")
+        raise
+    except Exception as e:
+        print(f"❌ GRACE initialization failed: {{e}}")
+        print("   Check model name is correct. Run: grace_models list")
         raise e'''
     elif is_upet:
         upet_raw = model_size
