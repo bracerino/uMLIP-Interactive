@@ -5665,16 +5665,15 @@ with tab1:
                         help="Will use ±max and ±max/2, e.g. ±0.01 and ±0.005"
                     )
                     elastic_params['strain_magnitude'] = max_delta
+                    # Current
                     elastic_params['strain_magnitudes'] = [
-                        -max_delta, -max_delta / 2, +max_delta / 2, +max_delta
+                        -max_delta, -max_delta / 2, 0.0, +max_delta / 2, +max_delta
                     ]
                 with col_s2:
                     st.info(
-                        f"Strain values: "
-                        f"{-max_delta:.3f}, {-max_delta / 2:.4f}, "
+                        f"Strain values: {-max_delta:.3f}, {-max_delta / 2:.4f}, 0.0000, "
                         f"{+max_delta / 2:.4f}, {+max_delta:.3f}\n\n"
-                        f"Total deformed structures: "
-                        f"6 components × 4 magnitudes = **24**"
+                        f"Total deformed structures: 6 components × 5 magnitudes = **30**"
                     )
             else:
                 elastic_params['strain_magnitudes'] = None  # signals central diff only
