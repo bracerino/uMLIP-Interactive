@@ -2019,7 +2019,6 @@ def create_xyz_content(trajectory_data, structure_name):
 
 MODEL_FAMILIES = {
     "MACE": {
-        "Custom MACE Model 🔧": "custom",
         "MACE-MP-0b3 (medium) - Latest ⭐": "medium-0b3",
         "MACE-MP-0 (small) - Original": "small",
         "MACE-MP-0 (medium) - Original": "medium",
@@ -2038,9 +2037,9 @@ MODEL_FAMILIES = {
         "MACE-OFF23 (large) - Organic": "large",
         "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
         "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+        "Custom MACE Model 🔧": "custom",
     },
     "UPET / PET-MAD": {
-        "Custom UPET Model (.ckpt) 🔧": "upet:custom",
         "UPET PET-MAD-1.5 (XS) - Materials & Molecules 102 elem [r2SCAN]": "upet:pet-mad-xs:1.5.0",
         "UPET PET-MAD-1.5 (S) - Materials & Molecules 102 elem [r2SCAN] ⭐": "upet:pet-mad-s:1.5.0",
         "UPET PET-MAD (S) - Materials & Molecules [PBEsol]": "upet:pet-mad-s:1.0.2",
@@ -2057,6 +2056,7 @@ MODEL_FAMILIES = {
         "UPET PET-OMATPES (L) - Materials [r2SCAN]": "upet:pet-omatpes-l:0.1.0",
         "UPET PET-SPICE (S) - Molecules [wB97M-D3]": "upet:pet-spice-s:1.0.0",
         "UPET PET-SPICE (L) - Molecules [wB97M-D3]": "upet:pet-spice-l:0.1.0",
+        "Custom UPET Model (.ckpt) 🔧": "upet:custom",
     },
     "CHGNet": {
         "CHGNet-0.3.0 (Latest Universal) ⭐": "chgnet-0.3.0",
