@@ -2762,7 +2762,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     pre_opt_optimizer = elastic_params.get('pre_opt_optimizer', 'LBFGS')
 
     if use_multi_strain:
-        strain_magnitudes_list = [-strain_magnitude, -strain_magnitude/2, strain_magnitude/2, strain_magnitude]
+        strain_magnitudes_list = [-strain_magnitude, -strain_magnitude / 2, 0.0, strain_magnitude / 2, strain_magnitude]
     else:
         strain_magnitudes_list = [-strain_magnitude, strain_magnitude]
 
