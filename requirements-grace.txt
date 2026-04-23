@@ -12,5 +12,4 @@ tensorpotential
 psutil
 gputil
 
-torch
-
+torch==2.8.0
