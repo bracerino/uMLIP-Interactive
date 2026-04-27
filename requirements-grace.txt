@@ -7,9 +7,11 @@ phonopy==2.40.0
 py3Dmol==2.5.0
 
 
-tensorpotential
+
 
 psutil
 gputil
 
-torch==2.8.0
+scipy==1.17.1
+#torch==2.8.0
+tensorpotential
