@@ -76,7 +76,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **UPET** / **GRACE**:  
+#### To run simulations with **MatterSim** / **UPET** / **GRACE** (please pay separated attention to GRACE):  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
