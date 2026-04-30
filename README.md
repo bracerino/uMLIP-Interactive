@@ -70,7 +70,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env/bin/activate**  
   6) Install all the necessary Python packages:  
-   **pip install -r requirements.txt** (with CUDA for calculations on GPU), or (pip install -r requirements-no-cuda.txt (No GPU calculations))  
+   **pip install -r requirements.txt** (with CUDA for calculations optionally on GPU. For no CUDA, uncomment the related cuequivariance packages in the requirements file. However, it is strongly recommended to keep them)  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  
