@@ -5084,8 +5084,16 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     from pymatgen.symmetry.bandstructure import HighSymmKpath
                     from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
-                    sga     = SpacegroupAnalyzer(pmg_structure)
-                    pmg_std = sga.get_primitive_standard_structure()
+                    prim = phonon.primitive
+                    pmg_std = AseAtomsAdaptor().get_structure(
+                        Atoms(
+                            symbols=prim.symbols,
+                            scaled_positions=prim.scaled_positions,
+                            cell=prim.cell,
+                            pbc=True,
+                        )
+                    )
+                    sga = SpacegroupAnalyzer(pmg_std)
                     log(f"  Space group: {{sga.get_space_group_symbol()}} (#{{sga.get_space_group_number()}})")
 
                     _CONV = {{
