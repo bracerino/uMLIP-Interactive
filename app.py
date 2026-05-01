@@ -49,6 +49,8 @@ from helpers.monitor_resources import *
 from helpers.mace_cards import *
 from helpers.generate_python_code import *
 
+from helpers.core_code_preview import generate_core_preview
+
 from helpers.petmad_dos import render_petmad_dos_panel
 
 from helpers.nudge_elastic_band import (
@@ -256,6 +258,8 @@ def save_default_settings(settings):
     except:
         return False
 
+if 'core_preview_code' not in st.session_state:
+    st.session_state.core_preview_code = None
 
 if 'default_settings' not in st.session_state:
     st.session_state.default_settings = load_default_settings()
@@ -5782,6 +5786,45 @@ with tab_st:
                 type="secondary",
                 disabled=False,
             )
+
+        if st.button("👁️ Preview Core Code",
+                     type="primary"):
+            mace_cfg = st.session_state.get('mace_config', {})
+            st.session_state.core_preview_code = generate_core_preview(
+                calc_type=calc_type,
+                selected_model=selected_model,
+                model_size=model_size,
+                device=device,
+                dtype=dtype,
+                thread_count=st.session_state.thread_count,
+                optimization_params=optimization_params,
+                phonon_params=phonon_params,
+                elastic_params=elastic_params,
+                md_params=md_params if calc_type == "Molecular Dynamics" else None,
+                neb_params=neb_params if calc_type == "NEB Calculation" else None,
+                tensile_params=tensile_params if calc_type == "Virtual Tensile Test" else None,
+                mace_head=mace_cfg.get('head'),
+                mace_dispersion=mace_cfg.get('dispersion', False),
+                mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
+                custom_mace_path=custom_mace_path if is_custom_mace else None,
+                custom_upet_path=custom_upet_path if is_custom_upet else None,
+            )
+
+        if st.session_state.get('core_preview_code'):
+            with st.expander("👁️ Core Calculation Code Preview", expanded=True):
+                st.caption(
+                    "Minimal code reflecting your current settings — "
+                    "copy into your own script or notebook. "
+                    "Uses a placeholder input file."
+                )
+                st.code(st.session_state.core_preview_code, language='python')
+                st.download_button(
+                    label="💾 Download Snippet (.py)",
+                    data=st.session_state.core_preview_code,
+                    file_name=f"core_{calc_type.lower().replace(' ', '_')}.py",
+                    mime="text/x-python",
+                    key="download_core_preview",
+                )
 
         if but_local_script:
             substitutions_for_script = None
