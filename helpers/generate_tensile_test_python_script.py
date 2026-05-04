@@ -37,7 +37,15 @@ except ImportError:
 
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.logger import MDLogger 
-from ase.constraints import StrainFilter 
+try:
+    from ase.constraints import StrainFilter
+except ImportError:
+    try:
+        from ase.filters import StrainFilter
+    except ImportError:
+        StrainFilter = None
+        print("Warning: StrainFilter not found in ase.constraints or ase.filters.")
+from ase.constraints import FixAtoms
 from ase.optimize import FIRE 
 from collections import deque
 import io
@@ -240,6 +248,69 @@ except Exception as e:
     print(f"❌ DeePMD initialization failed: {{e}}")
     exit()
 """
+    elif "UPET" in selected_model:
+        imports_str += """
+try:
+    from upet.calculator import UPETCalculator
+except ImportError:
+    print("Error: UPET not found. Will fail if UPET model is selected.")
+"""
+        if model_size.endswith(".ckpt"):
+            calculator_setup_str = f"""
+print("Setting up custom UPET calculator...")
+try:
+    calculator = UPETCalculator(
+        checkpoint_path="{model_size}",
+        device="{device}"
+    )
+    print(f"✅ Custom UPET initialized on {device}")
+except Exception as e:
+    print(f"❌ UPET initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = UPETCalculator(
+            checkpoint_path="{model_size}",
+            device="cpu"
+        )
+        print("✅ Custom UPET initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ UPET CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+        else:
+            upet_raw = model_size
+            if upet_raw.startswith("upet:"):
+                upet_raw = upet_raw[len("upet:"):]
+            if "::" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split("::", 1)
+            elif ":" in upet_raw:
+                upet_model_name, upet_version = upet_raw.split(":", 1)
+            else:
+                upet_model_name = upet_raw
+                upet_version = "latest"
+            calculator_setup_str = f"""
+print("Setting up UPET calculator...")
+try:
+    calculator = UPETCalculator(
+        model="{upet_model_name}",
+        version="{upet_version}",
+        device="{device}"
+    )
+    print(f"✅ UPET {upet_model_name} v{upet_version} initialized on {device}")
+except Exception as e:
+    print(f"❌ UPET initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = UPETCalculator(
+            model="{upet_model_name}",
+            version="{upet_version}",
+            device="cpu"
+        )
+        print("✅ UPET initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ UPET CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
     else:
         calculator_setup_str = "print('Error: Could not determine calculator type.')\ncalculator = None\nexit()"
 
@@ -354,19 +425,34 @@ class TensileXYZWriter:
             num_atoms = len(current_atoms)
             energy = current_atoms.get_potential_energy()
             temp = current_atoms.get_temperature()
+            forces = current_atoms.get_forces()
             cell = current_atoms.get_cell()
             lattice_str = " ".join(f"{x:.8f}" for x in cell.array.flatten())
             current_length = np.linalg.norm(cell[self.strain_direction])
             current_strain_percent = ((current_length - self.initial_length) / self.initial_length) * 100.0
             stress_voigt = self.atoms.get_stress(voigt=True)
             stress_gpa = stress_voigt[self.strain_direction] / units.GPa
+            # Try to get per-atom energies (not all calculators support this)
+            atom_energies = None
+            try:
+                atom_energies = current_atoms.get_potential_energies()
+            except Exception:
+                pass
+            if atom_energies is not None:
+                props = 'Properties=species:S:1:pos:R:3:forces:R:3:atom_energy:R:1'
+            else:
+                props = 'Properties=species:S:1:pos:R:3:forces:R:3'
             comment = (f'Step={global_step} Time={time_ps:.4f}ps Strain={current_strain_percent:.6f}% '
                        f'Stress={stress_gpa:.6f}GPa Energy={energy:.6f}eV Temp={temp:.2f}K '
-                       f'Lattice="{lattice_str}" Properties=species:S:1:pos:R:3')
+                       f'Lattice="{lattice_str}" {props}')
             self.file.write(f"{num_atoms}\\n")
             self.file.write(f"{comment}\\n")
             for i in range(num_atoms):
-                self.file.write(f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f}\\n")
+                line = f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f}"
+                line += f" {forces[i, 0]:15.8f} {forces[i, 1]:15.8f} {forces[i, 2]:15.8f}"
+                if atom_energies is not None:
+                    line += f" {atom_energies[i]:15.8f}"
+                self.file.write(line + "\\n")
             self.file.flush()
         except Exception as e:
             print(f"  Error writing tensile XYZ frame around step {global_step}: {e}")
@@ -596,6 +682,424 @@ def generate_tensile_plots(basename):
 
 """
 
+    # =========================================================================
+    # Grip-mode helpers — appended to tensile_helpers
+    # =========================================================================
+    grip_helpers = """
+
+# ---------------------------------------------------------------------------
+# Grip-mode helpers (for finite structures in vacuum)
+# ---------------------------------------------------------------------------
+
+def identify_grip_atoms(atoms, direction, grip_fraction):
+    positions = atoms.get_positions()
+    coords = positions[:, direction]
+    x_min = coords.min()
+    x_max = coords.max()
+    span = x_max - x_min
+    if span < 1e-6:
+        raise ValueError(f"Structure has zero extent along axis {direction}.")
+    left_cutoff = x_min + grip_fraction * span
+    right_cutoff = x_max - grip_fraction * span
+    left_grip = np.where(coords <= left_cutoff)[0]
+    right_grip = np.where(coords >= right_cutoff)[0]
+    free_atoms = np.where((coords > left_cutoff) & (coords < right_cutoff))[0]
+    initial_length = x_max - x_min
+    return left_grip, right_grip, free_atoms, initial_length
+
+
+def compute_grip_axial_force(atoms, left_grip_indices, right_grip_indices, direction):
+    # Read forces directly from calculator results dict,
+    # completely bypassing ASE's constraint system.
+    # atoms.get_forces() can zero constrained atoms even with apply_constraint=False
+    # in some ASE versions, so we go directly to the calculator's stored results.
+    raw_forces = np.array(atoms.calc.results['forces'])
+
+    # Left grip: structure pulls it in +direction  → f_left > 0 under tension
+    # Right grip: structure pulls it in -direction → f_right < 0 under tension
+    # Axial force = (f_left - f_right) / 2  (average from both grips, like LAMMPS tutorial)
+    f_left = float(np.sum(raw_forces[left_grip_indices, direction]))
+    f_right = float(np.sum(raw_forces[right_grip_indices, direction]))
+    axial_force = (f_left - f_right) / 2.0
+
+    return axial_force, f_left, f_right
+
+
+class GripTensileLogger:
+    def __init__(self, atoms, filename, log_frequency, direction,
+                 initial_length, left_grip_indices, right_grip_indices):
+        self.atoms = atoms
+        self.filename = filename
+        self.log_frequency = max(1, log_frequency)
+        self.direction = direction
+        self.initial_length = initial_length
+        self.left_grip_indices = left_grip_indices
+        self.right_grip_indices = right_grip_indices
+        self.file = open(self.filename, 'w', encoding='utf-8')
+        header = "Step,Time[ps],Strain[%],Displacement[A],Length[A],AxialForce[eV/A],F_left[eV/A],F_right[eV/A],Etot[eV],Epot[eV],Ekin[eV],T[K]\\n"
+        self.file.write(header)
+        self.file.flush()
+        print(f"  Logging grip tensile data to CSV: {self.filename}")
+        self.step_count_in_increment = 0
+        self.global_step_offset = 0
+        self.total_displacement = 0.0
+
+    def set_displacement(self, displacement):
+        self.total_displacement = displacement
+
+    def __call__(self):
+        self.step_count_in_increment += 1
+        global_step = self.global_step_offset + self.step_count_in_increment
+        if self.step_count_in_increment % self.log_frequency != 0:
+            return
+        try:
+            time_ps = global_step * tensile_params['timestep'] / 1000.0
+            strain_pct = (self.total_displacement / self.initial_length) * 100.0 if self.initial_length > 0 else 0.0
+            current_length = self.initial_length + self.total_displacement
+            axial_force, f_left, f_right = compute_grip_axial_force(
+                self.atoms, self.left_grip_indices, self.right_grip_indices, self.direction
+            )
+            epot = self.atoms.get_potential_energy()
+            ekin = self.atoms.get_kinetic_energy()
+            etot = epot + ekin
+            temp = self.atoms.get_temperature()
+            line = (f"{global_step},{time_ps:.4f},{strain_pct:.6f},"
+                    f"{self.total_displacement:.6f},{current_length:.6f},"
+                    f"{axial_force:.6f},{f_left:.6f},{f_right:.6f},"
+                    f"{etot:.6f},{epot:.6f},{ekin:.6f},{temp:.2f}\\n")
+            self.file.write(line)
+            self.file.flush()
+        except Exception as e:
+            print(f"  Error writing grip CSV at step {global_step}: {e}")
+
+    def reset_increment_step_count(self, current_global_step=0):
+        self.global_step_offset = current_global_step
+        self.step_count_in_increment = 0
+
+    def close(self):
+        if self.file:
+            self.file.close()
+            self.file = None
+            print(f"  Closed grip tensile CSV log: {self.filename}")
+
+
+class GripTensileXYZWriter:
+    def __init__(self, atoms, filename, traj_frequency, direction,
+                 initial_length, left_grip_indices, right_grip_indices):
+        self.atoms = atoms
+        self.filename = filename
+        self.traj_frequency = max(1, traj_frequency)
+        self.direction = direction
+        self.initial_length = initial_length
+        self.left_grip_indices = left_grip_indices
+        self.right_grip_indices = right_grip_indices
+        self.file = open(self.filename, 'w', encoding='utf-8')
+        self.step_count_in_increment = 0
+        self.global_step_offset = 0
+        self.total_displacement = 0.0
+        print(f"  Writing grip trajectory to: {self.filename}")
+
+    def set_displacement(self, displacement):
+        self.total_displacement = displacement
+
+    def __call__(self):
+        self.step_count_in_increment += 1
+        global_step = self.global_step_offset + self.step_count_in_increment
+        if self.step_count_in_increment % self.traj_frequency != 0:
+            return
+        try:
+            time_ps = global_step * tensile_params['timestep'] / 1000.0
+            atoms = self.atoms
+            positions = atoms.get_positions()
+            symbols = atoms.get_chemical_symbols()
+            num_atoms = len(atoms)
+            energy = atoms.get_potential_energy()
+            temp = atoms.get_temperature()
+            forces = np.array(atoms.calc.results['forces'])  # Raw calculator forces
+            cell = atoms.get_cell()
+            lattice_str = " ".join(f"{x:.8f}" for x in cell.array.flatten())
+            strain_pct = (self.total_displacement / self.initial_length) * 100.0 if self.initial_length > 0 else 0.0
+            axial_force, _, _ = compute_grip_axial_force(atoms, self.left_grip_indices, self.right_grip_indices, self.direction)
+            # Try to get per-atom energies
+            atom_energies = None
+            try:
+                atom_energies = atoms.get_potential_energies()
+            except Exception:
+                pass
+            if atom_energies is not None:
+                props = 'Properties=species:S:1:pos:R:3:forces:R:3:atom_energy:R:1'
+            else:
+                props = 'Properties=species:S:1:pos:R:3:forces:R:3'
+            comment = (f'Step={global_step} Time={time_ps:.4f}ps '
+                       f'Strain={strain_pct:.6f}% AxialForce={axial_force:.6f}eV/A '
+                       f'Energy={energy:.6f}eV Temp={temp:.2f}K '
+                       f'Lattice="{lattice_str}" {props}')
+            self.file.write(f"{num_atoms}\\n")
+            self.file.write(f"{comment}\\n")
+            for i in range(num_atoms):
+                line = f"{symbols[i]} {positions[i, 0]:15.8f} {positions[i, 1]:15.8f} {positions[i, 2]:15.8f}"
+                line += f" {forces[i, 0]:15.8f} {forces[i, 1]:15.8f} {forces[i, 2]:15.8f}"
+                if atom_energies is not None:
+                    line += f" {atom_energies[i]:15.8f}"
+                self.file.write(line + "\\n")
+            self.file.flush()
+        except Exception as e:
+            print(f"  Error writing grip XYZ at step {global_step}: {e}")
+
+    def reset_increment_step_count(self, current_global_step=0):
+        self.global_step_offset = current_global_step
+        self.step_count_in_increment = 0
+
+    def close(self):
+        if self.file:
+            self.file.close()
+            self.file = None
+            print(f"  Closed grip trajectory file: {self.filename}")
+
+
+def generate_grip_tensile_plots(basename):
+    print(f"  Generating grip tensile plots for: {basename}")
+    plt.rcParams.update({
+        'font.size': 22, 'axes.titlesize': 26, 'axes.labelsize': 24,
+        'xtick.labelsize': 20, 'ytick.labelsize': 20, 'legend.fontsize': 18,
+        'figure.titlesize': 28, 'figure.figsize': (15, 10)
+    })
+    csv_file = f"md_results/{basename}_tensile_data.csv"
+    plot_prefix = f"md_results/{basename}"
+    try:
+        data = pd.read_csv(csv_file)
+        print(f"    Read {len(data)} rows from {csv_file}")
+        print(f"    Columns: {list(data.columns)}")
+        if data.empty or len(data) < 2:
+            print(f"    ... skipping, too few data points ({len(data)} rows).")
+            return
+        data = data.sort_values(by='Step').drop_duplicates(subset=['Step'], keep='last')
+        data = data.dropna()
+        if data.empty or len(data) < 2:
+            print(f"    ... skipping, no valid data after cleaning.")
+            return
+        print(f"    {len(data)} valid data points after cleaning")
+    except FileNotFoundError:
+        print(f"    ... skipping, {csv_file} not found.")
+        return
+    except Exception as e:
+        print(f"    ... skipping: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    strain = data['Strain[%]'].values
+    time_ps = data['Time[ps]'].values
+
+    # Helper: rolling average for smoothing (like the blue curves in the LAMMPS tutorial)
+    def smooth(y, window=None):
+        if window is None:
+            window = max(5, len(y) // 20)
+        if len(y) < window:
+            return y
+        # Use centered rolling mean — min_periods=1 avoids edge artifacts
+        # (at boundaries, averages over available points instead of padding with zeros)
+        return pd.Series(y).rolling(window, center=True, min_periods=1).mean().values
+
+    # =========================================================================
+    # Plot 1: Force-Strain curve (raw + smoothed) — main result
+    # =========================================================================
+    if 'AxialForce[eV/A]' in data.columns:
+        force = data['AxialForce[eV/A]'].values
+        try:
+            plt.figure(figsize=(15, 10))
+            plt.plot(strain, force, '-', color='orange', alpha=0.5, linewidth=1, label='Raw data')
+            plt.plot(strain, smooth(force), '-', color='blue', linewidth=2.5, label='Smoothed')
+            plt.xlabel("Engineering Strain (%)")
+            plt.ylabel("Axial Force (eV/Å)")
+            plt.title(f"{basename} — Force vs. Strain")
+            plt.legend()
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
+            plt.savefig(f"{plot_prefix}_force_strain.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_force_strain.png")
+        except Exception as e:
+            print(f"    ... failed force-strain plot: {e}")
+
+    # =========================================================================
+    # Plot 2: Energy vs Time (raw + smoothed) — like LAMMPS tutorial Fig. b
+    # =========================================================================
+    if 'Etot[eV]' in data.columns:
+        etot = data['Etot[eV]'].values
+        try:
+            plt.figure(figsize=(15, 10))
+            plt.plot(time_ps, etot, '-', color='orange', alpha=0.5, linewidth=1, label='Raw data')
+            plt.plot(time_ps, smooth(etot), '-', color='blue', linewidth=2.5, label='Smoothed')
+            plt.xlabel("Time (ps)")
+            plt.ylabel("Total Energy (eV)")
+            plt.title(f"{basename} — Total Energy vs. Time")
+            plt.legend()
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
+            plt.savefig(f"{plot_prefix}_energy_vs_time.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_energy_vs_time.png")
+        except Exception as e:
+            print(f"    ... failed energy vs time: {e}")
+
+    # =========================================================================
+    # Plot 3: Length / Displacement vs Time — like LAMMPS tutorial Fig. a
+    # =========================================================================
+    if 'Length[A]' in data.columns:
+        length = data['Length[A]'].values
+        L0 = length[0] if len(length) > 0 else 1.0
+        try:
+            fig, ax1 = plt.subplots(figsize=(15, 10))
+            color1 = 'blue'
+            ax1.plot(time_ps, length, '-', color=color1, linewidth=2)
+            ax1.set_xlabel("Time (ps)")
+            ax1.set_ylabel("Grip-to-Grip Length (Å)", color=color1)
+            ax1.tick_params(axis='y', labelcolor=color1)
+            ax1.grid(True, linestyle='--', alpha=0.6)
+
+            # Secondary axis: ΔL/L₀
+            ax2 = ax1.twinx()
+            color2 = 'red'
+            delta_L_ratio = (length - L0) / L0 * 100.0
+            ax2.plot(time_ps, delta_L_ratio, '--', color=color2, linewidth=1.5, alpha=0.7)
+            ax2.set_ylabel("(L − L₀) / L₀  (%)", color=color2)
+            ax2.tick_params(axis='y', labelcolor=color2)
+
+            plt.title(f"{basename} — Length vs. Time  (L₀ = {L0:.2f} Å)")
+            fig.tight_layout()
+            plt.savefig(f"{plot_prefix}_length_vs_time.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_length_vs_time.png")
+        except Exception as e:
+            print(f"    ... failed length vs time: {e}")
+    elif 'Displacement[A]' in data.columns:
+        disp = data['Displacement[A]'].values
+        try:
+            plt.figure(figsize=(15, 10))
+            plt.plot(time_ps, disp, '-', color='blue', linewidth=2)
+            plt.xlabel("Time (ps)")
+            plt.ylabel("Grip Displacement (Å)")
+            plt.title(f"{basename} — Displacement vs. Time")
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
+            plt.savefig(f"{plot_prefix}_displacement_vs_time.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_displacement_vs_time.png")
+        except Exception as e:
+            print(f"    ... failed displacement vs time: {e}")
+
+    # =========================================================================
+    # Plot 4: Temperature vs Time
+    # =========================================================================
+    if 'T[K]' in data.columns:
+        temp = data['T[K]'].values
+        try:
+            plt.figure(figsize=(15, 10))
+            plt.plot(time_ps, temp, '-', color='orange', alpha=0.5, linewidth=1, label='Raw data')
+            plt.plot(time_ps, smooth(temp), '-', color='purple', linewidth=2.5, label='Smoothed')
+            plt.xlabel("Time (ps)")
+            plt.ylabel("Temperature (K)")
+            plt.title(f"{basename} — Temperature vs. Time")
+            plt.legend()
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
+            plt.savefig(f"{plot_prefix}_temp_vs_time.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_temp_vs_time.png")
+        except Exception as e:
+            print(f"    ... failed temp vs time: {e}")
+
+    # =========================================================================
+    # Plot 5: Potential Energy vs Strain
+    # =========================================================================
+    if 'Epot[eV]' in data.columns:
+        epot = data['Epot[eV]'].values
+        try:
+            plt.figure(figsize=(15, 10))
+            plt.plot(strain, epot, '-', color='orange', alpha=0.5, linewidth=1, label='Raw data')
+            plt.plot(strain, smooth(epot), '-', color='green', linewidth=2.5, label='Smoothed')
+            plt.xlabel("Engineering Strain (%)")
+            plt.ylabel("Potential Energy (eV)")
+            plt.title(f"{basename} — Potential Energy vs. Strain")
+            plt.legend()
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
+            plt.savefig(f"{plot_prefix}_epot_vs_strain.png", dpi=200)
+            plt.close()
+            print(f"    ✅ {plot_prefix}_epot_vs_strain.png")
+        except Exception as e:
+            print(f"    ... failed energy vs strain: {e}")
+
+    # =========================================================================
+    # Plot 6: Combined 2×2 overview
+    # =========================================================================
+    try:
+        fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+        fig.suptitle(f"{basename} — Grip Tensile Test Overview", fontsize=28, fontweight='bold')
+
+        # (a) Length vs Time
+        ax = axes[0, 0]
+        if 'Length[A]' in data.columns:
+            ax.plot(time_ps, data['Length[A]'].values, '-', color='blue', linewidth=2)
+            ax.set_ylabel("Length (Å)")
+        elif 'Displacement[A]' in data.columns:
+            ax.plot(time_ps, data['Displacement[A]'].values, '-', color='blue', linewidth=2)
+            ax.set_ylabel("Displacement (Å)")
+        ax.set_xlabel("Time (ps)")
+        ax.set_title("(a) Length vs. Time")
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        # (b) Energy vs Time
+        ax = axes[0, 1]
+        if 'Etot[eV]' in data.columns:
+            etot = data['Etot[eV]'].values
+            ax.plot(time_ps, etot, '-', color='orange', alpha=0.4, linewidth=1)
+            ax.plot(time_ps, smooth(etot), '-', color='blue', linewidth=2)
+        ax.set_xlabel("Time (ps)")
+        ax.set_ylabel("Total Energy (eV)")
+        ax.set_title("(b) Energy vs. Time")
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        # (c) Force vs Strain
+        ax = axes[1, 0]
+        if 'AxialForce[eV/A]' in data.columns:
+            force = data['AxialForce[eV/A]'].values
+            ax.plot(strain, force, '-', color='orange', alpha=0.4, linewidth=1)
+            ax.plot(strain, smooth(force), '-', color='blue', linewidth=2)
+        ax.set_xlabel("Strain (%)")
+        ax.set_ylabel("Axial Force (eV/Å)")
+        ax.set_title("(c) Force vs. Strain")
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        # (d) Temperature vs Time
+        ax = axes[1, 1]
+        if 'T[K]' in data.columns:
+            temp = data['T[K]'].values
+            ax.plot(time_ps, temp, '-', color='orange', alpha=0.4, linewidth=1)
+            ax.plot(time_ps, smooth(temp), '-', color='purple', linewidth=2)
+        ax.set_xlabel("Time (ps)")
+        ax.set_ylabel("Temperature (K)")
+        ax.set_title("(d) Temperature vs. Time")
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        for ax in axes.flat:
+            ax.tick_params(labelsize=16)
+
+        plt.tight_layout()
+        plt.savefig(f"{plot_prefix}_overview.png", dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"    ✅ {plot_prefix}_overview.png")
+    except Exception as e:
+        print(f"    ... failed overview plot: {e}")
+
+    print(f"  ... grip tensile plots saved to md_results/{basename}_*.png")
+
+"""
+
+    # Combine all helpers
+    tensile_helpers = tensile_helpers + grip_helpers
+
     script_content = f"""
 \"\"\"
 Standalone Python script for Virtual Tensile Test simulation.
@@ -612,7 +1116,7 @@ Tensile Parameters:
 \"\"\"
 {imports_str}
 
-{tensile_helpers} # Includes Loggers, Plotting, ConsoleMDLogger, TensileXYZWriter
+{tensile_helpers} # Includes Loggers, Plotting, ConsoleMDLogger, TensileXYZWriter, Grip helpers
 
 tensile_params = {tensile_params_str}
 
@@ -765,10 +1269,10 @@ def run_tensile_test_simulation(atoms, basename, calculator):
     tensile_log_file_closed = False
     try:
         tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
-        tensile_logger.step_count_in_increment = tensile_logger.log_frequency
+        tensile_logger.step_count_in_increment = tensile_logger.log_frequency - 1
         tensile_logger() 
         traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
-        traj_writer.step_count_in_increment = traj_writer.traj_frequency
+        traj_writer.step_count_in_increment = traj_writer.traj_frequency - 1
         traj_writer()
 
         for i in range(n_increments): 
@@ -854,10 +1358,10 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             if final_strain_increment >= max_strain_target:
                  print(f"\\nMaximum strain target reached or exceeded.")
                  tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
-                 tensile_logger.step_count_in_increment = tensile_logger.log_frequency
+                 tensile_logger.step_count_in_increment = tensile_logger.log_frequency - 1
                  tensile_logger()
                  traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
-                 traj_writer.step_count_in_increment = traj_writer.traj_frequency
+                 traj_writer.step_count_in_increment = traj_writer.traj_frequency - 1
                  traj_writer()
                  break
 
@@ -865,10 +1369,10 @@ def run_tensile_test_simulation(atoms, basename, calculator):
         print(f"\\n\\n*** KeyboardInterrupt detected during strain loop. Stopping. ***")
         try:
             tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
-            tensile_logger.step_count_in_increment = tensile_logger.log_frequency
+            tensile_logger.step_count_in_increment = tensile_logger.log_frequency - 1
             tensile_logger()
             traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
-            traj_writer.step_count_in_increment = traj_writer.traj_frequency
+            traj_writer.step_count_in_increment = traj_writer.traj_frequency - 1
             traj_writer()
         except: pass
     except Exception as e:
@@ -886,6 +1390,224 @@ def run_tensile_test_simulation(atoms, basename, calculator):
     strain_end_time = time.perf_counter()
     elapsed = strain_end_time - strain_start_time
     print(f"\\n--- Tensile Test Loop finished in {{elapsed:.2f}} seconds ---")
+
+
+def run_grip_tensile_test_simulation(atoms, basename, calculator):
+    \"\"\"Grip-based tensile test for finite structures in vacuum.\"\"\"
+    print(f"--- Starting GRIP-BASED Tensile Test for {{basename}} ---")
+
+    direction_index = tensile_params['strain_direction']
+    direction_name = ['x', 'y', 'z'][direction_index]
+    grip_fraction = tensile_params.get('grip_fraction', 0.1)
+
+    atoms.calc = calculator
+
+    left_grip, right_grip, free_atoms, initial_length = \\
+        identify_grip_atoms(atoms, direction_index, grip_fraction)
+
+    all_grip = np.concatenate([left_grip, right_grip])
+
+    print(f"  Strain Direction: {{direction_name}}-axis")
+    print(f"  Grip fraction: {{grip_fraction*100:.1f}}% per end")
+    print(f"  Left grip: {{len(left_grip)}} atoms (fixed)")
+    print(f"  Right grip: {{len(right_grip)}} atoms (displaced each increment)")
+    print(f"  Free atoms: {{len(free_atoms)}} atoms")
+    print(f"  Initial grip-to-grip length: {{initial_length:.4f}} Å")
+    print(f"  Max Strain: {{tensile_params['max_strain']}} %")
+    print(f"  Strain Rate: {{tensile_params['strain_rate']}} %/ps")
+    print(f"  Temperature: {{tensile_params['temperature']}} K")
+    print(f"  Output: Axial force (eV/Å) vs. strain")
+    if tensile_params.get('symmetric_pull', True):
+        print(f"  Pull mode: Symmetric (both grips move in opposite directions)")
+    else:
+        print(f"  Pull mode: One-sided (only right grip moves)")
+
+    global_step_counter = 0
+
+    try:
+        MaxwellBoltzmannDistribution(atoms, temperature_K=tensile_params['temperature'])
+        Stationary(atoms)
+        velocities = atoms.get_velocities()
+        velocities[all_grip] = 0.0
+        atoms.set_velocities(velocities)
+        print(f"  Set initial velocities (free atoms only).")
+    except Exception as e:
+        print(f"  Warning: Could not set initial velocities: {{e}}")
+
+    atoms.set_constraint(FixAtoms(indices=all_grip))
+
+    equilibration_steps = tensile_params['equilibration_steps']
+    if equilibration_steps > 0:
+        print(f"\\n--- Running Initial Equilibration ({{equilibration_steps}} steps, NVT) ---")
+        timestep_ase = tensile_params['timestep'] * units.fs
+        friction_ase = tensile_params['friction'] / units.fs
+        dyn_eq = Langevin(atoms, timestep_ase,
+                          temperature_K=tensile_params['temperature'],
+                          friction=friction_ase)
+        console_logger_eq = ConsoleMDLogger(atoms, equilibration_steps,
+                                            log_interval=tensile_params['log_frequency'],
+                                            prefix="Equil: ")
+        dyn_eq.attach(console_logger_eq, interval=1)
+        try:
+            console_logger_eq.reset()
+            dyn_eq.run(equilibration_steps)
+            global_step_counter += equilibration_steps
+            print(f"  Equilibration finished. T = {{atoms.get_temperature():.1f}} K")
+        except Exception as e:
+            print(f"❌ Equilibration FAILED: {{e}}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"\\n--- Preparing Grip-Based Straining ---")
+    timestep_ase = tensile_params['timestep'] * units.fs
+    friction_ase = tensile_params['friction'] / units.fs
+
+    csv_logfile = f"md_results/{{basename}}_tensile_data.csv"
+    xyz_logfile = f"md_results/{{basename}}_tensile_traj.xyz"
+
+    tensile_logger = GripTensileLogger(
+        atoms, csv_logfile,
+        log_frequency=tensile_params['log_frequency'],
+        direction=direction_index,
+        initial_length=initial_length,
+        left_grip_indices=left_grip,
+        right_grip_indices=right_grip
+    )
+
+    traj_writer = GripTensileXYZWriter(
+        atoms, xyz_logfile,
+        traj_frequency=tensile_params['traj_frequency'],
+        direction=direction_index,
+        initial_length=initial_length,
+        left_grip_indices=left_grip,
+        right_grip_indices=right_grip
+    )
+
+    steps_per_increment = tensile_params['md_steps_per_increment']
+    relax_steps = tensile_params['relax_steps'] if tensile_params['relax_between_strain'] else 0
+
+    max_strain_frac = tensile_params['max_strain'] / 100.0
+    strain_rate_ps = tensile_params['strain_rate'] / 100.0
+    md_time_per_increment_ps = steps_per_increment * tensile_params['timestep'] / 1000.0
+    strain_per_increment = strain_rate_ps * md_time_per_increment_ps
+    displacement_per_increment = strain_per_increment * initial_length
+    n_increments = int(np.ceil(max_strain_frac / strain_per_increment)) if strain_per_increment > 0 else 0
+
+    print(f"  Displacement per increment: {{displacement_per_increment:.6f}} Å")
+    print(f"  Strain per increment: {{strain_per_increment*100:.6f}} %")
+    print(f"  Approximate number of increments: {{n_increments}}")
+
+    total_displacement = 0.0
+    strain_start_time = time.perf_counter()
+
+    console_logger_strain = ConsoleMDLogger(
+        atoms, steps_per_increment,
+        log_interval=tensile_params['log_frequency'],
+        prefix="Strain MD: "
+    )
+
+    print(f"\\n--- Starting Grip Strain Application Loop ---")
+    tensile_log_closed = False
+    traj_closed = False
+
+    try:
+        tensile_logger.set_displacement(0.0)
+        tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
+        tensile_logger.step_count_in_increment = tensile_logger.log_frequency - 1
+        tensile_logger()
+
+        traj_writer.set_displacement(0.0)
+        traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
+        traj_writer.step_count_in_increment = traj_writer.traj_frequency - 1
+        traj_writer()
+
+        for i in range(n_increments):
+            # 1. Remove constraints
+            atoms.set_constraint()
+
+            # 2. Displace grips
+            positions = atoms.get_positions()
+            symmetric_pull = tensile_params.get('symmetric_pull', True)
+            if symmetric_pull:
+                # Both grips move in opposite directions (like LAMMPS cnt_top/cnt_bot)
+                half_disp = displacement_per_increment / 2.0
+                positions[right_grip, direction_index] += half_disp
+                positions[left_grip, direction_index] -= half_disp
+            else:
+                # Only right grip moves, left grip stays fixed
+                positions[right_grip, direction_index] += displacement_per_increment
+            atoms.set_positions(positions)
+            total_displacement += displacement_per_increment
+
+            current_strain_pct = (total_displacement / initial_length) * 100.0
+            pull_mode = "symmetric" if symmetric_pull else "one-sided"
+            print(f"\\nIncrement {{i+1}}/{{n_increments}}: Δ={{displacement_per_increment:.4f}} Å ({{pull_mode}}), strain ~{{current_strain_pct:.4f}}%")
+
+            # 3. Fix both grips
+            atoms.set_constraint(FixAtoms(indices=all_grip))
+
+            # 4. Zero grip velocities
+            velocities = atoms.get_velocities()
+            velocities[all_grip] = 0.0
+            atoms.set_velocities(velocities)
+
+            tensile_logger.set_displacement(total_displacement)
+            traj_writer.set_displacement(total_displacement)
+
+            # 5. Relaxation (optional)
+            if relax_steps > 0:
+                print(f"  Running {{relax_steps}} relaxation steps...")
+                dyn_relax = Langevin(atoms, timestep_ase,
+                                     temperature_K=tensile_params['temperature'],
+                                     friction=friction_ase)
+                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
+                traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
+                dyn_relax.attach(tensile_logger, interval=1)
+                dyn_relax.attach(traj_writer, interval=1)
+                dyn_relax.run(relax_steps)
+                global_step_counter += relax_steps
+
+            # 6. Main MD steps
+            if steps_per_increment > 0:
+                print(f"  Running {{steps_per_increment}} MD steps...")
+                dyn_main = Langevin(atoms, timestep_ase,
+                                    temperature_K=tensile_params['temperature'],
+                                    friction=friction_ase)
+                console_logger_strain.reset()
+                dyn_main.attach(console_logger_strain, interval=1)
+                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
+                traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
+                dyn_main.attach(tensile_logger, interval=1)
+                dyn_main.attach(traj_writer, interval=1)
+                dyn_main.run(steps_per_increment)
+                global_step_counter += steps_per_increment
+
+            if total_displacement / initial_length >= max_strain_frac:
+                print(f"\\nMaximum strain target reached.")
+                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
+                tensile_logger.step_count_in_increment = tensile_logger.log_frequency - 1
+                tensile_logger()
+                traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
+                traj_writer.step_count_in_increment = traj_writer.traj_frequency - 1
+                traj_writer()
+                break
+
+    except KeyboardInterrupt:
+        print(f"\\n*** KeyboardInterrupt — stopping grip tensile test. ***")
+    except Exception as e:
+        print(f"❌ Grip Tensile Test FAILED: {{e}}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if not tensile_log_closed:
+            tensile_logger.close()
+            tensile_log_closed = True
+        if not traj_closed:
+            traj_writer.close()
+            traj_closed = True
+
+    elapsed = time.perf_counter() - strain_start_time
+    print(f"\\n--- Grip Tensile Test Loop finished in {{elapsed:.2f}} seconds ---")
 
 
 def main():
@@ -929,7 +1651,13 @@ def main():
         warmup_end = time.perf_counter()
         print(f"  ... Calculator warmed up in {{warmup_end - warmup_start:.2f}}s")
 
-        run_tensile_test_simulation(atoms_initial.copy(), basename, calculator)
+        # Choose simulation mode
+        if tensile_params.get('use_grip_mode', False):
+            print("  Mode: GRIP-BASED (finite structure in vacuum)")
+            run_grip_tensile_test_simulation(atoms_initial.copy(), basename, calculator)
+        else:
+            print("  Mode: CELL-SCALING (periodic structure)")
+            run_tensile_test_simulation(atoms_initial.copy(), basename, calculator)
 
     except KeyboardInterrupt:
         print(f"\\n\\n*** KeyboardInterrupt detected during setup/warmup. Stopping. ***")
@@ -949,7 +1677,10 @@ def main():
              basename = basenames_to_plot[0]
 
         if 'basename' in locals():
-            generate_tensile_plots(basename) 
+            if tensile_params.get('use_grip_mode', False):
+                generate_grip_tensile_plots(basename)
+            else:
+                generate_tensile_plots(basename)
 
         print("\\n--- Tensile Test and plotting complete ---")
 
