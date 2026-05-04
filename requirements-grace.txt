@@ -12,6 +12,8 @@ py3Dmol==2.5.0
 psutil
 gputil
 
+seekpath==2.2.1
+
 scipy==1.17.1
 #torch==2.8.0
 tensorpotential
