@@ -12,3 +12,5 @@ psutil
 gputil
 upet==0.2.1
 torch-dftd #For dispersion correction
+
+seekpath==2.2.1
