@@ -5713,6 +5713,25 @@ with tab_st:
                     """,
                     unsafe_allow_html=True
                 )
+    external_only = calc_type in ["Molecular Dynamics", "NEB Calculation"]
+
+    if external_only:
+        st.warning(
+            f"⚠️ **{calc_type} cannot run inside this web interface.** "
+            f"It must be executed as a standalone Python script in your terminal."
+        )
+        st.info(
+            f"**How to run a {calc_type} calculation:**\n\n"
+            f"1. Go to **📁 Structure Upload & Setup** (first tab)\n"
+            f"2. Scroll down to the **{calc_type}** section\n"
+            f"3. Configure your parameters\n"
+            f"4. Click **📝 Generate "
+            f"{'MD' if calc_type == 'Molecular Dynamics' else 'NEB'} "
+            f"Python Script**\n"
+            f"5. Download the `.py` file, place your structures next to it, then run "
+            f"`python your_script.py` in your terminal\n\n"
+            f"💡 You can still use **👁️ Preview Core Code** below to inspect the calculation logic before generating."
+        )
     if True:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
@@ -5755,7 +5774,8 @@ with tab_st:
             start_calc = st.button(
                 "🚀 Start Batch Calculation",
                 type="primary",
-                disabled=not all_compatible or
+                disabled=external_only or
+                         not all_compatible or
                          st.session_state.calculation_running or
                          (calc_type != "NEB Calculation" and (
                                  len(st.session_state.structures) == 0 or not st.session_state.structures_locked)) or
@@ -5777,14 +5797,14 @@ with tab_st:
             but_script = st.button(
                 "📝 Generate Python Script (automatically creates structures from the uploaded ones)",
                 type="tertiary",
-                disabled=len(st.session_state.structures) == 0,
+                disabled=external_only or len(st.session_state.structures) == 0,
             )
 
         with col3:
             but_local_script = st.button(
                 "📂 Generate Python Script (Will use POSCAR/CIF files in the same folder where the script will be placed)",
                 type="secondary",
-                disabled=False,
+                disabled=external_only,
             )
 
         if st.button("👁️ Preview Core Code",
