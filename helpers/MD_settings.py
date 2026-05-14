@@ -34,16 +34,28 @@ except ImportError:
     NPT_BAOAB_AVAILABLE = False
 
 try:
+    from ase.md.nose_hoover_chain import MaskedMTKNPT
+    NPT_MTK_MASKED_AVAILABLE = True
+except ImportError:
+    NPT_MTK_MASKED_AVAILABLE = False
+
+try:
     from ase.md.melchionna import MelchionnaNPT
 
     NPT_MELCHIONNA_AVAILABLE = True
 except ImportError:
     NPT_MELCHIONNA_AVAILABLE = False
 
-print(f"MD Status: NPT Berendsen = {NPT_BERENDSEN_AVAILABLE}, MTK Isotropic = {NPT_MTK_ISO_AVAILABLE}, "
-      f"MTK Full = {NPT_MTK_FULL_AVAILABLE}, BAOAB = {NPT_BAOAB_AVAILABLE}, Melchionna = {NPT_MELCHIONNA_AVAILABLE}")
-
-
+print(
+    "MD Status: "
+    f"NPT Berendsen = {NPT_BERENDSEN_AVAILABLE}, "
+    #f"Berendsen Inhomogeneous = {NPT_BERENDSEN_INHOMO_AVAILABLE}, "
+    f"MTK Isotropic = {NPT_MTK_ISO_AVAILABLE}, "
+    f"MTK Full = {NPT_MTK_FULL_AVAILABLE}, "
+    f"MTK Masked = {NPT_MTK_MASKED_AVAILABLE}, "
+    f"BAOAB = {NPT_BAOAB_AVAILABLE}, "
+    f"Melchionna = {NPT_MELCHIONNA_AVAILABLE}"
+)
 class MDTrajectoryLogger:
     def __init__(self, log_queue, structure_name, md_params):
         self.log_queue = log_queue
@@ -253,12 +265,15 @@ def setup_md_parameters_ui():
                 coupling_help = "MTK Isotropic: only volume changes (cell shape fixed)"
                 default_coupling_idx = 0
             elif is_npt_mtk_full:
-                coupling_options = ["full_anisotropic", "semi_isotropic"]
-                coupling_help = "Full: complete cell flexibility | Semi: constrain shear"
+                coupling_options = ["full_anisotropic", "axis_selective"]
+                coupling_help = (
+                    "Full: complete cell flexibility (incl. shear) | "
+                    "Axis-selective: choose which of a, b, c may fluctuate independently (no shear)"
+                )
                 default_coupling_idx = 0
             elif is_npt_baoab:
-                coupling_options = ["isotropic"]
-                coupling_help = "BAOAB: isotropic pressure control with variable cell"
+                coupling_options = ["isotropic", "full_anisotropic"]
+                coupling_help = "Isotropic: hydrostatic only (volume scales, shape fixed) | Full: variable cell"
                 default_coupling_idx = 0
             elif is_npt_melchionna:
                 coupling_options = ["full_anisotropic"]
@@ -316,14 +331,11 @@ def setup_md_parameters_ui():
             )
 
         with col_npt4:
-            if is_npt_berendsen:
+            if is_npt_berendsen or is_npt_melchionna:
                 md_params['bulk_modulus'] = st.number_input(
                     "Bulk Modulus (GPa)",
-                    min_value=1.0,
-                    max_value=1000.0,
-                    value=140.0,
-                    step=10.0,
-                    help="Bulk modulus for compressibility calculation"
+                    min_value=1.0, max_value=1000.0, value=140.0, step=10.0,
+                    help="Bulk modulus used for compressibility (Berendsen) or pfactor (Melchionna).",
                 )
 
         # Anisotropic pressure settings for Berendsen
@@ -338,9 +350,35 @@ def setup_md_parameters_ui():
                 md_params['pressure_z'] = st.number_input("P_z", value=md_params['target_pressure_gpa'], step=0.1)
 
         # Semi-isotropic mask for MTK Full
-        if is_npt_mtk_full and md_params['pressure_coupling_type'] == "semi_isotropic":
-            st.markdown("**Semi-Isotropic Settings:**")
-            st.info("Semi-isotropic: constrains shear components while allowing normal stresses to vary")
+        # Axis-selective mask for MTK Full
+        if is_npt_mtk_full and md_params['pressure_coupling_type'] == "axis_selective":
+            st.markdown("**Axis-Selective Mask:**")
+            st.caption(
+                "Pick which lattice vectors may fluctuate. Unchecked axes are fixed. "
+                "Common patterns: (a,b,c) all on = independent axis relaxation, no shear; "
+                "only c on = thin-film / layered c-axis study; "
+                "a and b on = in-plane relaxation with fixed c."
+            )
+            col_ma, col_mb, col_mc = st.columns(3)
+            with col_ma:
+                md_params['mtk_mask_a'] = st.checkbox("Couple a-axis", value=True, key="mtk_mask_a")
+            with col_mb:
+                md_params['mtk_mask_b'] = st.checkbox("Couple b-axis", value=True, key="mtk_mask_b")
+            with col_mc:
+                md_params['mtk_mask_c'] = st.checkbox("Couple c-axis", value=True, key="mtk_mask_c")
+
+            if not any([md_params['mtk_mask_a'], md_params['mtk_mask_b'], md_params['mtk_mask_c']]):
+                st.error(
+                    "❌ At least one axis must be coupled. "
+                    "If you don't want any cell changes, switch to NVT instead of NPT."
+                )
+
+            mask_label = "({}, {}, {})".format(
+                "a" if md_params['mtk_mask_a'] else "·",
+                "b" if md_params['mtk_mask_b'] else "·",
+                "c" if md_params['mtk_mask_c'] else "·",
+            )
+            st.info(f"Active axes: {mask_label}")
 
     # Basic simulation parameters
     with col_md2:
@@ -378,14 +416,20 @@ def setup_md_parameters_ui():
         col_thermo1, col_thermo2 = st.columns(2)
         with col_thermo1:
             md_params['friction'] = st.number_input(
-                "Friction coefficient (1/ps)",
-                min_value=0.001,
-                max_value=1.0,
-                value=0.02,
-                step=0.001,
-                format="%.3f",
+                "Friction coefficient (1/fs)",  # was "1/ps"
+                min_value=0.001, max_value=1.0,
+                value=0.02, step=0.001, format="%.3f",
                 help="Langevin friction coefficient (higher = stronger coupling)"
             )
+        if is_npt_baoab:
+            with col_thermo2:
+                seed_input = st.number_input(
+                    "RNG seed (BAOAB)",
+                    min_value=0, max_value=2_147_483_647,
+                    value=0, step=1,
+                    help="Seed for BAOAB.",
+                )
+                md_params['rng_seed'] = None if seed_input == 0 else int(seed_input)
     elif md_params['ensemble'] == 'NVT-Berendsen' or is_npt_berendsen:
         st.write(f"**Berendsen Thermostat Settings**")
         col_thermo1, col_thermo2 = st.columns(2)
