@@ -48,6 +48,20 @@ try:
 except ImportError:
     NPT_MTK_FULL_AVAILABLE = False
 
+# Inhomogeneous Berendsen for anisotropic cell (axes vary independently)
+try:
+    from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen
+    NPT_BERENDSEN_INHOMO_AVAILABLE = True
+except ImportError:
+    NPT_BERENDSEN_INHOMO_AVAILABLE = False
+
+# Masked MTK for semi-isotropic cell (per-axis, no shear)
+try:
+    from ase.md.nose_hoover_chain import MaskedMTKNPT
+    NPT_MTK_MASKED_AVAILABLE = True
+except ImportError:
+    NPT_MTK_MASKED_AVAILABLE = False
+    
 try:
     from ase.md.langevinbaoab import LangevinBAOAB
     NPT_BAOAB_AVAILABLE = True
@@ -1051,22 +1065,47 @@ def run_md_simulation(atoms, basename, calculator):
         if not NPT_MTK_FULL_AVAILABLE:
             print("\\n*** ERROR: NPT (MTK Full) not available. Requires ASE >= 3.26. ***")
             sys.exit(1)
-        
+
         tdamp_fs = md_params.get('taut', 100.0) * units.fs
         pdamp_fs = md_params.get('taup', 1000.0) * units.fs
         pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
         pressure_au = pressure_gpa * units.GPa
-        
-        md = MTKNPT(
-            atoms,
-            timestep=dt,
-            temperature_K=temperature_K,
-            pressure_au=pressure_au,
-            tdamp=tdamp_fs,
-            pdamp=pdamp_fs
-        )
-        
-        print(f"  Initialized NPT (MTK Full) ensemble.")
+        coupling_type = md_params.get('pressure_coupling_type', 'full_anisotropic').lower()
+
+        if coupling_type == 'axis_selective':
+            if not NPT_MTK_MASKED_AVAILABLE:
+                print("\\n*** WARNING: MaskedMTKNPT not available. Falling back to full anisotropic MTK. ***")
+                md = MTKNPT(
+                    atoms, timestep=dt, temperature_K=temperature_K,
+                    pressure_au=pressure_au, tdamp=tdamp_fs, pdamp=pdamp_fs,
+                )
+                print("  Initialized NPT (MTK Full, anisotropic fallback).")
+            else:
+                mask = (
+                    bool(md_params.get('mtk_mask_a', True)),
+                    bool(md_params.get('mtk_mask_b', True)),
+                    bool(md_params.get('mtk_mask_c', True)),
+                )
+                if not any(mask):
+                    print("\\n*** ERROR: All MTK mask axes are False. At least one must be True. ***")
+                    sys.exit(1)
+
+                md = MaskedMTKNPT(
+                    atoms, timestep=dt, temperature_K=temperature_K,
+                    pressure_au=pressure_au, tdamp=tdamp_fs, pdamp=pdamp_fs,
+                    mask=mask,
+                )
+                print(f"  Initialized NPT (MTK Axis-Selective). Mask = {{mask}}")
+                print(f"    a-axis: {{'free' if mask[0] else 'fixed'}}")
+                print(f"    b-axis: {{'free' if mask[1] else 'fixed'}}")
+                print(f"    c-axis: {{'free' if mask[2] else 'fixed'}}")
+        else:
+            md = MTKNPT(
+                atoms, timestep=dt, temperature_K=temperature_K,
+                pressure_au=pressure_au, tdamp=tdamp_fs, pdamp=pdamp_fs,
+            )
+            print("  Initialized NPT (MTK Full, fully anisotropic incl. shear).")
+
         print(f"    Target T: {{temperature_K}} K")
         print(f"    Target P: {{pressure_gpa}} GPa")
         print(f"    T damping (tdamp): {{tdamp_fs / units.fs:.1f}} fs")
@@ -1076,24 +1115,43 @@ def run_md_simulation(atoms, basename, calculator):
         if not NPT_BAOAB_AVAILABLE:
             print("\\n*** ERROR: NPT (BAOAB) not available. Requires ASE dev version. ***")
             sys.exit(1)
-        
+
         pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
         externalstress = -pressure_gpa * units.GPa
-        T_tau = md_params.get('taut', 100.0) * units.fs
+
+        friction_inv_fs = md_params.get('friction', 0.02)
+        if friction_inv_fs <= 0:
+            print("  Warning: friction must be positive. Using default 0.02 1/fs.")
+            friction_inv_fs = 0.02
+        T_tau = (1.0 / friction_inv_fs) * units.fs
+
         P_tau = md_params.get('taup', 1000.0) * units.fs
-        
+
+        coupling_type = md_params.get('pressure_coupling_type', 'isotropic').lower()
+        hydrostatic = (coupling_type == 'isotropic')
+
+        # Workaround for ASE LangevinBAOAB bug where self.rng isn't set when rng=None
+        rng_seed = md_params.get('rng_seed', None)
+        baoab_rng = np.random.default_rng(rng_seed)
+
         md = LangevinBAOAB(
             atoms,
             timestep=dt,
             temperature_K=temperature_K,
             externalstress=externalstress,
+            hydrostatic=hydrostatic,
             T_tau=T_tau,
-            P_tau=P_tau
+            P_tau=P_tau,
+            rng=baoab_rng,
         )
-        
+
         print(f"  Initialized NPT (BAOAB Langevin) ensemble.")
         print(f"    Target T: {{temperature_K}} K")
-        print(f"    Target P: {{pressure_gpa}} GPa")
+        print(f"    Target P: {{pressure_gpa}} GPa (externalstress = {{externalstress:.6e}} eV/Å^3)")
+        print(f"    hydrostatic: {{hydrostatic}}")
+        print(f"    T_tau: {{T_tau/units.fs:.1f}} fs (from friction {{friction_inv_fs}} 1/fs)")
+        print(f"    P_tau: {{P_tau/units.fs:.1f}} fs")
+        print(f"    rng seed: {{rng_seed if rng_seed is not None else 'random (nondeterministic)'}}")
 
     elif ensemble == "NPT (Melchionna)":
         if not NPT_MELCHIONNA_AVAILABLE:
