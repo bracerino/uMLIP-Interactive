@@ -762,21 +762,27 @@ def _molecular_dynamics(p):
         ]
 
     elif ensemble == "NPT (MTK Full)":
-        lines += [
-            "from ase.md.nose_hoover_chain import MTKNPT",
-            "",
-        ]
-        if coupling_type == "semi_isotropic":
+        if coupling_type == "axis_selective":
+            mask_a = p.get('mtk_mask_a', True)
+            mask_b = p.get('mtk_mask_b', True)
+            mask_c = p.get('mtk_mask_c', True)
             lines += [
-                f"dyn = MTKNPT(atoms, timestep=dt,",
-                f"             temperature_K={temperature},",
-                f"             pressure_au={target_p} * units.GPa,",
-                f"             tdamp={taut} * units.fs,",
-                f"             pdamp={taup} * units.fs,",
-                f"             mask=np.array([1, 1, 1, 0, 0, 0]))",
+                "from ase.md.nose_hoover_chain import MaskedMTKNPT",
+                "",
+                "# Per-axis mask: True = axis can fluctuate independently, False = fixed",
+                f"mask = ({mask_a}, {mask_b}, {mask_c})",
+                "",
+                f"dyn = MaskedMTKNPT(atoms, timestep=dt,",
+                f"                   temperature_K={temperature},",
+                f"                   pressure_au={target_p} * units.GPa,",
+                f"                   tdamp={taut} * units.fs,",
+                f"                   pdamp={taup} * units.fs,",
+                f"                   mask=mask)",
             ]
         else:
             lines += [
+                "from ase.md.nose_hoover_chain import MTKNPT",
+                "",
                 f"dyn = MTKNPT(atoms, timestep=dt,",
                 f"             temperature_K={temperature},",
                 f"             pressure_au={target_p} * units.GPa,",
@@ -785,15 +791,30 @@ def _molecular_dynamics(p):
             ]
 
     elif ensemble == "NPT (BAOAB Langevin)":
+        coupling_type = p.get('pressure_coupling_type', 'isotropic')
+        hydrostatic = (coupling_type == 'isotropic')
+        rng_seed = p.get('rng_seed', None)
+
         lines += [
             "from ase.md.langevinbaoab import LangevinBAOAB",
             "",
+            "# Pressure → stress (BAOAB uses physicist convention: stress = -pressure)",
             f"externalstress = -{target_p} * units.GPa",
+            "",
+            "# UI friction (1/fs) → T_tau (time constant in ASE time units)",
+            f"T_tau = (1.0 / {friction}) * units.fs",
+            f"P_tau = {taup} * units.fs",
+            "",
+            "# Workaround for ASE bug: pass an explicit Generator",
+            f"rng = np.random.default_rng({rng_seed!r})",
+            "",
             f"dyn = LangevinBAOAB(atoms, timestep=dt,",
             f"                    temperature_K={temperature},",
             f"                    externalstress=externalstress,",
-            f"                    T_tau={taut} * units.fs,",
-            f"                    P_tau={taup} * units.fs)",
+            f"                    hydrostatic={hydrostatic},",
+            f"                    T_tau=T_tau,",
+            f"                    P_tau=P_tau,",
+            f"                    rng=rng)",
         ]
 
     elif "Melchionna" in ensemble:
