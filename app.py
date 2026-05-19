@@ -128,6 +128,14 @@ from ase.phonons import Phonons
 from ase.dft.kpoints import bandpath
 import json
 
+
+MACE_POLAR_AVAILABLE = False
+try:
+    from mace.calculators import mace_polar
+    MACE_POLAR_AVAILABLE = True
+except ImportError:
+    pass
+
 try:
     from ase.eos import EquationOfState
     from ase.build import bulk
@@ -194,6 +202,58 @@ DEFAULT_SETTINGS = {
     }
 }
 
+def extract_polar_results(atoms, calculator, log_queue, structure_name):
+    """Extract MACE-POLAR-1 specific outputs after a singlepoint."""
+    try:
+        log_queue.put(f"  Extracting MACE-POLAR-1 outputs for {structure_name}...")
+
+        # Use atoms.calc.results — guaranteed to be the last computed state
+        res = atoms.calc.results if (hasattr(atoms, 'calc') and atoms.calc is not None) \
+              else calculator.results
+
+        dipole   = res.get("dipole")
+        charges  = res.get("charges")
+        rho      = res.get("density_coefficients")
+        rho_spin = res.get("spin_charge_density")
+
+        if dipole is not None:
+            dipole = np.array(dipole)
+            mu_norm = float(np.linalg.norm(dipole))
+            mu_D    = mu_norm * 4.803
+            log_queue.put(
+                f"  Dipole: ({dipole[0]:.4f}, {dipole[1]:.4f}, {dipole[2]:.4f}) eÅ"
+                f"  |  |μ| = {mu_norm:.4f} eÅ = {mu_D:.4f} D"
+            )
+        else:
+            log_queue.put("  ⚠️ No dipole in results — check model version")
+
+        if charges is not None:
+            charges = np.array(charges)
+            log_queue.put(
+                f"  Charges: min={charges.min():.4f} e, "
+                f"max={charges.max():.4f} e, "
+                f"sum={charges.sum():.4f} e"
+            )
+        else:
+            log_queue.put("  ⚠️ No per-atom charges in results")
+
+        if rho_spin is not None:
+            log_queue.put(f"  Spin density coefficients shape: {np.array(rho_spin).shape}")
+        else:
+            log_queue.put("  ℹ️ No spin density (spin=1, non-polarised run)")
+
+        return {
+            "success":              True,
+            "dipole":               dipole.tolist()            if dipole   is not None else None,
+            "charges":              charges.tolist()           if charges  is not None else None,
+            "density_coefficients": np.array(rho).tolist()    if rho      is not None else None,
+            "spin_charge_density":  np.array(rho_spin).tolist()if rho_spin is not None else None,
+        }
+    except Exception as e:
+        import traceback
+        log_queue.put(f"  ⚠️ Polar output extraction failed: {e}")
+        log_queue.put(traceback.format_exc())
+        return {"success": False, "error": str(e)}
 
 def extract_orb_confidence(atoms, calculator, log_queue, structure_name):
     try:
@@ -2041,6 +2101,8 @@ MODEL_FAMILIES = {
         "MACE-OFF23 (large) - Organic": "large",
         "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
         "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+        "MACE-POLAR-1 (medium) - Polarisable, 83 elem [ωB97M-V] ⭐": "polar-1-m",
+        "MACE-POLAR-1 (large)  - Polarisable, 83 elem [ωB97M-V]":    "polar-1-l",
         "Custom MACE Model 🔧": "custom",
     },
     "UPET / PET-MAD": {
@@ -2146,6 +2208,8 @@ def is_url_model(model_size):
 def is_multihead_model(selected_model):
     return "Multi-head" in selected_model or "MH-0" in selected_model or "MH-1" in selected_model
 
+def is_polar_model(selected_model_name):
+    return "POLAR" in selected_model_name.upper()
 
 def download_mace_foundation_model(model_url, log_queue=None):
     from pathlib import Path
@@ -2624,7 +2688,8 @@ class CellOptimizationLogger:
 def run_mace_calculation(structure_data, calc_type, model_size, device, optimization_params, phonon_params,
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                         custom_upet_path=None):
+                         custom_upet_path=None,
+                         polar_settings=None):
     import time
     try:
         total_start_time = time.time()
@@ -2939,6 +3004,47 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 else:
                     return
 
+        is_mace_polar = is_polar_model(selected_model)
+
+        if is_mace_polar:
+            log_queue.put("Setting up MACE-POLAR-1 calculator...")
+            if not MACE_POLAR_AVAILABLE:
+                log_queue.put("❌ mace_polar not available — pip install --upgrade mace-torch")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+
+            _ps = polar_settings or {}
+            _charge = _ps.get('charge', 0)
+            _spin = _ps.get('spin', 1)
+            _efield = _ps.get('external_field', [0.0, 0.0, 0.0])
+
+            log_queue.put(f"  Model:          {model_size}")
+            log_queue.put(f"  Charge:         {_charge}")
+            log_queue.put(f"  Spin (2S+1):    {_spin}")
+            log_queue.put(f"  External field: {_efield} V/Å")
+            log_queue.put(f"  Device:         {device}")
+            log_queue.put(f"  Dtype:          {dtype}")
+
+            try:
+                calculator = mace_polar(
+                    model=model_size,
+                    device=device,
+                    default_dtype=dtype,
+                )
+                log_queue.put(f"✅ MACE-POLAR-1 ({model_size}) initialised on {device}")
+            except Exception as e:
+                log_queue.put(f"❌ MACE-POLAR-1 init failed: {e}")
+                if device == "cuda":
+                    try:
+                        calculator = mace_polar(model=model_size, device="cpu", default_dtype=dtype)
+                        log_queue.put("✅ MACE-POLAR-1 initialised on CPU (fallback)")
+                    except Exception as cpu_err:
+                        log_queue.put(f"❌ CPU fallback failed: {cpu_err}")
+                        log_queue.put("CALCULATION_FINISHED")
+                        return
+                else:
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
         else:
             log_queue.put("Setting up MACE calculator...")
             log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
@@ -3277,6 +3383,17 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     atoms = pymatgen_to_ase(structure)
                     atoms.calc = calculator
 
+                    if is_mace_polar:
+                        _ps = polar_settings or {}
+                        atoms.info["charge"] = int(_ps.get("charge", 0))
+                        atoms.info["spin"] = int(_ps.get("spin", 1))
+                        atoms.info["external_field"] = list(_ps.get("external_field", [0., 0., 0.]))
+                        log_queue.put(
+                            f"  Polar metadata set — charge={atoms.info['charge']}, "
+                            f"spin={atoms.info['spin']}, "
+                            f"E_field={atoms.info['external_field']} V/Å"
+                        )
+
                     log_queue.put(f"Testing calculator with {name}...")
 
                     try:
@@ -3304,6 +3421,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     rmscd_results = None
                     elastic_results = None
                     orb_confidence = None
+                    polar_results = None
                     if is_orb:
                         orb_confidence = extract_orb_confidence(atoms, calculator, log_queue, name)
                     if calc_type == "Energy Only":
@@ -3900,6 +4018,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                     'calc_type': calc_type,
                                     'error': str(e)
                                 })
+
+                    if is_mace_polar and energy is not None:
+                        polar_results = extract_polar_results(
+                            atoms, calculator, log_queue, name
+                        )
+
                     formation_energy = None
                     if calc_formation_energy and energy is not None:
                         formation_energy = calculate_formation_energy(energy, structure, reference_energies)
@@ -3922,7 +4046,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
                         'md_results': md_results if calc_type == "Molecular Dynamics" else None,
                         'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None,
-                        'orb_confidence': orb_confidence
+                        'orb_confidence': orb_confidence,
+                        'polar_results': polar_results,
                     })
 
                     structure_end_time = time.time()
@@ -3957,7 +4082,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         'energy': None,
                         'structure': structure,
                         'calc_type': calc_type,
-                        'error': str(e)
+                        'error': str(e),
+                        'polar_results': None,
                     })
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
@@ -4278,6 +4404,55 @@ with st.sidebar:
                     st.caption(f"D3-{mace_dispersion_xc} will be applied")
 
     # Store in session state
+    polar_charge = 0
+    polar_spin = 1
+    polar_efield = [0.0, 0.0, 0.0]
+
+    if is_polar_model(selected_model):
+        st.markdown("---")
+        st.subheader("⚡ MACE-POLAR-1 Settings")
+
+        if not MACE_POLAR_AVAILABLE:
+            st.error(
+                "❌ `mace_polar` not found — update MACE: "
+                "`pip install --upgrade mace-torch`"
+            )
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            polar_charge = st.number_input(
+                "Total charge",
+                min_value=-10, max_value=10, value=0, step=1,
+                help="Net charge of the system (integer). Written to `atoms.info['charge']`."
+            )
+        with col_p2:
+            polar_spin = st.number_input(
+                "Spin multiplicity (2S+1)",
+                min_value=1, max_value=20, value=1, step=1,
+                help="Number of unpaired electrons + 1. Written to `atoms.info['spin']`."
+            )
+
+        st.write("**External electric field (V/Å)**")
+        col_ef1, col_ef2, col_ef3 = st.columns(3)
+        with col_ef1:
+            ef_x = st.number_input("Ex", value=0.0, format="%.4f", key="ef_x")
+        with col_ef2:
+            ef_y = st.number_input("Ey", value=0.0, format="%.4f", key="ef_y")
+        with col_ef3:
+            ef_z = st.number_input("Ez", value=0.0, format="%.4f", key="ef_z")
+        polar_efield = [ef_x, ef_y, ef_z]
+
+        st.caption(
+            "📄 [MACE-POLAR-1 docs](https://mace-docs.readthedocs.io/en/latest/guide/polar_mace.html) · "
+            "[arXiv:2602.19411](https://arxiv.org/abs/2602.19411)"
+        )
+
+    # Store for use in the calculation thread
+    st.session_state['polar_settings'] = {
+        'charge': polar_charge,
+        'spin': polar_spin,
+        'external_field': polar_efield,
+    }
     if model_size.startswith("upet:"):
         with col_mult2:
             st.subheader("🔬 Dispersion Correction")
@@ -5784,11 +5959,6 @@ with tab_st:
                                  not st.session_state.get('neb_final_structures'))),
             )
 
-            if calc_type == "NEB Calculation":
-                st.write("**NEB Debug Info:**")
-                st.write(
-                    f"Initial structure: {'✅ Loaded' if st.session_state.get('neb_initial_structure') else '❌ Missing'}")
-                st.write(f"Final structures: {len(st.session_state.get('neb_final_structures', {}))} loaded")
 
         if len(st.session_state.structures) > 0 and not st.session_state.structures_locked:
             st.warning("🔒 Please lock your structures before starting calculation to prevent accidental changes.")
@@ -6065,7 +6235,7 @@ with tab_st:
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
                       st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass,
                       neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
-                      custom_upet_path)
+                      custom_upet_path,st.session_state.get('polar_settings', {}),)
             )
             thread.start()
             st.rerun()
@@ -7413,6 +7583,606 @@ with tab3:
                             For more details, see the [ORB models documentation](https://github.com/orbital-materials/orb-models) 
                             and the paper: *"Orb-v3: atomistic simulation at scale"* (arXiv:2504.06231)
                             """)
+            # ── MACE-POLAR-1 results ──────────────────────────────────────────
+            polar_result_list = [
+                r for r in st.session_state.results
+                if r.get('polar_results') and r['polar_results'].get('success')
+            ]
+
+            if polar_result_list:
+                st.markdown("---")
+
+                if len(polar_result_list) == 1:
+                    _sel_polar = polar_result_list[0]
+                else:
+                    _polar_names = [r['name'] for r in polar_result_list]
+                    _pname = st.selectbox("Select structure for polar analysis:",
+                                          _polar_names, key="polar_sel")
+                    _sel_polar = next(r for r in polar_result_list if r['name'] == _pname)
+
+                pd_data = _sel_polar['polar_results']
+                _ps = st.session_state.get('polar_settings', {})
+                _charge = _ps.get('charge', 0)
+                _spin = _ps.get('spin', 1)
+                _efield = _ps.get('external_field', [0., 0., 0.])
+
+                # ── Standard CPK/Jmol element colors ──────────────────────────
+                CPK = {
+                    'H': '#FFFFFF', 'He': '#D9FFFF', 'Li': '#CC80FF', 'Be': '#C2FF00',
+                    'B': '#FFB5B5', 'C': '#909090', 'N': '#3050F8', 'O': '#FF0D0D',
+                    'F': '#90E050', 'Ne': '#B3E3F5', 'Na': '#AB5CF2', 'Mg': '#8AFF00',
+                    'Al': '#BFA6A6', 'Si': '#F0C8A0', 'P': '#FF8000', 'S': '#FFFF30',
+                    'Cl': '#1FF01F', 'Ar': '#80D1E3', 'K': '#8F40D4', 'Ca': '#3DFF00',
+                    'Sc': '#E6E6E6', 'Ti': '#BFC2C7', 'V': '#A6A6AB', 'Cr': '#8A99C7',
+                    'Mn': '#9C7AC7', 'Fe': '#E06633', 'Co': '#F090A0', 'Ni': '#50D050',
+                    'Cu': '#C88033', 'Zn': '#7D80B0', 'Ga': '#C28F8F', 'Ge': '#668F8F',
+                    'As': '#BD80E3', 'Se': '#FFA100', 'Br': '#A62929', 'Kr': '#5CB8D1',
+                    'Rb': '#702EB0', 'Sr': '#00FF00', 'Y': '#94FFFF', 'Zr': '#94E0E0',
+                    'Nb': '#73C2C9', 'Mo': '#54B5B5', 'Tc': '#3B9E9E', 'Ru': '#248F8F',
+                    'Rh': '#0A7D8C', 'Pd': '#6C6C6C', 'Ag': '#C0C0C0', 'Cd': '#FFD98F',
+                    'In': '#A67573', 'Sn': '#668080', 'Sb': '#9E63B5', 'Te': '#D47A00',
+                    'I': '#940094', 'Xe': '#429EB0', 'Cs': '#57178F', 'Ba': '#00C900',
+                    'La': '#70D4FF', 'Ce': '#FFFFC7', 'Pr': '#D9FFC7', 'Nd': '#C7FFC7',
+                    'Hf': '#4DC2FF', 'Ta': '#4DA6FF', 'W': '#2194D6', 'Re': '#267DAB',
+                    'Os': '#266696', 'Ir': '#175487', 'Pt': '#D0D0E0', 'Au': '#FFD123',
+                    'Hg': '#B8B8D0', 'Tl': '#A6544D', 'Pb': '#575961', 'Bi': '#9E4FB5',
+                    'U': '#008FFF', 'Th': '#00BAFF',
+                }
+                DEFAULT_CPK = '#FF69B4'
+
+
+                def cpk(sym):
+                    return CPK.get(sym, DEFAULT_CPK)
+
+
+                def text_color_for_bg(hex_color):
+                    """Return black or white depending on background luminance."""
+                    try:
+                        rgb = tuple(int(hex_color.lstrip('#')[k:k + 2], 16) for k in (0, 2, 4))
+                        lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+                        return '#000000' if lum > 140 else '#ffffff'
+                    except Exception:
+                        return '#000000'
+
+
+                COEFF_FULL = {
+                    0: "c0 — Monopole (net atomic charge, l=0)",
+                    1: "c1 — Atomic dipole component 1 (l=1)",
+                    2: "c2 — Atomic dipole component 2 (l=1)",
+                    3: "c3 — Atomic dipole component 3 (l=1)",
+                }
+                COEFF_SHORT = {0: "c0\nMonopole", 1: "c1\nDipole py",
+                               2: "c2\nDipole pz", 3: "c3\nDipole px"}
+                COEFF_BAR = {0: "c0 — Monopole (charge)",
+                             1: "c1 — Dipole py",
+                             2: "c2 — Dipole pz",
+                             3: "c3 — Dipole px"}
+
+                # ── Pre-compute values safely ──────────────────────────────────
+                _has_dipole = pd_data.get('dipole') is not None
+                _has_charges = pd_data.get('charges') is not None
+                _has_rho = pd_data.get('density_coefficients') is not None
+                _has_spin_rho = pd_data.get('spin_charge_density') is not None
+
+                if _has_dipole:
+                    _mu = np.array(pd_data['dipole'], dtype=float)
+                    _mu_norm = float(np.linalg.norm(_mu))
+                    _mu_D = _mu_norm * 4.803
+
+                if _has_charges:
+                    _charges = np.array(pd_data['charges'], dtype=float)
+                    _n_atoms = len(_charges)
+                else:
+                    _n_atoms = 0
+
+                _structure = _sel_polar.get('structure')
+                if _structure is not None and _n_atoms > 0:
+                    try:
+                        _symbols = [site.specie.symbol for site in _structure]
+                    except Exception:
+                        _symbols = [str(i) for i in range(_n_atoms)]
+                elif _n_atoms > 0:
+                    _symbols = [str(i) for i in range(_n_atoms)]
+                else:
+                    _symbols = []
+
+                _atom_labels = [f"{s}{i}" for i, s in enumerate(_symbols)]
+
+                # ── Header ─────────────────────────────────────────────────────
+                st.markdown(f"""
+                            <div style="background:linear-gradient(135deg,#0d1b6e,#1565c0);
+                                padding:20px 28px;border-radius:14px;margin-bottom:18px;
+                                box-shadow:0 4px 14px rgba(0,0,0,0.25);">
+                                <h2 style="color:white;margin:0 0 4px 0;font-size:26px;">
+                                    ⚡ MACE-POLAR-1 Electrostatic Analysis
+                                </h2>
+                                <p style="color:#90caf9;margin:0;font-size:15px;">
+                                    {_sel_polar['name']} &nbsp;·&nbsp;
+                                    Charge = {_charge} e &nbsp;·&nbsp; Spin (2S+1) = {_spin}
+                                    &nbsp;·&nbsp; E-field = {_efield} V/Å
+                                </p>
+                            </div>""", unsafe_allow_html=True)
+
+                # ── Summary metric cards ───────────────────────────────────────
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("Dipole |μ|",
+                           f"{_mu_D:.4f} D" if _has_dipole else "N/A",
+                           f"{_mu_norm:.4f} eÅ" if _has_dipole else "")
+                sc2.metric("Net charge (sum)",
+                           f"{float(_charges.sum()):.4f} e" if _has_charges else "N/A",
+                           help="Sum of all partial charges — should equal total system charge")
+                sc3.metric("Charge range",
+                           f"{float(_charges.min()):.3f} → {float(_charges.max()):.3f} e"
+                           if _has_charges else "N/A")
+                sc4.metric("Spin density",
+                           "Yes ✅" if _has_spin_rho else "No (singlet)",
+                           f"2S+1 = {_spin}")
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ══════════════════════════════════════════════════════════════
+                # SECTION 1 — Dipole moment
+                # ══════════════════════════════════════════════════════════════
+                if _has_dipole:
+                    st.markdown("## 🔵 Dipole Moment")
+                    st.caption(
+                        "Electric charge separation of the whole unit cell / molecule. "
+                        "Large |μ| → strongly polar system. "
+                        "Red bar = negative component · Blue bar = positive component."
+                    )
+
+                    col_dip_info, col_dip_plot = st.columns([1, 2])
+
+                    with col_dip_info:
+                        st.markdown(f"""
+                                    <div style="border:1px solid #ccc;padding:18px;border-radius:10px;">
+                                        <b style="font-size:17px;">Vector components</b>
+                                        <table style="width:100%;margin-top:10px;font-size:16px;">
+                                        <tr>
+                                            <td>μx</td>
+                                            <td style="text-align:right"><b>{float(_mu[0]):.4f} eÅ</b></td>
+                                        </tr>
+                                        <tr>
+                                            <td>μy</td>
+                                            <td style="text-align:right"><b>{float(_mu[1]):.4f} eÅ</b></td>
+                                        </tr>
+                                        <tr>
+                                            <td>μz</td>
+                                            <td style="text-align:right"><b>{float(_mu[2]):.4f} eÅ</b></td>
+                                        </tr>
+                                        </table>
+                                        <hr style="margin:10px 0;">
+                                        <div style="font-size:18px;">
+                                            <b>|μ| = {_mu_norm:.4f} eÅ</b><br>
+                                            <b>|μ| = {_mu_D:.4f} D</b>
+                                        </div>
+                                        <div style="font-size:13px;margin-top:8px;opacity:0.7;">
+                                            1 eÅ = 4.803 Debye
+                                        </div>
+                                    </div>""", unsafe_allow_html=True)
+
+                    with col_dip_plot:
+                        _comp_vals = [float(_mu[0]), float(_mu[1]), float(_mu[2])]
+                        _comp_colors = ['#d32f2f' if v < 0 else '#1565c0' for v in _comp_vals]
+
+                        fig_dip = go.Figure()
+                        fig_dip.add_trace(go.Bar(
+                            x=['μx', 'μy', 'μz'],
+                            y=_comp_vals,
+                            marker_color=_comp_colors,
+                            marker_line_color='rgba(0,0,0,0.3)',
+                            marker_line_width=1.5,
+                            text=[f"{v:.4f} eÅ<br>({v * 4.803:.4f} D)"
+                                  for v in _comp_vals],
+                            textposition='outside',  # always readable regardless of bar color
+                            textfont=dict(size=15),  # no color → inherits Plotly theme
+                            width=0.45,
+                            hovertemplate='<b>%{x}</b><br>%{y:.5f} eÅ<extra></extra>'
+                        ))
+                        fig_dip.add_hline(y=0, line_width=1.5, line_color='gray')
+                        fig_dip.update_layout(
+                            title=dict(
+                                text=f"|μ| = {_mu_norm:.4f} eÅ = {_mu_D:.4f} D",
+                                font=dict(size=22)
+                            ),
+                            yaxis_title="Dipole component (eÅ)",
+                            xaxis_title="Cartesian component",
+                            height=420,
+                            font=dict(size=18),
+                            xaxis=dict(tickfont=dict(size=22), title_font=dict(size=20)),
+                            yaxis=dict(tickfont=dict(size=18), title_font=dict(size=20)),
+                            showlegend=False,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=18),
+                        )
+                        st.plotly_chart(fig_dip, use_container_width=True)
+
+                # ══════════════════════════════════════════════════════════════
+                # SECTION 2 — Per-atom partial charges
+                # ══════════════════════════════════════════════════════════════
+                if _has_charges:
+                    st.markdown("## 🔴 Per-Atom Partial Charges")
+                    st.caption(
+                        "Negative = electron-rich atom · Positive = electron-deficient · "
+                        "Net sum should equal the total system charge. "
+                        "Colours follow the standard CPK/Jmol convention."
+                    )
+
+                    col_bar_ch, col_dot_ch = st.columns([2, 1])
+
+                    with col_bar_ch:
+                        fig_ch = go.Figure()
+                        for _sym in list(dict.fromkeys(_symbols)):
+                            _idx = [i for i, s in enumerate(_symbols) if s == _sym]
+                            _c = cpk(_sym)
+                            fig_ch.add_trace(go.Bar(
+                                x=[_atom_labels[i] for i in _idx],
+                                y=[float(_charges[i]) for i in _idx],
+                                name=_sym,
+                                marker_color=_c,
+                                marker_line_color='rgba(0,0,0,0.35)',
+                                marker_line_width=1.5,
+                                text=[f"{float(_charges[i]):.3f}" for i in _idx],
+                                textposition='outside',
+                                textfont=dict(size=15),
+                                hovertemplate=(
+                                    f'<b>%{{x}}</b> ({_sym})<br>'
+                                    'Charge: %{y:.4f} e<extra></extra>'
+                                )
+                            ))
+
+                        fig_ch.add_hline(y=0, line_width=1.5, line_color='gray')
+                        fig_ch.update_layout(
+                            title=dict(text="Per-Atom Partial Charges (CPK colours)",
+                                       font=dict(size=22)),
+                            xaxis_title="Atom",
+                            yaxis_title="Partial charge (e)",
+                            height=460,
+                            barmode='overlay',
+                            font=dict(size=18),
+                            xaxis=dict(tickangle=45, tickfont=dict(size=18),
+                                       title_font=dict(size=20)),
+                            yaxis=dict(tickfont=dict(size=18), title_font=dict(size=20)),
+                            legend=dict(font=dict(size=18),
+                                        title=dict(text="Element", font=dict(size=18))),
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=18),
+                        )
+                        st.plotly_chart(fig_ch, use_container_width=True)
+
+                    with col_dot_ch:
+                        # Dot/strip chart — works correctly even for 1 atom per element
+                        fig_strip = go.Figure()
+                        for _sym in list(dict.fromkeys(_symbols)):
+                            _idx = [i for i, s in enumerate(_symbols) if s == _sym]
+                            _c = cpk(_sym)
+                            _border = text_color_for_bg(_c)
+                            fig_strip.add_trace(go.Scatter(
+                                x=[float(_charges[i]) for i in _idx],
+                                y=[_sym] * len(_idx),
+                                mode='markers+text',
+                                name=_sym,
+                                marker=dict(
+                                    color=_c,
+                                    size=20,
+                                    line=dict(color=_border, width=1.5),
+                                    symbol='circle',
+                                ),
+                                text=[f"{float(_charges[i]):.3f}" for i in _idx],
+                                textposition='middle right',
+                                textfont=dict(size=14),
+                                hovertemplate=(
+                                    f'<b>%{{y}}</b><br>'
+                                    'Charge: %{x:.4f} e<extra></extra>'
+                                ),
+                            ))
+
+                        fig_strip.add_vline(x=0, line_width=1.5, line_color='gray',
+                                            line_dash='dash')
+                        fig_strip.update_layout(
+                            title=dict(text="Charge per Element", font=dict(size=20)),
+                            xaxis=dict(title="Partial charge (e)",
+                                       tickfont=dict(size=15), title_font=dict(size=18),
+                                       zeroline=False),
+                            yaxis=dict(title="Element",
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            height=460,
+                            font=dict(size=15),
+                            showlegend=False,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=16),
+                        )
+                        st.plotly_chart(fig_strip, use_container_width=True)
+
+                    with st.expander("📋 Full per-atom charge table"):
+                        st.dataframe(pd.DataFrame({
+                            'Index': range(_n_atoms),
+                            'Element': _symbols,
+                            'Charge (e)': [f"{q:.6f}" for q in _charges],
+                        }), use_container_width=True, hide_index=True)
+
+                    st.download_button(
+                        "📥 Download charges (CSV)",
+                        data=pd.DataFrame({
+                            'index': range(_n_atoms),
+                            'element': _symbols,
+                            'charge_e': _charges.tolist(),
+                        }).to_csv(index=False),
+                        file_name=f"charges_{_sel_polar['name'].replace('.', '_')}.csv",
+                        mime="text/csv", key="dl_polar_charges_v2", type="primary"
+                    )
+
+                # ══════════════════════════════════════════════════════════════
+                # SECTION 3 — Electron Density Multipole Coefficients
+                # shape: n_atoms × n_coeff
+                # ══════════════════════════════════════════════════════════════
+                if _has_rho:
+                    st.markdown("## 🟡 Electron Density Multipole Coefficients")
+                    st.caption(
+                        "Per-atom Gaussian-type orbital (GTO) expansion coefficients for "
+                        "the electron density. The GTO basis consists of one **s-type** "
+                        "function (l=0) and three **p-type** functions (l=1):"
+                    )
+                    st.info(
+                        "**c0** = Monopole charge (confirmed = 'charges' output, l=0)\n\n"
+                        "**c1, c2, c3** = Atomic dipole components (l=1 p-type GTOs). "
+                    )
+
+                    _rho = np.array(pd_data['density_coefficients'], dtype=float)
+                    n_coeff = _rho.shape[1]
+
+                    coeff_labels_short = [COEFF_SHORT.get(i, f"c{i}")
+                                          for i in range(n_coeff)]
+                    coeff_labels_axis = [f"c{i}" for i in range(n_coeff)]
+                    coeff_hover = [[COEFF_FULL.get(j, f"c{j}")
+                                    for j in range(n_coeff)]
+                                   for _ in range(_n_atoms)]
+                    bar_names = [COEFF_BAR.get(i, f"c{i}") for i in range(n_coeff)]
+
+                    col_rho1, col_rho2 = st.columns(2)
+
+                    with col_rho1:
+                        fig_rho_heat = go.Figure(data=go.Heatmap(
+                            z=_rho,
+                            x=coeff_labels_axis,
+                            y=_atom_labels,
+                            colorscale='RdBu_r',
+                            zmid=0,
+                            text=[[f"{_rho[i, j]:.4f}" for j in range(n_coeff)]
+                                  for i in range(_n_atoms)],
+                            texttemplate="%{text}",
+                            textfont=dict(size=13),
+                            customdata=coeff_hover,
+                            hovertemplate=(
+                                'Atom: %{y}<br>'
+                                '%{customdata}<br>'
+                                'Value: %{z:.5f}<extra></extra>'
+                            ),
+                            colorbar=dict(title="Value",
+                                          title_font=dict(size=16),
+                                          tickfont=dict(size=14))
+                        ))
+                        fig_rho_heat.update_layout(
+                            title=dict(text="Density Coefficient Heatmap (atoms × coeff)",
+                                       font=dict(size=20)),
+                            xaxis=dict(
+                                title="Coefficient",
+                                tickvals=list(range(n_coeff)),
+                                ticktext=coeff_labels_axis,
+                                tickfont=dict(size=16), title_font=dict(size=18)
+                            ),
+                            yaxis=dict(title="Atom",
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            height=max(320, 60 * _n_atoms + 120),
+                            font=dict(size=16),
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                        )
+                        st.plotly_chart(fig_rho_heat, use_container_width=True)
+
+                    with col_rho2:
+                        fig_rho_bar = go.Figure()
+                        for ci in range(n_coeff):
+                            fig_rho_bar.add_trace(go.Bar(
+                                name=bar_names[ci],
+                                x=_atom_labels,
+                                y=_rho[:, ci].tolist(),
+                                hovertemplate=(
+                                    f'<b>%{{x}}</b><br>'
+                                    f'{bar_names[ci]}: %{{y:.5f}}<extra></extra>'
+                                )
+                            ))
+                        fig_rho_bar.add_hline(y=0, line_width=1, line_color='gray')
+                        fig_rho_bar.update_layout(
+                            title=dict(text="Coefficients per Atom (grouped)",
+                                       font=dict(size=20)),
+                            xaxis=dict(title="Atom", tickangle=45,
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            yaxis=dict(title="Coefficient value",
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            barmode='group',
+                            height=max(320, 60 * _n_atoms + 120),
+                            font=dict(size=16),
+                            legend=dict(font=dict(size=14)),
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=16),
+                        )
+                        st.plotly_chart(fig_rho_bar, use_container_width=True)
+
+                # ══════════════════════════════════════════════════════════════
+                # SECTION 4 — Spin-Resolved Charge Density
+                # shape: n_atoms × 2 (spin channels) × n_coeff
+                # ══════════════════════════════════════════════════════════════
+                if _has_spin_rho:
+                    st.markdown("## 🟣 Spin-Resolved Charge Density")
+                    st.caption(
+                        "Same GTO coefficients as above (c0 monopole, c1 dipole py, "
+                        "c2 dipole pz, c3 dipole px) but decomposed into the "
+                        "spin-↑ and spin-↓ electron channels. "
+                        "**Spin polarisation** = spin-↑ monopole − spin-↓ monopole per atom."
+                    )
+
+                    _rho_spin = np.array(pd_data['spin_charge_density'], dtype=float)
+                    # shape: (n_atoms, 2, n_coeff)
+                    _spin_up = _rho_spin[:, 0, :]  # (n_atoms, n_coeff)
+                    _spin_down = _rho_spin[:, 1, :]
+                    _up_mono = _spin_up[:, 0]
+                    _down_mono = _spin_down[:, 0]
+                    _polariz = _up_mono - _down_mono
+
+                    col_sp1, col_sp2 = st.columns(2)
+
+                    with col_sp1:
+                        fig_sp_bar = go.Figure()
+                        fig_sp_bar.add_trace(go.Bar(
+                            name='Spin ↑ (up) — c0 monopole',
+                            x=_atom_labels,
+                            y=_up_mono.tolist(),
+                            marker_color='#d32f2f',
+                            marker_line_color='rgba(0,0,0,0.3)',
+                            marker_line_width=1,
+                            text=[f"{v:.3f}" for v in _up_mono],
+                            textposition='outside',
+                            textfont=dict(size=14),
+                            hovertemplate='<b>%{x}</b><br>↑ charge: %{y:.4f} e<extra></extra>'
+                        ))
+                        fig_sp_bar.add_trace(go.Bar(
+                            name='Spin ↓ (down) — c0 monopole',
+                            x=_atom_labels,
+                            y=_down_mono.tolist(),
+                            marker_color='#1565c0',
+                            marker_line_color='rgba(0,0,0,0.3)',
+                            marker_line_width=1,
+                            text=[f"{v:.3f}" for v in _down_mono],
+                            textposition='outside',
+                            textfont=dict(size=14),
+                            hovertemplate='<b>%{x}</b><br>↓ charge: %{y:.4f} e<extra></extra>'
+                        ))
+                        fig_sp_bar.add_hline(y=0, line_width=1, line_color='gray')
+                        fig_sp_bar.update_layout(
+                            title=dict(text="Spin-↑ vs Spin-↓ Monopole Charge per Atom",
+                                       font=dict(size=20)),
+                            xaxis=dict(title="Atom", tickangle=45,
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            yaxis=dict(title="Monopole charge (e)",
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            barmode='group',
+                            height=420,
+                            font=dict(size=16),
+                            legend=dict(font=dict(size=14)),
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=16),
+                        )
+                        st.plotly_chart(fig_sp_bar, use_container_width=True)
+
+                    with col_sp2:
+                        _pol_colors = ['#d32f2f' if p > 0 else '#1565c0' for p in _polariz]
+                        fig_pol = go.Figure()
+                        fig_pol.add_trace(go.Bar(
+                            x=_atom_labels,
+                            y=_polariz.tolist(),
+                            marker_color=_pol_colors,
+                            marker_line_color='rgba(0,0,0,0.3)',
+                            marker_line_width=1,
+                            text=[f"{p:+.3f}" for p in _polariz],
+                            textposition='outside',
+                            textfont=dict(size=15),
+                            hovertemplate=(
+                                '<b>%{x}</b><br>'
+                                'Polarisation (↑−↓): %{y:+.4f} e<extra></extra>'
+                            )
+                        ))
+                        fig_pol.add_hline(y=0, line_width=1.5, line_color='gray')
+                        fig_pol.update_layout(
+                            title=dict(text="Spin Polarisation per Atom  (↑ − ↓)",
+                                       font=dict(size=20)),
+                            xaxis=dict(title="Atom", tickangle=45,
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            yaxis=dict(title="Spin polarisation (e)",
+                                       tickfont=dict(size=16), title_font=dict(size=18)),
+                            height=420,
+                            font=dict(size=16),
+                            showlegend=False,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            hoverlabel=dict(font_size=16),
+                        )
+                        st.plotly_chart(fig_pol, use_container_width=True)
+
+                    # ── Full spin coefficient heatmaps ─────────────────────────
+                    with st.expander("📊 Full spin coefficient heatmaps (all c0–c3 per channel)"):
+                        _n_coeff_sp = _spin_up.shape[1]
+                        _sp_coeff_axis = [f"c{i}" for i in range(_n_coeff_sp)]
+                        _sp_hover = [[COEFF_FULL.get(j, f"c{j}")
+                                      for j in range(_n_coeff_sp)]
+                                     for _ in range(_n_atoms)]
+
+                        ht1, ht2 = st.columns(2)
+                        for _data, _title, _col in [
+                            (_spin_up, "Spin ↑ coefficients", ht1),
+                            (_spin_down, "Spin ↓ coefficients", ht2),
+                        ]:
+                            with _col:
+                                fig_ht = go.Figure(data=go.Heatmap(
+                                    z=_data,
+                                    x=_sp_coeff_axis,
+                                    y=_atom_labels,
+                                    colorscale='RdBu_r',
+                                    zmid=0,
+                                    text=[[f"{_data[i, j]:.4f}"
+                                           for j in range(_n_coeff_sp)]
+                                          for i in range(_n_atoms)],
+                                    texttemplate="%{text}",
+                                    textfont=dict(size=12),
+                                    customdata=_sp_hover,
+                                    hovertemplate=(
+                                        'Atom: %{y}<br>'
+                                        '%{customdata}<br>'
+                                        'Value: %{z:.5f}<extra></extra>'
+                                    ),
+                                    colorbar=dict(title="Value",
+                                                  title_font=dict(size=14),
+                                                  tickfont=dict(size=13))
+                                ))
+                                fig_ht.update_layout(
+                                    title=dict(text=_title, font=dict(size=18)),
+                                    xaxis=dict(title="Coefficient",
+                                               tickvals=list(range(_n_coeff_sp)),
+                                               ticktext=_sp_coeff_axis,
+                                               tickfont=dict(size=14),
+                                               title_font=dict(size=16)),
+                                    yaxis=dict(title="Atom",
+                                               tickfont=dict(size=14),
+                                               title_font=dict(size=16)),
+                                    height=max(280, 50 * _n_atoms + 120),
+                                    font=dict(size=14),
+                                    plot_bgcolor='rgba(0,0,0,0)',
+                                    paper_bgcolor='rgba(0,0,0,0)',
+                                )
+                                st.plotly_chart(fig_ht, use_container_width=True)
+
+                # ── Full JSON download ─────────────────────────────────────────
+                st.markdown("---")
+                _export = {
+                    'structure': _sel_polar['name'],
+                    'energy_eV': _sel_polar['energy'],
+                    'charge_input': _charge,
+                    'spin_input': _spin,
+                    'efield_input': _efield,
+                    'polar_results': pd_data,
+                }
+                st.download_button(
+                    "📥 Download complete polar outputs (JSON)",
+                    data=json.dumps(_export, indent=2),
+                    file_name=f"polar_{_sel_polar['name'].replace('.', '_')}.json",
+                    mime="application/json",
+                    key="dl_polar_json_v2", type="primary",
+                )
         phonon_results = [r for r in st.session_state.results if
                           r.get('phonon_results') and r['phonon_results'].get('success')]
         elastic_results = [r for r in st.session_state.results if
