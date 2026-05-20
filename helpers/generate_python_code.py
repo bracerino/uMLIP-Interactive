@@ -2572,8 +2572,11 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
             # Get lattice parameters
             lattice = get_lattice_parameters(atoms)
 
-            # Save XYZ file with lattice and force information
-            base_name = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR', '').replace('POSCAR_', '')
+            # Save XYZ file with lattice and force information.
+            # Use os.path.splitext to strip any extension (.cif, .vasp, .poscar, …)
+            # so output filenames don't end up like "mystructure.cif.xyz".
+            base_name = os.path.splitext(filename)[0]
+            base_name = base_name.replace('POSCAR_', '').replace('POSCAR', '')
             if not base_name:
                 base_name = f"structure_{i+1}"
 
@@ -3961,15 +3964,18 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
                 f.write(line)
 
 def save_structure_as_cif(atoms, filename, preserve_order=False):
-    """Save ASE atoms as CIF, optionally preserving original atom order."""
+    """Save ASE atoms as a P1 CIF with every site listed explicitly.
+
+    symprec=None forces pymatgen's CifWriter to skip space-group analysis and
+    write the structure as P1, so every atomic position is recorded as-is
+    (no collapsing onto symmetry-equivalent sites, no reordering).
+    """
     try:
-        from pymatgen.core import Structure
         from pymatgen.io.ase import AseAtomsAdaptor
         from pymatgen.io.cif import CifWriter
 
         pmg_struct = AseAtomsAdaptor().get_structure(atoms)
-        effective_symprec = None if preserve_order else 0.1
-        cif_content = str(CifWriter(pmg_struct, symprec=effective_symprec,
+        cif_content = str(CifWriter(pmg_struct, symprec=None,
                                     write_site_properties=True))
         with open(filename, 'w') as f:
             f.write(cif_content)
@@ -4653,8 +4659,13 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             else:
                 convergence_status = "CONVERGED" if (force_converged and stress_converged) else "MAX_STEPS_REACHED"
 
-            # Save optimized structure with selective dynamics preserved
-            base_name = filename.replace('.vasp', '').replace('POSCAR', '')
+            # Save optimized structure with selective dynamics preserved.
+            # Use os.path.splitext to strip any extension (.cif, .vasp, .poscar, …)
+            # so output filenames don't end up like "optimized-mystructure.cif.vasp".
+            base_name = os.path.splitext(filename)[0]
+            base_name = base_name.replace('POSCAR_', '').replace('POSCAR', '')
+            if not base_name:
+                base_name = f"structure_{i+1}"
 
             output_filename = f"optimized_structures/optimized-{base_name}.vasp"
 
@@ -4673,9 +4684,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                 preserve_order=preserve_atom_order
             )
             if cif_saved:
-                print(f"  💾 Saved CIF to {cif_output_filename}"
-                      + (" (original atom order, P1 symmetry)" if preserve_atom_order
-                         else " (symmetry-reduced)"))
+                print(f"  💾 Saved CIF to {cif_output_filename} (P1, all atoms explicit)")
             detailed_summary_file = "results/optimization_detailed_summary.csv"
             print(f"  📊 Appending detailed summary to {detailed_summary_file}")
             append_optimization_summary(
