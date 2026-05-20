@@ -6,7 +6,8 @@ import copy  # Import copy
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                              custom_mace_path=None, custom_upet_path=None):
+                              custom_mace_path=None, custom_upet_path=None,
+                              polar_settings=None):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -15,6 +16,14 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
         actual_selected_model = selected_model
         actual_model_size = model_size
         add_fairchem_imports = "Fairchem" in selected_model
+
+    is_mace_polar = (
+        "POLAR" in (actual_selected_model or "").upper()
+        or isinstance(actual_model_size, str) and actual_model_size.lower().startswith("polar-")
+    )
+    _polar_charge = (polar_settings or {}).get("charge", 0)
+    _polar_spin = (polar_settings or {}).get("spin", 1)
+    _polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
     calculator_setup_str = ""
     imports_str = f"""
@@ -216,6 +225,44 @@ except Exception as e:
 """
 
 
+
+    elif is_mace_polar:
+        imports_str += """
+try:
+    from mace.calculators import mace_polar
+except ImportError:
+    print("Error: mace_polar not available. Please run: pip install --upgrade mace-torch")
+    exit()
+"""
+        calculator_setup_str = f"""
+print("Setting up MACE-POLAR-1 calculator...")
+print(f"🎯 Model: {actual_model_size}")
+print(f"⚡ Charge:          {_polar_charge}")
+print(f"⚡ Spin (2S+1):     {_polar_spin}")
+print(f"⚡ External field:  {_polar_efield} V/Å")
+print(f"⚙️  Device:         {device}")
+print(f"⚙️  Dtype:          {dtype}")
+try:
+    calculator = mace_polar(
+        model="{actual_model_size}",
+        device="{device}",
+        default_dtype="{dtype}",
+    )
+    print(f"✅ MACE-POLAR-1 {actual_model_size} initialized on {device}")
+except Exception as e:
+    print(f"❌ MACE-POLAR-1 initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = mace_polar(
+            model="{actual_model_size}",
+            device="cpu",
+            default_dtype="{dtype}",
+        )
+        print("✅ MACE-POLAR-1 initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MACE-POLAR-1 CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
 
     elif "MACE-OFF" in actual_selected_model:
         imports_str += """
@@ -965,6 +1012,172 @@ class CSVLogger:
             self.file.close()
             self.file = None
             print(f"  Closed CSV log file: {self.filename}")
+
+
+class PolarLogger:
+    \"\"\"Periodically extract and log MACE-POLAR-1 outputs (dipole, charges,
+    density coefficients, spin charge density) during MD.\"\"\"
+
+    def __init__(self, atoms, dyn, basename, output_dir="md_results/polar",
+                 polar_settings=None, save_per_atom_charges=True):
+        import os, json
+        self.atoms = atoms
+        self.dyn = dyn
+        self.basename = basename
+        self.output_dir = output_dir
+        self.polar_settings = polar_settings or {}
+        self.save_per_atom_charges = save_per_atom_charges
+
+        self.frame = 0
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.summary_csv = os.path.join("md_results", f"md_{basename}_polar_summary.csv")
+        if not os.path.exists(self.summary_csv):
+            with open(self.summary_csv, "w") as f:
+                f.write(
+                    "step,time_ps,mu_x_eA,mu_y_eA,mu_z_eA,mu_norm_eA,mu_norm_Debye,"
+                    "q_sum_e,q_min_e,q_max_e\\n"
+                )
+        print(f"  ⚡ PolarLogger writing per-frame outputs → {self.output_dir}/")
+        print(f"  ⚡ PolarLogger summary CSV → {self.summary_csv}")
+
+    def _apply_polar_metadata(self):
+        if not self.polar_settings:
+            return
+        self.atoms.info["charge"] = int(self.polar_settings.get("charge", 0))
+        self.atoms.info["spin"] = int(self.polar_settings.get("spin", 1))
+        self.atoms.info["external_field"] = list(
+            self.polar_settings.get("external_field", [0.0, 0.0, 0.0])
+        )
+
+    def __call__(self):
+        try:
+            self._apply_polar_metadata()
+            # Force a fresh singlepoint so calculator.results reflects the current frame.
+            try:
+                _ = self.atoms.get_potential_energy()
+            except Exception as _sp_err:
+                print(f"  ⚠️ PolarLogger singlepoint failed: {_sp_err}")
+                return
+
+            res = getattr(self.atoms.calc, "results", {}) or {}
+            dipole = res.get("dipole")
+            charges = res.get("charges")
+            rho = res.get("density_coefficients")
+            rho_spin = res.get("spin_charge_density")
+
+            step = getattr(self.dyn, "nsteps", self.frame)
+            try:
+                time_ps = self.dyn.get_time() / (1000.0 * units.fs)
+            except Exception:
+                time_ps = float("nan")
+
+            mu_x = mu_y = mu_z = mu_norm = mu_D = float("nan")
+            if dipole is not None:
+                mu = np.asarray(dipole, dtype=float)
+                mu_x, mu_y, mu_z = float(mu[0]), float(mu[1]), float(mu[2])
+                mu_norm = float(np.linalg.norm(mu))
+                mu_D = mu_norm * 4.803  # eÅ → Debye
+
+            q_sum = q_min = q_max = float("nan")
+            if charges is not None:
+                q = np.asarray(charges, dtype=float)
+                q_sum, q_min, q_max = float(q.sum()), float(q.min()), float(q.max())
+
+            with open(self.summary_csv, "a") as f:
+                f.write(
+                    f"{step},{time_ps:.4f},{mu_x:.6f},{mu_y:.6f},{mu_z:.6f},"
+                    f"{mu_norm:.6f},{mu_D:.6f},{q_sum:.6f},{q_min:.6f},{q_max:.6f}\\n"
+                )
+
+            frame_path = os.path.join(self.output_dir, f"{self.basename}_step{step:08d}.json")
+            payload = {
+                "basename": self.basename,
+                "step": int(step),
+                "time_ps": float(time_ps) if time_ps == time_ps else None,
+                "dipole_eA": (np.asarray(dipole, dtype=float).tolist() if dipole is not None else None),
+                "dipole_norm_eA": mu_norm if mu_norm == mu_norm else None,
+                "dipole_norm_Debye": mu_D if mu_D == mu_D else None,
+                "charges_e": (np.asarray(charges, dtype=float).tolist() if (charges is not None and self.save_per_atom_charges) else None),
+                "charges_sum_e": q_sum if q_sum == q_sum else None,
+                "charges_min_e": q_min if q_min == q_min else None,
+                "charges_max_e": q_max if q_max == q_max else None,
+                "density_coefficients": (np.asarray(rho).tolist() if rho is not None else None),
+                "spin_charge_density":  (np.asarray(rho_spin).tolist() if rho_spin is not None else None),
+            }
+            import json
+            with open(frame_path, "w") as f:
+                json.dump(payload, f)
+
+            self.frame += 1
+        except Exception as e:
+            print(f"  ⚠️ PolarLogger frame failed: {e}")
+
+
+def apply_polar_metadata(atoms, polar_settings):
+    \"\"\"Stamp MACE-POLAR-1 charge/spin/external-field metadata onto an Atoms object.\"\"\"
+    if not polar_settings:
+        return
+    atoms.info["charge"] = int(polar_settings.get("charge", 0))
+    atoms.info["spin"] = int(polar_settings.get("spin", 1))
+    atoms.info["external_field"] = list(polar_settings.get("external_field", [0.0, 0.0, 0.0]))
+
+
+def extract_polar_final(atoms, basename, polar_settings=None, output_dir="md_results"):
+    \"\"\"Run a fresh singlepoint on the final frame and dump dipole/charges/etc.\"\"\"
+    import json
+    try:
+        if polar_settings:
+            apply_polar_metadata(atoms, polar_settings)
+        _ = atoms.get_potential_energy()
+        res = getattr(atoms.calc, "results", {}) or {}
+        dipole = res.get("dipole")
+        charges = res.get("charges")
+        rho = res.get("density_coefficients")
+        rho_spin = res.get("spin_charge_density")
+
+        payload = {
+            "basename": basename,
+            "dipole_eA": (np.asarray(dipole, dtype=float).tolist() if dipole is not None else None),
+            "charges_e": (np.asarray(charges, dtype=float).tolist() if charges is not None else None),
+            "density_coefficients": (np.asarray(rho).tolist() if rho is not None else None),
+            "spin_charge_density":  (np.asarray(rho_spin).tolist() if rho_spin is not None else None),
+        }
+        if dipole is not None:
+            mu = np.asarray(dipole, dtype=float)
+            payload["dipole_norm_eA"] = float(np.linalg.norm(mu))
+            payload["dipole_norm_Debye"] = payload["dipole_norm_eA"] * 4.803
+            print(f"  ⚡ Final dipole: ({mu[0]:.4f}, {mu[1]:.4f}, {mu[2]:.4f}) eÅ "
+                  f"|μ|={payload['dipole_norm_eA']:.4f} eÅ = {payload['dipole_norm_Debye']:.4f} D")
+        if charges is not None:
+            q = np.asarray(charges, dtype=float)
+            payload["charges_sum_e"] = float(q.sum())
+            payload["charges_min_e"] = float(q.min())
+            payload["charges_max_e"] = float(q.max())
+            print(f"  ⚡ Final charges: min={q.min():.4f} e, max={q.max():.4f} e, sum={q.sum():.4f} e")
+
+            symbols = atoms.get_chemical_symbols()
+            positions = atoms.get_positions()
+            n = min(len(symbols), len(q))
+            rows = []
+            for i in range(n):
+                rows.append({
+                    "atom_index": i,
+                    "element": symbols[i],
+                    "x_A": float(positions[i][0]),
+                    "y_A": float(positions[i][1]),
+                    "z_A": float(positions[i][2]),
+                    "charge_e": float(q[i]),
+                })
+            per_atom_csv = os.path.join(output_dir, f"md_{basename}_polar_final_charges.csv")
+            pd.DataFrame(rows).to_csv(per_atom_csv, index=False)
+            print(f"  💾 Final per-atom charges → {per_atom_csv}")
+
+        final_json = os.path.join(output_dir, f"md_{basename}_polar_final.json")
+        with open(final_json, "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"  💾 Final polar JSON → {final_json}")
+    except Exception as e:
+        print(f"  ⚠️ Final polar extraction failed: {e}")
 """
     mace_header_lines = ""
     if "MACE" in actual_selected_model and mace_head:
@@ -973,6 +1186,12 @@ class CSVLogger:
         mace_header_lines += f"\nMACE Dispersion: D3-{mace_dispersion_xc}"
     if "GRACE" in actual_selected_model:
         mace_header_lines += f"\nGRACE Model: {actual_model_size}"
+    if is_mace_polar:
+        mace_header_lines += (
+            f"\nMACE-POLAR-1: charge={_polar_charge}, "
+            f"spin={_polar_spin}, "
+            f"E_field={_polar_efield} V/Å"
+        )
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
@@ -995,6 +1214,9 @@ MD Parameters:
 
 md_params = {md_params_script_str}
 
+is_mace_polar = {is_mace_polar}
+polar_settings = {{"charge": {_polar_charge}, "spin": {_polar_spin}, "external_field": {list(_polar_efield)}}}
+
 def run_md_simulation(atoms, basename, calculator):
     print(f"--- Starting MD for {{basename}} ---")
     print(f"  Ensemble: {{md_params['ensemble']}}")
@@ -1005,6 +1227,12 @@ def run_md_simulation(atoms, basename, calculator):
     print(f"  Trajectory Save Interval: {{md_params['traj_interval']}} steps")
 
     atoms.calc = calculator
+
+    if is_mace_polar:
+        apply_polar_metadata(atoms, polar_settings)
+        print(f"  ⚡ Polar metadata set — charge={{atoms.info['charge']}}, "
+              f"spin={{atoms.info['spin']}}, "
+              f"E_field={{atoms.info['external_field']}} V/Å")
 
     try:
         MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
@@ -1364,6 +1592,15 @@ def run_md_simulation(atoms, basename, calculator):
     csv_logger = CSVLogger(atoms, md, csv_logfile)
     md.attach(csv_logger, interval=md_params['log_interval'])
 
+    polar_logger = None
+    if is_mace_polar:
+        polar_logger = PolarLogger(
+            atoms, md, basename,
+            output_dir=f"md_results/polar/{{basename}}",
+            polar_settings=polar_settings,
+        )
+        md.attach(polar_logger, interval=md_params['traj_interval'])
+
     print(f"\\n🚀 Running simulation for {{md_params['n_steps']}} steps...")
     start_time = time.perf_counter()
     try:
@@ -1383,6 +1620,12 @@ def run_md_simulation(atoms, basename, calculator):
             write(final_vasp_file, atoms, format='vasp')
         except Exception as e:
             print(f"  Warning: Could not save final VASP file: {{e}}")
+
+        if is_mace_polar:
+            print("  ⚡ Extracting final MACE-POLAR-1 outputs...")
+            extract_polar_final(atoms, basename,
+                                polar_settings=polar_settings,
+                                output_dir="md_results")
 
     end_time = time.perf_counter()
     elapsed = end_time - start_time
@@ -1609,6 +1852,12 @@ def main():
                 print("  ... Warming up calculator (JIT compilation)...")
                 warmup_start = time.perf_counter()
                 atoms.calc = calculator
+
+                if is_mace_polar:
+                    apply_polar_metadata(atoms, polar_settings)
+                    print(f"      ... polar metadata applied for warmup "
+                          f"(charge={{atoms.info['charge']}}, spin={{atoms.info['spin']}}, "
+                          f"E_field={{atoms.info['external_field']}} V/Å)")
 
                 _ = atoms.get_potential_energy()
                 print("      ... energy graph compiled.")
