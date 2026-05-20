@@ -83,16 +83,16 @@ def render_petmad_dos_panel(structures: dict) -> None:
             start = st.button(
                 "🚀  Start PET-MAD-DOS Calculation",
                 type="primary", disabled=True,
-                use_container_width=True, key="dos_start_btn",
+                width='stretch', key="dos_start_btn",
             )
         with col_b2:
-            if st.button("🛑 Stop", key="dos_stop_btn", use_container_width=True):
+            if st.button("🛑 Stop", key="dos_stop_btn", width='stretch'):
                 st.session_state._dos_stop_event.set()
     else:
         start = st.button(
             "🚀  Start PET-MAD-DOS Calculation",
             type="primary",
-            use_container_width=True, key="dos_start_btn",
+            width='stretch', key="dos_start_btn",
         )
 
     if start:
@@ -299,7 +299,7 @@ def _display_results(results, params):
             "Atoms":            r.get("n_atoms", "—"),
             "Time (s)":         f"{r['duration']:.1f}",
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     if params.get("plot_mode", "").startswith("Gaussian"):
         st.caption(
@@ -328,7 +328,7 @@ def _display_results(results, params):
                 yaxis=dict(tickfont=TICK_FONT, title_font=AXIS_FONT),
                 height=400, font=FONT,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         with col2:
             fig2 = go.Figure(go.Bar(
@@ -343,7 +343,7 @@ def _display_results(results, params):
                 yaxis=dict(tickfont=TICK_FONT, title_font=AXIS_FONT),
                 height=400, font=FONT,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
     st.markdown("#### 🔬 Density of States")
 
@@ -372,7 +372,7 @@ def _display_results(results, params):
                 file_name=f"dos_{r['name'].replace(' ', '_')}.json",
                 mime="application/json",
                 key=f"dl_dos_{i}",
-                use_container_width=True,
+                width='stretch',
             )
 
 
@@ -468,7 +468,7 @@ def _plot_single(result, params):
 
         _fermi_vline(fig)
         fig.update_layout(**_layout_base(f"Per-atom DOS — {formula}  ({gap_txt})"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     else:
         gs, smooth = _get_curve(result, params)
@@ -486,7 +486,7 @@ def _plot_single(result, params):
         ))
         _fermi_vline(fig)
         fig.update_layout(**_layout_base(f"Electronic DOS — {formula}  ({gap_txt})"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Fermi Level", f"{fermi:.4f} eV")
@@ -508,7 +508,7 @@ def _plot_overlay(results, params):
         ))
     _fermi_vline(fig)
     fig.update_layout(**_layout_base("DOS Comparison (E − E<sub>F</sub>)"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _hex_to_rgb(hex_color):
