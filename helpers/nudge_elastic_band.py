@@ -615,7 +615,7 @@ def display_neb_results(neb_results, structure_name, use_distance=False):
         st.info(f"Method: {neb_results.get('neb_method','?')} | "
                 f"CI: {'active' if neb_results.get('climb_activated') else 'off'}")
     st.plotly_chart(create_neb_plot(neb_results, structure_name, use_distance),
-                    use_container_width=True)
+                    width='stretch')
 
 
 def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
