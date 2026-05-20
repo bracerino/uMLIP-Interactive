@@ -1164,7 +1164,7 @@ def render_phonon_results_tab(
             hoverlabel=dict(bgcolor="white", bordercolor="black",
                             font_size=20, font_family="Arial"),
         )
-        st.plotly_chart(fig_disp, use_container_width=True)
+        st.plotly_chart(fig_disp, width='stretch')
 
         if use_labels and "kpoint_labels" in phonon_data:
             _CONVENTION_DISPLAY = {
@@ -1204,7 +1204,7 @@ def render_phonon_results_tab(
             hoverlabel=dict(bgcolor="white", bordercolor="black",
                             font_size=20, font_family="Arial"),
         )
-        st.plotly_chart(fig_dos, use_container_width=True)
+        st.plotly_chart(fig_dos, width='stretch')
 
         st.write("**Phonon Entropy from DOS**")
         try:
@@ -1312,7 +1312,7 @@ def render_phonon_results_tab(
                 legend=dict(font=dict(size=13)),
                 hoverlabel=dict(bgcolor="white", font_size=14),
             )
-            st.plotly_chart(fig_S, use_container_width=True)
+            st.plotly_chart(fig_S, width='stretch')
             st.caption(
                 f"**S_ph({_T_h:.0f} K) = {_S_h:.6f} {_s_unit}**  "
                 f"({n_atoms} atom{'s' if n_atoms != 1 else ''}/unit cell)  "
@@ -1404,7 +1404,7 @@ def render_phonon_results_tab(
 
     st.dataframe(
         pd.DataFrame(prop_rows, columns=["Property", "Value"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
     if summary["is_stable"]:
@@ -1459,7 +1459,7 @@ def render_phonon_results_tab(
                         phonon_data, temp_range=(min_temp, max_temp, temp_step)
                     )
                     if fig_temp is not None:
-                        st.plotly_chart(fig_temp, use_container_width=True)
+                        st.plotly_chart(fig_temp, width='stretch')
                         if isinstance(thermo_td, dict) and "error" not in thermo_td:
                             st.download_button(
                                 label="📥 Download Temperature-Dependent Data (JSON)",
@@ -1503,7 +1503,7 @@ def render_phonon_results_tab(
                         })
                 if rows:
                     st.dataframe(pd.DataFrame(rows),
-                                 use_container_width=True, hide_index=True)
+                                 width='stretch', hide_index=True)
 
 
 def extract_element_concentrations(structures_data: dict) -> dict:
