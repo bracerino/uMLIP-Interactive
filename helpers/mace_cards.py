@@ -271,7 +271,7 @@ def display_mace_models_info():
             })
         
         df_comparison = pd.DataFrame(comparison_data)
-        st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+        st.dataframe(df_comparison, width='stretch', hide_index=True)
         
         
 def create_citation_info():
