@@ -97,7 +97,6 @@ from helpers.tensile_test import (
 from helpers.generate_md_script import generate_md_python_script
 
 import py3Dmol
-import streamlit.components.v1 as components
 from pymatgen.core import Structure
 from pymatgen.io.cif import CifWriter
 from ase.io import read, write
@@ -2717,6 +2716,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         #PET-MAD
         is_upet = model_size.startswith("upet:")
         is_custom_upet_model = (model_size == "upet:custom")
+        is_mace_polar = is_polar_model(selected_model)
 
         if is_upet:
             log_queue.put("Setting up UPET calculator...")
@@ -3003,10 +3003,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         return
                 else:
                     return
-
-        is_mace_polar = is_polar_model(selected_model)
-
-        if is_mace_polar:
+        elif is_mace_polar:
             log_queue.put("Setting up MACE-POLAR-1 calculator...")
             if not MACE_POLAR_AVAILABLE:
                 log_queue.put("❌ mace_polar not available — pip install --upgrade mace-torch")
@@ -4139,7 +4136,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.8.9 · 4/17/2026
+            v0.9.2 · 5/20/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -4612,7 +4609,7 @@ with tab_vir:
 
         st.subheader("📊 Stress-Strain Analysis")
         fig_tensile = create_stress_strain_plot(tensile_data)
-        st.plotly_chart(fig_tensile, use_container_width=True)
+        st.plotly_chart(fig_tensile, width='stretch')
 
         with st.expander("Test Parameters"):
             params_data = {
@@ -4633,7 +4630,7 @@ with tab_vir:
                     f"{tensile_data['tensile_params']['equilibration_steps']}"
                 ]
             }
-            st.dataframe(params_data, use_container_width=True, hide_index=True)
+            st.dataframe(params_data, width='stretch', hide_index=True)
 
         st.subheader("📥 Download Data")
         col_dl1, col_dl2, col_dl3 = st.columns(3)
@@ -4695,15 +4692,15 @@ with tab4_1:
                     )
 
                     if fig_main:
-                        st.plotly_chart(fig_main, use_container_width=True)
+                        st.plotly_chart(fig_main, width='stretch')
 
                     if fig_pressure:
                         st.subheader("Pressure Evolution")
-                        st.plotly_chart(fig_pressure, use_container_width=True)
+                        st.plotly_chart(fig_pressure, width='stretch')
 
                     if fig_conservation:
                         st.subheader("Energy Conservation")
-                        st.plotly_chart(fig_conservation, use_container_width=True)
+                        st.plotly_chart(fig_conservation, width='stretch')
 
                     if md_params.get('ensemble') == 'NPT':
                         st.subheader("NPT Cell Evolution Analysis")
@@ -4712,7 +4709,7 @@ with tab4_1:
 
                         npt_fig = create_npt_analysis_plots(trajectory_data, md_params)
                         if npt_fig:
-                            st.plotly_chart(npt_fig, use_container_width=True)
+                            st.plotly_chart(npt_fig, width='stretch')
 
                         # NPT metrics
                         final_data = trajectory_data[-1]
@@ -4946,7 +4943,7 @@ with tab1:
                     col1, col2 = st.columns([1, 1.5])
 
                     with col1:
-                        components.html(view_structure(structure, height=250, width=350), height=260)
+                        st.iframe(view_structure(structure, height=250, width=350), height=260)
 
                     with col2:
                         st.write(f"**Formula:** {structure.composition.reduced_formula}")
@@ -4996,12 +4993,10 @@ with tab1:
                 help="Calculate formation energy per atom"
             )
 
-        import streamlit.components.v1 as components
-
         with col_calc_image:
             svg_image = create_calculation_type_image(calc_type)
 
-            components.html(
+            st.iframe(
                 f"""
                 <div style="display: flex; justify-content: center; align-items: center; height: 220px; padding: 10px;">
                     {svg_image}
@@ -5096,6 +5091,7 @@ with tab1:
                         mace_dispersion_xc=mace_dispersion_xc_for_script,
                         custom_mace_path=custom_mace_path,
                         custom_upet_path=custom_upet_path if is_custom_upet else None,
+                        polar_settings=st.session_state.get('polar_settings', {}),
                     )
                     st.session_state.generated_md_script = generated_script
                     st.success("✅ MD script generated successfully!")
@@ -5606,7 +5602,7 @@ with tab1:
                 for col, (label, segments) in zip(preset_cols, KPATH_PRESETS.items()):
                     # Short label for the button: just the arrow path part
                     btn_label = label.split("(")[0].strip()
-                    if col.button(btn_label, key=f"preset_{label[:20]}", use_container_width=True):
+                    if col.button(btn_label, key=f"preset_{label[:20]}", width='stretch'):
                         st.session_state["phonon_kpath_segments"] = [dict(s) for s in segments]
                         st.rerun()
 
@@ -5625,7 +5621,7 @@ with tab1:
                 edited_df = st.data_editor(
                     seg_df,
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width='stretch',
                     column_config={
                         "start_label": st.column_config.TextColumn("Start label", width="small"),
                         "start_x": st.column_config.NumberColumn("Start kx", format="%.4f", step=0.05),
@@ -5913,8 +5909,6 @@ with tab_st:
         st.info(
             f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`."
             "..")
-        col1, col2, col3 = st.columns(3)
-
         st.markdown("""
             <style>
             div.stButton > button[kind="primary"] {
@@ -5945,6 +5939,8 @@ with tab_st:
             #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
             </style>
         """, unsafe_allow_html=True)
+
+        col1, col2, col3 = st.columns(3)
         with col1:
             start_calc = st.button(
                 "🚀 Start Batch Calculation",
@@ -5959,10 +5955,6 @@ with tab_st:
                                  not st.session_state.get('neb_final_structures'))),
             )
 
-
-        if len(st.session_state.structures) > 0 and not st.session_state.structures_locked:
-            st.warning("🔒 Please lock your structures before starting calculation to prevent accidental changes.")
-
         with col2:
             but_script = st.button(
                 "📝 Generate Python Script (automatically creates structures from the uploaded ones)",
@@ -5976,6 +5968,9 @@ with tab_st:
                 type="secondary",
                 disabled=external_only,
             )
+
+        if len(st.session_state.structures) > 0 and not st.session_state.structures_locked:
+            st.warning("🔒 Please lock your structures before starting calculation to prevent accidental changes.")
 
         if st.button("👁️ Preview Core Code",
                      type="primary"):
@@ -6070,7 +6065,8 @@ with tab_st:
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 custom_mace_path=custom_mace_path_for_script,
-                custom_upet_path=custom_upet_path if is_custom_upet else None
+                custom_upet_path=custom_upet_path if is_custom_upet else None,
+                polar_settings=st.session_state.get('polar_settings', {}),
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
@@ -6161,7 +6157,8 @@ with tab_st:
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 #custom_mace_path=custom_mace_path_for_script,
-                custom_upet_path=custom_upet_path if is_custom_upet else None
+                custom_upet_path=custom_upet_path if is_custom_upet else None,
+                polar_settings=st.session_state.get('polar_settings', {}),
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -6819,7 +6816,7 @@ with tab3:
 
                     if plot_option == "Combined Plot":
                         fig_combined = create_combined_neb_plot(all_neb_results, use_distance=use_distance)
-                        st.plotly_chart(fig_combined, use_container_width=True)
+                        st.plotly_chart(fig_combined, width='stretch')
                     else:
                         for name, neb_result in all_neb_results.items():
                             with st.expander(f"{name}", expanded=True):
@@ -6980,7 +6977,7 @@ with tab3:
                 df_timing = pd.DataFrame(timing_data)
 
                 df_timing_sorted = df_timing.sort_values('Duration (seconds)', ascending=False)
-                st.dataframe(df_timing_sorted, use_container_width=True, hide_index=True)
+                st.dataframe(df_timing_sorted, width='stretch', hide_index=True)
 
                 if len(timing_data) > 1:
                     st.subheader("📊 Timing Visualizations")
@@ -7021,7 +7018,7 @@ with tab3:
                             )
                         )
 
-                        st.plotly_chart(fig_timing, use_container_width=True)
+                        st.plotly_chart(fig_timing, width='stretch')
 
                     with col_viz2:
                         calc_types = {}
@@ -7047,7 +7044,7 @@ with tab3:
                                 font=dict(size=16)
                             )
 
-                            st.plotly_chart(fig_pie, use_container_width=True)
+                            st.plotly_chart(fig_pie, width='stretch')
                         else:
                             calc_type = list(calc_types.keys())[0]
                             total_time = list(calc_types.values())[0]
@@ -7214,7 +7211,7 @@ with tab3:
                         )
                     )
 
-                    st.plotly_chart(fig, use_container_width=True, key=f"energy_plot_{len(successful_results)}")
+                    st.plotly_chart(fig, width='stretch', key=f"energy_plot_{len(successful_results)}")
 
                 if has_formation_energies:
                     with col_energy2:
@@ -7261,7 +7258,7 @@ with tab3:
                                 )
                             )
 
-                            st.plotly_chart(fig_form, use_container_width=True,
+                            st.plotly_chart(fig_form, width='stretch',
                                             key=f"formation_plot_{len(valid_formation_data)}")
 
                 if len(successful_results) > 1:
@@ -7309,10 +7306,10 @@ with tab3:
                         )
                     )
 
-                    st.plotly_chart(fig_rel, use_container_width=True, key=f"relative_plot_{len(successful_results)}")
+                    st.plotly_chart(fig_rel, width='stretch', key=f"relative_plot_{len(successful_results)}")
 
             st.subheader("Detailed Results")
-            st.dataframe(df_results, use_container_width=True, key=f"results_table_{len(st.session_state.results)}")
+            st.dataframe(df_results, width='stretch', key=f"results_table_{len(st.session_state.results)}")
 
             if len(successful_results) <= 8 and successful_results:
                 st.subheader("Structure Overview Cards")
@@ -7495,7 +7492,7 @@ with tab3:
                         bordercolor="black"
                     )
                 )
-                st.plotly_chart(fig_uncertainty, use_container_width=True)
+                st.plotly_chart(fig_uncertainty, width='stretch')
 
                 confidence = conf_data['confidence_score']
                 if confidence > 0.9:
@@ -7516,7 +7513,7 @@ with tab3:
                                 'Predicted MAE (Å)': f"{conf_data['per_atom_predicted_mae'][idx]:.4f}"
                             })
                         df_uncertain = pd.DataFrame(uncertain_data)
-                        st.dataframe(df_uncertain, use_container_width=True, hide_index=True)
+                        st.dataframe(df_uncertain, width='stretch', hide_index=True)
                 st.markdown("---")
 
                 with st.expander("📚 Understanding ORB-v3 Confidence Predictions", expanded=False):
@@ -7796,7 +7793,7 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=18),
                         )
-                        st.plotly_chart(fig_dip, use_container_width=True)
+                        st.plotly_chart(fig_dip, width='stretch')
 
                 # ══════════════════════════════════════════════════════════════
                 # SECTION 2 — Per-atom partial charges
@@ -7850,7 +7847,7 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=18),
                         )
-                        st.plotly_chart(fig_ch, use_container_width=True)
+                        st.plotly_chart(fig_ch, width='stretch')
 
                     with col_dot_ch:
                         # Dot/strip chart — works correctly even for 1 atom per element
@@ -7895,14 +7892,14 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=16),
                         )
-                        st.plotly_chart(fig_strip, use_container_width=True)
+                        st.plotly_chart(fig_strip, width='stretch')
 
                     with st.expander("📋 Full per-atom charge table"):
                         st.dataframe(pd.DataFrame({
                             'Index': range(_n_atoms),
                             'Element': _symbols,
                             'Charge (e)': [f"{q:.6f}" for q in _charges],
-                        }), use_container_width=True, hide_index=True)
+                        }), width='stretch', hide_index=True)
 
                     st.download_button(
                         "📥 Download charges (CSV)",
@@ -7981,7 +7978,7 @@ with tab3:
                             plot_bgcolor='rgba(0,0,0,0)',
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
-                        st.plotly_chart(fig_rho_heat, use_container_width=True)
+                        st.plotly_chart(fig_rho_heat, width='stretch')
 
                     with col_rho2:
                         fig_rho_bar = go.Figure()
@@ -8011,7 +8008,7 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=16),
                         )
-                        st.plotly_chart(fig_rho_bar, use_container_width=True)
+                        st.plotly_chart(fig_rho_bar, width='stretch')
 
                 # ══════════════════════════════════════════════════════════════
                 # SECTION 4 — Spin-Resolved Charge Density
@@ -8078,7 +8075,7 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=16),
                         )
-                        st.plotly_chart(fig_sp_bar, use_container_width=True)
+                        st.plotly_chart(fig_sp_bar, width='stretch')
 
                     with col_sp2:
                         _pol_colors = ['#d32f2f' if p > 0 else '#1565c0' for p in _polariz]
@@ -8112,7 +8109,7 @@ with tab3:
                             paper_bgcolor='rgba(0,0,0,0)',
                             hoverlabel=dict(font_size=16),
                         )
-                        st.plotly_chart(fig_pol, use_container_width=True)
+                        st.plotly_chart(fig_pol, width='stretch')
 
                     # ── Full spin coefficient heatmaps ─────────────────────────
                     with st.expander("📊 Full spin coefficient heatmaps (all c0–c3 per channel)"):
@@ -8164,7 +8161,7 @@ with tab3:
                                     plot_bgcolor='rgba(0,0,0,0)',
                                     paper_bgcolor='rgba(0,0,0,0)',
                                 )
-                                st.plotly_chart(fig_ht, use_container_width=True)
+                                st.plotly_chart(fig_ht, width='stretch')
 
                 # ── Full JSON download ─────────────────────────────────────────
                 st.markdown("---")
@@ -8258,7 +8255,7 @@ with tab3:
                         ),
                     )
 
-                    st.plotly_chart(fig_tensor, use_container_width=True)
+                    st.plotly_chart(fig_tensor, width='stretch')
 
                 with col_el2:
                     st.write("**Elastic Moduli Comparison**")
@@ -8281,7 +8278,7 @@ with tab3:
                     }
 
                     df_moduli = pd.DataFrame(moduli_comparison)
-                    st.dataframe(df_moduli, use_container_width=True, hide_index=True)
+                    st.dataframe(df_moduli, width='stretch', hide_index=True)
 
                     properties = ['Bulk Modulus', 'Shear Modulus', "Young's Modulus"]
                     values = [
@@ -8323,7 +8320,7 @@ with tab3:
                         showlegend=False
                     )
 
-                    st.plotly_chart(fig_moduli, use_container_width=True)
+                    st.plotly_chart(fig_moduli, width='stretch')
 
                 st.write("**Detailed Elastic Properties**")
 
@@ -8477,7 +8474,7 @@ with tab3:
                     }
 
                     df_elastic_summary = pd.DataFrame(elastic_summary)
-                    st.dataframe(df_elastic_summary, use_container_width=True, hide_index=True)
+                    st.dataframe(df_elastic_summary, width='stretch', hide_index=True)
 
                 st.write("**Mechanical Stability Analysis**")
 
@@ -8499,7 +8496,7 @@ with tab3:
 
                     if stability_details:
                         df_stability = pd.DataFrame(stability_details)
-                        st.dataframe(df_stability, use_container_width=True, hide_index=True)
+                        st.dataframe(df_stability, width='stretch', hide_index=True)
                 if bulk_data['reuss'] and shear_data['reuss'] and shear_data['reuss'] != 0 and bulk_data['reuss'] != 0:
                     A_U = 5 * (shear_data['voigt'] / shear_data['reuss']) + (
                             bulk_data['voigt'] / bulk_data['reuss']) - 6
@@ -8519,7 +8516,7 @@ with tab3:
                                 ]
                             }
                             df_anisotropy = pd.DataFrame(anisotropy_data)
-                            st.dataframe(df_anisotropy, use_container_width=True, hide_index=True)
+                            st.dataframe(df_anisotropy, width='stretch', hide_index=True)
                         else:
                             st.warning("Cannot calculate Zener anisotropy (C11 - C12 is zero).")
 
@@ -8641,7 +8638,7 @@ with tab3:
                         if lattice_data:
                             df_lattice = pd.DataFrame(lattice_data)
 
-                            st.dataframe(df_lattice, use_container_width=True, hide_index=True)
+                            st.dataframe(df_lattice, width='stretch', hide_index=True)
 
 
                             lattice_csv = df_lattice.to_csv(index=False)
@@ -8697,7 +8694,7 @@ with tab3:
                                     )
                                 )
 
-                                st.plotly_chart(fig_lattice, use_container_width=True)
+                                st.plotly_chart(fig_lattice, width='stretch')
 
                             with col_vis2:
                                 volume_changes = [float(data['ΔVol (%)'].replace('+', '')) for data in lattice_data]
@@ -8735,7 +8732,7 @@ with tab3:
                                     )
                                 )
 
-                                st.plotly_chart(fig_volume, use_container_width=True)
+                                st.plotly_chart(fig_volume, width='stretch')
                     with geom_subtab2:
                         rmscd_results_list = [
                             r for r in geometry_results
@@ -8778,7 +8775,7 @@ with tab3:
                                     'Interpretation': sub['interpretation'],
                                 })
                             if rmscd_summary:
-                                st.dataframe(pd.DataFrame(rmscd_summary), use_container_width=True, hide_index=True)
+                                st.dataframe(pd.DataFrame(rmscd_summary), width='stretch', hide_index=True)
 
                             # ── Comparison bar chart (all structures) ─────────────────────────
                             if len(rmscd_results_list) > 1:
@@ -8830,7 +8827,7 @@ with tab3:
                                     hoverlabel=dict(bgcolor="white", bordercolor="black",
                                                     font_size=18, font_family="Arial"),
                                 )
-                                st.plotly_chart(fig_rmscd, use_container_width=True)
+                                st.plotly_chart(fig_rmscd, width='stretch')
 
                             # ── Per-structure expanders ───────────────────────────────────────
                             for r in rmscd_results_list:
@@ -8873,7 +8870,7 @@ with tab3:
                                         }
                                         for a in sub['per_atom_sorted']
                                     ])
-                                    st.dataframe(df_per_atom, use_container_width=True, hide_index=True)
+                                    st.dataframe(df_per_atom, width='stretch', hide_index=True)
 
                                     disp_vals = [a['displacement_A'] for a in sub['per_atom_sorted']]
                                     atom_labels = [
@@ -8953,7 +8950,7 @@ with tab3:
                                         hoverlabel=dict(bgcolor="white", bordercolor="black",
                                                         font_size=18, font_family="Arial"),
                                     )
-                                    st.plotly_chart(fig_pa, use_container_width=True)
+                                    st.plotly_chart(fig_pa, width='stretch')
 
                                     # Download initial structure as CIF
                                     st.markdown("**📥 Download initial structure used for RMSCD comparison:**")
@@ -9405,7 +9402,7 @@ with tab3:
 
                     if summary_data:
                         df_summary = pd.DataFrame(summary_data)
-                        st.dataframe(df_summary, use_container_width=True, hide_index=True)
+                        st.dataframe(df_summary, width='stretch', hide_index=True)
 
                 #else:
                 #    st.info(
@@ -9438,7 +9435,7 @@ with tab3:
                     elastic_comparison_data.append(row)
 
                 df_elastic_compare = pd.DataFrame(elastic_comparison_data)
-                st.dataframe(df_elastic_compare, use_container_width=True, hide_index=True)
+                st.dataframe(df_elastic_compare, width='stretch', hide_index=True)
 
                 st.subheader("📊 Elastic Constants Comparison")
                 all_elements_elastic = set()
@@ -9476,7 +9473,7 @@ with tab3:
                     elastic_constants_data.append(row)
 
                 df_elastic_constants = pd.DataFrame(elastic_constants_data)
-                st.dataframe(df_elastic_constants, use_container_width=True, hide_index=True)
+                st.dataframe(df_elastic_constants, width='stretch', hide_index=True)
 
                 if len(elastic_comparison_data) > 1:
                     structures = [r['name'] for r in elastic_results]
@@ -9537,7 +9534,7 @@ with tab3:
                             )
                         )
 
-                        st.plotly_chart(fig_moduli_comp, use_container_width=True)
+                        st.plotly_chart(fig_moduli_comp, width='stretch')
 
                     with col_el_comp2:
                         density_values = [r['elastic_results']['density'] for r in elastic_results]
@@ -9573,7 +9570,7 @@ with tab3:
                             )
                         )
 
-                        st.plotly_chart(fig_density, use_container_width=True)
+                        st.plotly_chart(fig_density, width='stretch')
     elif st.session_state.calculation_running:
         st.info("🔄 Calculations in progress... Results will appear here as each structure completes.")
 
@@ -9616,7 +9613,7 @@ with tab4:
         if trajectory_summary:
             df_trajectories = pd.DataFrame(trajectory_summary)
             st.subheader("Trajectory Summary")
-            st.dataframe(df_trajectories, use_container_width=True)
+            st.dataframe(df_trajectories, width='stretch')
 
             st.subheader("Download Individual Trajectories")
 
@@ -9691,7 +9688,7 @@ with tab4:
                             fig_traj.update_yaxes(title_text="Energy (eV)", row=1, col=1)
                             fig_traj.update_yaxes(title_text="Max Force (eV/Å)", row=1, col=2)
 
-                            st.plotly_chart(fig_traj, use_container_width=True, key=f"plot_{structure_name}")
+                            st.plotly_chart(fig_traj, width='stretch', key=f"plot_{structure_name}")
 
             if len(st.session_state.optimization_trajectories) > 1:
                 st.subheader("Download All Trajectories")
