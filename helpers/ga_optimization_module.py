@@ -1674,7 +1674,7 @@ def setup_substitution_ui(structure):
                             })
 
                         df_conc_details = pd.DataFrame(conc_details)
-                        st.dataframe(df_conc_details, use_container_width=True, hide_index=True)
+                        st.dataframe(df_conc_details, width='stretch', hide_index=True)
 
                         st.info(
                             f"💡 **GA will run separately for each of the {len(concentration_list)} selected concentrations**")
@@ -1721,7 +1721,7 @@ def setup_substitution_ui(structure):
                     })
 
                 df_element_summary = pd.DataFrame(element_summary)
-                st.dataframe(df_element_summary, use_container_width=True, hide_index=True)
+                st.dataframe(df_element_summary, width='stretch', hide_index=True)
 
                 st.markdown("### **Total Combinations to Test:**")
 
@@ -1755,7 +1755,7 @@ def setup_substitution_ui(structure):
 
                 if combinations_data:
                     df_combinations = pd.DataFrame(combinations_data)
-                    st.dataframe(df_combinations, use_container_width=True, hide_index=True)
+                    st.dataframe(df_combinations, width='stretch', hide_index=True)
 
                 st.markdown("### **Total Search Space:**")
 
@@ -1831,7 +1831,7 @@ def setup_substitution_ui(structure):
                     })
 
             df_summary = pd.DataFrame(summary_data)
-            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+            st.dataframe(df_summary, width='stretch', hide_index=True)
 
     else:
         st.info("💡 Select elements to substitute to enable GA optimization")
@@ -2040,7 +2040,7 @@ def display_ga_results(ga_results):
             })
 
         df_sweep = pd.DataFrame(sweep_data)
-        st.dataframe(df_sweep, use_container_width=True, hide_index=True)
+        st.dataframe(df_sweep, width='stretch', hide_index=True)
 
         if len(sweep_data) > 1:
             fig_sweep = go.Figure()
@@ -2070,7 +2070,7 @@ def display_ga_results(ga_results):
                 paper_bgcolor='white'
             )
 
-            st.plotly_chart(fig_sweep, use_container_width=True)
+            st.plotly_chart(fig_sweep, width='stretch')
 
             if ga_results.get('best_combination_name'):
                 st.success(
@@ -2096,7 +2096,7 @@ def display_ga_results(ga_results):
             run_summary.append(run_data)
 
         df_runs = pd.DataFrame(run_summary)
-        st.dataframe(df_runs, use_container_width=True, hide_index=True)
+        st.dataframe(df_runs, width='stretch', hide_index=True)
 
     st.markdown("### 📋 Detailed Generation Analysis")
 
@@ -2134,7 +2134,7 @@ def display_ga_results(ga_results):
             else:
                 df_display = df_detailed
 
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width='stretch', hide_index=True)
 
             csv_detailed = df_detailed.to_csv(index=False)
             st.download_button(
@@ -2247,7 +2247,7 @@ def display_ga_results(ga_results):
             )
         )
 
-        st.plotly_chart(fig_conv, use_container_width=True)
+        st.plotly_chart(fig_conv, width='stretch')
 
         if has_concentration_sweep and selected_combinations:
             st.markdown("#### Selected Combinations Summary")
@@ -2267,7 +2267,7 @@ def display_ga_results(ga_results):
                 })
 
             df_conv_summary = pd.DataFrame(summary_data)
-            st.dataframe(df_conv_summary, use_container_width=True, hide_index=True)
+            st.dataframe(df_conv_summary, width='stretch', hide_index=True)
 
 
     st.markdown("### 💾 Download Optimized Structures")
@@ -2819,7 +2819,7 @@ def display_ga_results(ga_results):
         })
 
     df_composition = pd.DataFrame(composition_data)
-    st.dataframe(df_composition, use_container_width=True, hide_index=True)
+    st.dataframe(df_composition, width='stretch', hide_index=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
