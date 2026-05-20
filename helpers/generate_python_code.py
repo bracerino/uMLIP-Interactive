@@ -112,22 +112,26 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                           custom_mace_path=None, custom_upet_path=None):
+                           custom_mace_path=None, custom_upet_path=None, polar_settings=None):
+    is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
         mace_dispersion_xc=mace_dispersion_xc,
         custom_mace_path=custom_mace_path,
-        custom_upet_path=custom_upet_path
+        custom_upet_path=custom_upet_path,
+        polar_settings=polar_settings,
     )
 
     if calc_type == "Energy Only":
-        calculation_code = _generate_energy_only_code(calc_formation_energy)
+        calculation_code = _generate_energy_only_code(
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
             optimization_params, calc_formation_energy,
-            preserve_atom_order=optimization_params.get('preserve_atom_order', False))
+            preserve_atom_order=optimization_params.get('preserve_atom_order', False),
+            is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -138,7 +142,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         calculation_code = _generate_ga_code(
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
-        calculation_code = _generate_energy_only_code(calc_formation_energy)
+        calculation_code = _generate_energy_only_code(
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
@@ -147,6 +152,13 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         optimizer_info = f"\nOptimizer: {optimization_params.get('optimizer', 'BFGS')}"
     if mace_dispersion:
         config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
+    if is_mace_polar:
+        _ps = polar_settings or {}
+        config_info += (
+            f"\nMACE-POLAR-1: charge={_ps.get('charge', 0)}, "
+            f"spin={_ps.get('spin', 1)}, "
+            f"E_field={_ps.get('external_field', [0.0, 0.0, 0.0])} V/Å"
+        )
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script
@@ -211,6 +223,7 @@ def main():
     # Create output directories
     Path("optimized_structures").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
+    {'Path("polar_results").mkdir(exist_ok=True)' if is_mace_polar else ''}
     {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
 
     # Create structure files
@@ -243,25 +256,29 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                                       custom_mace_path=None,custom_upet_path=None):
+                                       custom_mace_path=None,custom_upet_path=None, polar_settings=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
 
+    is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
         mace_dispersion_xc=mace_dispersion_xc,
         custom_mace_path=custom_mace_path,
-        custom_upet_path=custom_upet_path
+        custom_upet_path=custom_upet_path,
+        polar_settings=polar_settings,
     )
 
     if calc_type == "Energy Only":
-        calculation_code = _generate_energy_only_code(calc_formation_energy)
+        calculation_code = _generate_energy_only_code(
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
             optimization_params, calc_formation_energy,
-            preserve_atom_order=optimization_params.get('preserve_atom_order', False))
+            preserve_atom_order=optimization_params.get('preserve_atom_order', False),
+            is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -272,7 +289,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         calculation_code = _generate_ga_code(
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
-        calculation_code = _generate_energy_only_code(calc_formation_energy)
+        calculation_code = _generate_energy_only_code(
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
@@ -281,6 +299,13 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         optimizer_info = f"\nOptimizer: {optimization_params.get('optimizer', 'BFGS')}"
     if mace_dispersion:
         config_info += f"\nDispersion: D3-{mace_dispersion_xc}"
+    if is_mace_polar:
+        _ps = polar_settings or {}
+        config_info += (
+            f"\nMACE-POLAR-1: charge={_ps.get('charge', 0)}, "
+            f"spin={_ps.get('spin', 1)}, "
+            f"E_field={_ps.get('external_field', [0.0, 0.0, 0.0])} V/Å"
+        )
     script = f"""#!/usr/bin/env python3
 \"\"\"
 MACE Calculation Script (Local POSCAR Files)
@@ -348,6 +373,7 @@ def main():
     # Create output directories
     Path("optimized_structures").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
+    {'Path("polar_results").mkdir(exist_ok=True)' if is_mace_polar else ''}
     {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
 
     # Find and validate POSCAR files in current directory
@@ -1814,9 +1840,55 @@ def _generate_structure_creation_code(structures):
 
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                                    custom_mace_path=None, custom_upet_path=None
+                                    custom_mace_path=None, custom_upet_path=None,
+                                    polar_settings=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
+    is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
+    if is_mace_polar:
+        _ps = polar_settings or {}
+        _charge = _ps.get('charge', 0)
+        _spin = _ps.get('spin', 1)
+        _efield = _ps.get('external_field', [0.0, 0.0, 0.0])
+
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing MACE-POLAR-1 calculator on {{device}}...")
+    print(f"🎯 Model: {model_size}")
+    print(f"⚡ Charge:          {_charge}")
+    print(f"⚡ Spin (2S+1):     {_spin}")
+    print(f"⚡ External field:  {_efield} V/Å")
+    print(f"⚙️  Dtype:          {dtype}")
+    try:
+        from mace.calculators import mace_polar
+
+        calculator = mace_polar(
+            model="{model_size}",
+            device=device,
+            default_dtype="{dtype}",
+        )
+        print(f"✅ MACE-POLAR-1 ({model_size}) initialized successfully on {{device}}")
+
+    except ImportError:
+        print("❌ mace_polar not available — pip install --upgrade mace-torch")
+        raise
+    except Exception as e:
+        print(f"❌ MACE-POLAR-1 initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            try:
+                calculator = mace_polar(
+                    model="{model_size}",
+                    device="cpu",
+                    default_dtype="{dtype}",
+                )
+                print("✅ MACE-POLAR-1 initialized successfully on CPU (fallback)")
+            except Exception as cpu_error:
+                print(f"❌ CPU fallback also failed: {{cpu_error}}")
+                raise cpu_error
+        else:
+            raise e'''
+        return calc_code
+
     if custom_mace_path:
         # Custom MACE model setup
         mace_args = []
@@ -2426,13 +2498,20 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     return calc_code
 
 
-def _generate_energy_only_code(calc_formation_energy):
+def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar_settings=None):
     """Generate code for energy-only calculations."""
-    code = '''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
-    results = []
-    print(f"📊 Found {len(structure_files)} structure files")
+    polar_charge = (polar_settings or {}).get("charge", 0)
+    polar_spin = (polar_settings or {}).get("spin", 1)
+    polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
-    reference_energies = {}'''
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
+    results = []
+    is_mace_polar = {is_mace_polar}
+    polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
+    polar_results_all = []
+    print(f"📊 Found {{len(structure_files)}} structure files")
+
+    reference_energies = {{}}'''
 
     if calc_formation_energy:
         code += '''
@@ -2475,6 +2554,12 @@ def _generate_energy_only_code(calc_formation_energy):
         try:
             atoms = read(filename)
             atoms.calc = calculator
+
+            if is_mace_polar:
+                apply_polar_metadata(atoms, polar_settings)
+                print(f"  ⚡ Polar metadata set — charge={atoms.info['charge']}, "
+                      f"spin={atoms.info['spin']}, "
+                      f"E_field={atoms.info['external_field']} V/Å")
 
             print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
             energy = atoms.get_potential_energy()
@@ -2545,6 +2630,24 @@ def _generate_energy_only_code(calc_formation_energy):
             print(f"  ✅ Energy: {energy:.6f} eV")'''
 
     code += '''
+            if is_mace_polar:
+                print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
+                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                if not base_name_for_polar:
+                    base_name_for_polar = f"structure_{i+1}"
+                polar_data = extract_polar_results(atoms, filename)
+                save_polar_results(polar_data, atoms, base_name_for_polar, output_dir="polar_results")
+                polar_results_all.append(polar_data)
+                if polar_data.get("success"):
+                    if polar_data.get("dipole_norm_eA") is not None:
+                        result["dipole_norm_eA"] = polar_data["dipole_norm_eA"]
+                        result["dipole_norm_Debye"] = polar_data.get("dipole_norm_Debye")
+                    if polar_data.get("charges_sum_e") is not None:
+                        result["charges_sum_e"] = polar_data["charges_sum_e"]
+                        result["charges_min_e"] = polar_data["charges_min_e"]
+                        result["charges_max_e"] = polar_data["charges_max_e"]
+                    result["polar_json"] = f"polar_results/polar_{base_name_for_polar}.json"
+
             structure_time = time.time() - structure_start_time
             print(f"  ⏱️ Structure time: {structure_time:.1f}s")
 
@@ -3514,6 +3617,119 @@ def _generate_utility_functions():
     """Generate utility functions needed by the script."""
     return '''
 
+def extract_polar_results(atoms, structure_name):
+    """Extract MACE-POLAR-1 outputs (dipole, charges, density coefficients,
+    spin charge density) from the calculator results."""
+    try:
+        res = atoms.calc.results if (hasattr(atoms, "calc") and atoms.calc is not None) else {}
+
+        dipole   = res.get("dipole")
+        charges  = res.get("charges")
+        rho      = res.get("density_coefficients")
+        rho_spin = res.get("spin_charge_density")
+
+        out = {
+            "structure":            structure_name,
+            "success":              True,
+            "dipole":               np.array(dipole).tolist()   if dipole   is not None else None,
+            "charges":              np.array(charges).tolist()  if charges  is not None else None,
+            "density_coefficients": np.array(rho).tolist()      if rho      is not None else None,
+            "spin_charge_density":  np.array(rho_spin).tolist() if rho_spin is not None else None,
+        }
+
+        if dipole is not None:
+            mu = np.asarray(dipole, dtype=float)
+            mu_norm = float(np.linalg.norm(mu))
+            mu_D = mu_norm * 4.803  # eÅ → Debye
+            print(f"    ⚡ Dipole: ({mu[0]:.4f}, {mu[1]:.4f}, {mu[2]:.4f}) eÅ  |μ|={mu_norm:.4f} eÅ = {mu_D:.4f} D")
+            out["dipole_norm_eA"] = mu_norm
+            out["dipole_norm_Debye"] = mu_D
+        else:
+            print("    ⚠️ No dipole in results — check model version")
+
+        if charges is not None:
+            q = np.asarray(charges, dtype=float)
+            print(f"    ⚡ Charges: min={q.min():.4f} e, max={q.max():.4f} e, sum={q.sum():.4f} e")
+            out["charges_min_e"]  = float(q.min())
+            out["charges_max_e"]  = float(q.max())
+            out["charges_sum_e"]  = float(q.sum())
+        else:
+            print("    ⚠️ No per-atom charges in results")
+
+        if rho_spin is not None:
+            print(f"    ⚡ Spin density coefficients shape: {np.array(rho_spin).shape}")
+        else:
+            print("    ℹ️ No spin density (spin=1, non-polarised run)")
+
+        return out
+    except Exception as e:
+        import traceback
+        print(f"    ⚠️ Polar output extraction failed: {e}")
+        traceback.print_exc()
+        return {"structure": structure_name, "success": False, "error": str(e)}
+
+
+def save_polar_results(polar_data, atoms, base_name, output_dir="polar_results"):
+    """Save MACE-POLAR-1 outputs to JSON + per-atom CSV files."""
+    if not polar_data or not polar_data.get("success"):
+        return
+
+    Path(output_dir).mkdir(exist_ok=True)
+
+    json_path = os.path.join(output_dir, f"polar_{base_name}.json")
+    with open(json_path, "w") as f:
+        json.dump(polar_data, f, indent=2)
+    print(f"    💾 Saved polar JSON: {json_path}")
+
+    if polar_data.get("charges") is not None:
+        symbols = atoms.get_chemical_symbols()
+        positions = atoms.get_positions()
+        charges = polar_data["charges"]
+        n = min(len(symbols), len(charges))
+        rows = []
+        for i in range(n):
+            rows.append({
+                "atom_index": i,
+                "element": symbols[i],
+                "x_A": float(positions[i][0]),
+                "y_A": float(positions[i][1]),
+                "z_A": float(positions[i][2]),
+                "charge_e": float(charges[i]),
+            })
+        csv_path = os.path.join(output_dir, f"charges_{base_name}.csv")
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+        print(f"    💾 Saved per-atom charges CSV: {csv_path}")
+
+    if polar_data.get("dipole") is not None:
+        mu = np.asarray(polar_data["dipole"], dtype=float)
+        dipole_csv = os.path.join(output_dir, "dipoles.csv")
+        row = {
+            "structure": base_name,
+            "mu_x_eA": float(mu[0]),
+            "mu_y_eA": float(mu[1]),
+            "mu_z_eA": float(mu[2]),
+            "mu_norm_eA": float(np.linalg.norm(mu)),
+            "mu_norm_Debye": float(np.linalg.norm(mu) * 4.803),
+        }
+        if os.path.exists(dipole_csv):
+            df = pd.read_csv(dipole_csv)
+            df = df[df["structure"] != base_name]
+            df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        else:
+            df = pd.DataFrame([row])
+        df.to_csv(dipole_csv, index=False)
+        print(f"    💾 Updated dipole summary: {dipole_csv}")
+
+
+def apply_polar_metadata(atoms, polar_settings):
+    """Stamp MACE-POLAR-1 charge/spin/external-field metadata onto an Atoms object."""
+    if not polar_settings:
+        return
+    atoms.info["charge"] = int(polar_settings.get("charge", 0))
+    atoms.info["spin"] = int(polar_settings.get("spin", 1))
+    atoms.info["external_field"] = list(polar_settings.get("external_field", [0.0, 0.0, 0.0]))
+
+
 def wrap_positions_in_cell(atoms):
     wrapped_atoms = atoms.copy()
     fractional_coords = wrapped_atoms.get_scaled_positions()
@@ -4096,7 +4312,8 @@ class OptimizationLogger:
 '''
 
 
-def _generate_optimization_code(optimization_params, calc_formation_energy,preserve_atom_order=False):
+def _generate_optimization_code(optimization_params, calc_formation_energy,preserve_atom_order=False,
+                                is_mace_polar=False, polar_settings=None):
     optimizer = optimization_params.get('optimizer', 'BFGS')
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
@@ -4112,6 +4329,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fix_symmetry = optimization_params.get('fix_symmetry', False)
     force_divergence_threshold = optimization_params.get('force_divergence_threshold', 10000)
     preserve_atom_order = optimization_params.get('preserve_atom_order', False)
+    polar_charge = (polar_settings or {}).get("charge", 0)
+    polar_spin = (polar_settings or {}).get("spin", 1)
+    polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
@@ -4133,7 +4353,10 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fix_symmetry = {fix_symmetry}
     force_divergence_threshold = {force_divergence_threshold}
     preserve_atom_order = {preserve_atom_order}
-    
+    is_mace_polar = {is_mace_polar}
+    polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
+    polar_results_all = []
+
     print(f"⚙️ Optimization settings:")
     print(f"  - Optimizer: {{optimizer_type}}")
     print(f"  - Force threshold: {{fmax}} eV/Å")
@@ -4176,6 +4399,13 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             # Read structure with selective dynamics information
             atoms, selective_dynamics = read_poscar_with_selective_dynamics(filename)
             atoms.calc = calculator
+
+            if is_mace_polar:
+                apply_polar_metadata(atoms, polar_settings)
+                print(f"  ⚡ Polar metadata set — charge={atoms.info['charge']}, "
+                      f"spin={atoms.info['spin']}, "
+                      f"E_field={atoms.info['external_field']} V/Å")
+
             print(f"  📊 Structure has {len(atoms)} atoms")
             if fix_symmetry:
                 try:
@@ -4543,6 +4773,33 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             result["formation_energy_eV_per_atom"] = formation_energy'''
 
     code += '''
+
+            if is_mace_polar:
+                print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
+                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                if not base_name_for_polar:
+                    base_name_for_polar = f"structure_{i+1}"
+                # Re-stamp polar metadata on final_atoms (filters return atoms without info), then
+                # trigger a fresh singlepoint so calculator.results is populated for the final geometry.
+                if not hasattr(final_atoms, "calc") or final_atoms.calc is None:
+                    final_atoms.calc = calculator
+                apply_polar_metadata(final_atoms, polar_settings)
+                try:
+                    _ = final_atoms.get_potential_energy()
+                except Exception as _polar_sp_err:
+                    print(f"    ⚠️ Polar singlepoint on final geometry failed: {_polar_sp_err}")
+                polar_data = extract_polar_results(final_atoms, filename)
+                save_polar_results(polar_data, final_atoms, base_name_for_polar, output_dir="polar_results")
+                polar_results_all.append(polar_data)
+                if polar_data.get("success"):
+                    if polar_data.get("dipole_norm_eA") is not None:
+                        result["dipole_norm_eA"] = polar_data["dipole_norm_eA"]
+                        result["dipole_norm_Debye"] = polar_data.get("dipole_norm_Debye")
+                    if polar_data.get("charges_sum_e") is not None:
+                        result["charges_sum_e"] = polar_data["charges_sum_e"]
+                        result["charges_min_e"] = polar_data["charges_min_e"]
+                        result["charges_max_e"] = polar_data["charges_max_e"]
+                    result["polar_json"] = f"polar_results/polar_{base_name_for_polar}.json"
 
             structure_time = time.time() - structure_start_time
             print(f"  ✅ Optimization completed: {convergence_status}")
