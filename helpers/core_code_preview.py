@@ -406,6 +406,7 @@ def _phonon(p):
     npts            = p.get('npoints_per_segment', p.get('npoints', 101))
     use_auto_kpath  = p.get('use_auto_kpath', True)
     kpath_conv      = p.get('kpath_convention', 'setyawan_curtarolo')
+    manual_kpath    = p.get('manual_kpath') or []
     dos_mesh        = list(p.get('dos_mesh', (30, 30, 30)))
     pre_relax       = p.get('pre_relax', True)
     pre_relax_opt   = p.get('pre_relax_optimizer', 'LBFGS')
@@ -500,15 +501,53 @@ def _phonon(p):
             "        bands.append(band)",
         ]
     else:
-        lines += [
-            "",
-            f"npts = {npts}",
-            "segments = [([0,0,0],[0.5,0,0]), ([0.5,0,0],[0.5,0.5,0]), ([0.5,0.5,0],[0,0,0])]",
-            "bands = []",
-            "for start, end in segments:",
-            "    s, e = np.array(start), np.array(end)",
-            "    bands.append([s + t/(npts-1) * (e - s) for t in range(npts)])",
-        ]
+        # Manual k-path — emit the actual segments the user defined in the UI,
+        # including their labels (used below for the Γ-frequencies file).
+        # Falls back to a Γ→X→M→Γ stub only if the user has no segments yet.
+        if manual_kpath:
+            seg_reprs = []
+            label_pairs = []
+            for seg in manual_kpath:
+                s = seg.get("start_coords", [0.0, 0.0, 0.0])
+                e = seg.get("end_coords",   [0.0, 0.0, 0.0])
+                s_lbl = seg.get("start_label", "?")
+                e_lbl = seg.get("end_label",   "?")
+                seg_reprs.append(
+                    f"    ({list(map(float, s))}, {list(map(float, e))}),  # {s_lbl} → {e_lbl}"
+                )
+                label_pairs.append((s_lbl, e_lbl))
+            # Build summary string. When segment i+1's start label differs
+            # from segment i's end label, that's a discontinuity → render '|'.
+            _summary_parts = [label_pairs[0][0]]
+            for _i, (_s_lbl, _e_lbl) in enumerate(label_pairs):
+                if _i > 0 and label_pairs[_i - 1][1] != _s_lbl:
+                    _summary_parts.append(f"| {_s_lbl}")
+                _summary_parts.append(f"→ {_e_lbl}")
+            path_summary = " ".join(_summary_parts)
+            lines += [
+                "",
+                f"# Manual k-path ({len(manual_kpath)} segment"
+                f"{'s' if len(manual_kpath) != 1 else ''}): {path_summary}",
+                f"npts = {npts}",
+                "segments = [",
+                *seg_reprs,
+                "]",
+                "bands = []",
+                "for start, end in segments:",
+                "    s, e = np.array(start), np.array(end)",
+                "    bands.append([s + t/(npts-1) * (e - s) for t in range(npts)])",
+            ]
+        else:
+            lines += [
+                "",
+                "# Manual k-path placeholder (no segments defined in the UI yet).",
+                f"npts = {npts}",
+                "segments = [([0,0,0],[0.5,0,0]), ([0.5,0,0],[0.5,0.5,0]), ([0.5,0.5,0],[0,0,0])]",
+                "bands = []",
+                "for start, end in segments:",
+                "    s, e = np.array(start), np.array(end)",
+                "    bands.append([s + t/(npts-1) * (e - s) for t in range(npts)])",
+            ]
 
     lines += [
         "",
@@ -526,6 +565,24 @@ def _phonon(p):
         f"n_imag = int(np.sum(freqs_meV < {imag_tol}))",
         "print(f\"Imaginary modes: {n_imag}\")",
         "print(\"Dynamically stable\" if n_imag == 0 else \"Imaginary modes detected!\")",
+        "",
+        "# Save all phonon frequencies at the first Γ (zone-center) k-point",
+        "import pandas as pd",
+        "freq_first_path_thz = np.asarray(bd['frequencies'][0])  # (n_kpts, n_bands), THz",
+        "kpts_first_path     = np.asarray(bands[0])              # fractional reciprocal coords",
+        "gamma_hits = np.where(np.linalg.norm(kpts_first_path, axis=1) < 1e-8)[0]",
+        "if len(gamma_hits) > 0:",
+        "    gi = int(gamma_hits[0])",
+        "    f_thz = freq_first_path_thz[gi]",
+        "    pd.DataFrame({",
+        "        'mode_index':     np.arange(1, len(f_thz) + 1),",
+        "        'frequency_THz':  f_thz,",
+        "        'frequency_meV':  f_thz * 4.136,",
+        "        'frequency_cm-1': f_thz * 33.35641,",
+        "    }).to_csv('gamma_point_frequencies.csv', index=False)",
+        "    print(f'Γ-point frequencies saved → gamma_point_frequencies.csv ({len(f_thz)} modes)')",
+        "else:",
+        "    print('No Γ (k=0) point along the path — gamma file not written')",
     ]
 
     return "\n".join(lines) + "\n"
