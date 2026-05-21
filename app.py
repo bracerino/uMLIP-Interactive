@@ -176,6 +176,53 @@ except ImportError:
 import torch
 
 SETTINGS_FILE = "default_settings.json"
+CUSTOM_KPATHS_FILE = "custom_kpaths.json"
+
+
+def load_custom_kpaths():
+    """Load user-saved phonon k-paths from ``CUSTOM_KPATHS_FILE``.
+
+    Returns a dict mapping path name → {"system": str|None, "segments": list}.
+    Tolerates the legacy bare-list format (entries written before the
+    crystal-system selector was added). Bad files become {} silently."""
+    if not os.path.exists(CUSTOM_KPATHS_FILE):
+        return {}
+    try:
+        with open(CUSTOM_KPATHS_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        cleaned = {}
+        for name, entry in data.items():
+            if isinstance(entry, list):
+                segs = entry
+                system = None
+            elif isinstance(entry, dict):
+                segs = entry.get("segments", [])
+                system = entry.get("system")
+            else:
+                continue
+            if not isinstance(segs, list) or not segs:
+                continue
+            cleaned[str(name)] = {
+                "system": str(system) if system else None,
+                "segments": [dict(s) for s in segs if isinstance(s, dict)],
+            }
+        return cleaned
+    except Exception:
+        return {}
+
+
+def save_custom_kpaths(paths_dict):
+    """Persist the custom-paths dict to disk. Returns (True, None) or
+    (False, error_message)."""
+    try:
+        with open(CUSTOM_KPATHS_FILE, "w") as f:
+            json.dump(paths_dict, f, indent=2, ensure_ascii=False)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
 
 DEFAULT_SETTINGS = {
     'thread_count': 1,
@@ -4136,7 +4183,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.2 · 5/20/2026
+            v0.9.3 · 5/21/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5499,6 +5546,23 @@ with tab1:
                     min_value=0, max_value=5000, value=300, step=10,
                     help="Single temperature at which F, S, Cv snapshot is reported")
 
+            st.write("### 📏 Frequency units for saved plots")
+            _PLOT_UNIT_OPTIONS = {
+                "meV (millielectronvolt)": "meV",
+                "THz (terahertz)":         "THz",
+                "cm⁻¹ (wavenumber)":       "cm-1",
+            }
+            _unit_label = st.selectbox(
+                "Y-axis units in saved phonon_bands.png and phonon_dos.png",
+                options=list(_PLOT_UNIT_OPTIONS.keys()),
+                index=0,
+                help="Applies only to the band-structure and DOS PNG images written "
+                     "by the standalone Python script. The CSV outputs always include "
+                     "THz, meV, and cm⁻¹ columns. "
+                     "Conversions used: 1 THz = 4.13567 meV = 33.35641 cm⁻¹.",
+            )
+            phonon_params["plot_freq_unit"] = _PLOT_UNIT_OPTIONS[_unit_label]
+
             st.write("### 📐 k-point path for dispersion")
 
             auto_kpath = st.checkbox(
@@ -5538,106 +5602,589 @@ with tab1:
                 phonon_params["manual_kpath"] = None
             else:
                 st.info(
-                    "Define each segment of the k-path below. "
-                    "Coordinates are in **fractional reciprocal** units (0–0.5). "
-                    "Leave the table empty to fall back to the automatic path.")
+                    "1. Pick the **crystal system / Bravais lattice** — the "
+                    "available high-symmetry labels and their fractional "
+                    "coordinates follow the Setyawan-Curtarolo convention for "
+                    "that lattice.\n"
+                    "2. For each segment, pick a **From** and **To** point — "
+                    "coordinates auto-fill. Adding a new segment auto-chains "
+                    "from the previous segment's endpoint.\n"
+                    "3. Coordinates can be edited manually, or pick **Custom…** "
+                    "to enter a non-standard point.")
 
                 phonon_params["npoints_per_segment"] = st.number_input(
-                    "k-points per segment", min_value=10, max_value=500, value=101, step=10)
+                    "k-points per segment", min_value=10, max_value=500, value=101, step=10,
+                    key="phonon_kpath_npoints")
 
-                import pandas as pd
+                # ── Lattice-aware high-symmetry point library ──────────────
+                # Coordinates follow the Setyawan-Curtarolo (2010) convention.
+                # The same label means different points in different Bravais
+                # lattices (e.g. tetragonal-P R = (0, 1/2, 1/2) vs. cubic-P
+                # R = (1/2, 1/2, 1/2)), so the user picks the system first.
+                KPATH_BRAVAIS_LIBRARY = {
+                    "Cubic P (simple cubic)": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "X": (0.0, 0.5, 0.0),
+                        "M": (0.5, 0.5, 0.0),
+                        "R": (0.5, 0.5, 0.5),
+                    },
+                    "Cubic F (FCC)": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "X": (0.5, 0.0, 0.5),
+                        "L": (0.5, 0.5, 0.5),
+                        "W": (0.5, 0.25, 0.75),
+                        "U": (0.625, 0.25, 0.625),
+                        "K": (0.375, 0.375, 0.75),
+                    },
+                    "Cubic I (BCC)": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "H": (0.5, -0.5, 0.5),
+                        "N": (0.0, 0.0, 0.5),
+                        "P": (0.25, 0.25, 0.25),
+                    },
+                    "Tetragonal P": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "X": (0.0, 0.5, 0.0),
+                        "M": (0.5, 0.5, 0.0),
+                        "Z": (0.0, 0.0, 0.5),
+                        "R": (0.0, 0.5, 0.5),
+                        "A": (0.5, 0.5, 0.5),
+                    },
+                    "Orthorhombic P": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "X": (0.5, 0.0, 0.0),
+                        "Y": (0.0, 0.5, 0.0),
+                        "Z": (0.0, 0.0, 0.5),
+                        "S": (0.5, 0.5, 0.0),
+                        "T": (0.0, 0.5, 0.5),
+                        "U": (0.5, 0.0, 0.5),
+                        "R": (0.5, 0.5, 0.5),
+                    },
+                    "Hexagonal": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "M": (0.5, 0.0, 0.0),
+                        "K": (1.0 / 3.0, 1.0 / 3.0, 0.0),
+                        "A": (0.0, 0.0, 0.5),
+                        "L": (0.5, 0.0, 0.5),
+                        "H": (1.0 / 3.0, 1.0 / 3.0, 0.5),
+                    },
+                    "Other / Custom (free entry)": {
+                        # Only Γ pre-defined; user enters labels and coords manually.
+                        "Γ": (0.0, 0.0, 0.0),
+                    },
+                }
+                CUSTOM_LABEL_SENTINEL = "Custom…"
+
+                if "phonon_kpath_system" not in st.session_state:
+                    st.session_state["phonon_kpath_system"] = "Tetragonal P"
+
+                _system_options = list(KPATH_BRAVAIS_LIBRARY.keys())
+                _cur_system = st.session_state["phonon_kpath_system"]
+                if _cur_system not in _system_options:
+                    _cur_system = "Tetragonal P"
+                    st.session_state["phonon_kpath_system"] = _cur_system
+
+                def _on_system_change():
+                    # Crystal-system change: drop per-segment widget keys so the
+                    # dropdowns refresh to the new system's label set.
+                    for _k in [k for k in list(st.session_state.keys())
+                               if k.startswith("kpath_w_")]:
+                        del st.session_state[_k]
+
+                st.selectbox(
+                    "Crystal system / Bravais lattice",
+                    options=_system_options,
+                    key="phonon_kpath_system",
+                    on_change=_on_system_change,
+                    help="Selects which Setyawan-Curtarolo high-symmetry point "
+                         "table is used to auto-fill fractional coordinates. "
+                         "Same label → different coords across lattices "
+                         "(e.g. tetragonal-P R = (0, ½, ½) ≠ cubic-P R = (½, ½, ½)).",
+                )
+                _cur_system = st.session_state["phonon_kpath_system"]
+                HIGH_SYMMETRY_POINTS = KPATH_BRAVAIS_LIBRARY[_cur_system]
+                LABEL_OPTIONS = list(HIGH_SYMMETRY_POINTS.keys()) + [CUSTOM_LABEL_SENTINEL]
+
+                with st.expander(
+                    f"📋 {_cur_system} — available high-symmetry points", expanded=False
+                ):
+                    _lib_rows = [
+                        {"Label": lbl,
+                         "kx": f"{c[0]:.4f}",
+                         "ky": f"{c[1]:.4f}",
+                         "kz": f"{c[2]:.4f}"}
+                        for lbl, c in HIGH_SYMMETRY_POINTS.items()
+                    ]
+                    st.table(_lib_rows)
+                    if _cur_system == "Other / Custom (free entry)":
+                        st.caption(
+                            "Only Γ is pre-defined for this system. Use "
+                            "**Custom…** in each segment to enter labels and "
+                            "fractional coordinates by hand."
+                        )
 
                 # ── Preset paths ──────────────────────────────────────────────
+                # Each preset bundles a Bravais system + a segment list whose
+                # coordinates match that system's library above.
+                def _seg(s_lbl, s, e_lbl, e):
+                    return {
+                        "start_label": s_lbl,
+                        "start_x": s[0], "start_y": s[1], "start_z": s[2],
+                        "end_label": e_lbl,
+                        "end_x": e[0], "end_y": e[1], "end_z": e[2],
+                    }
+
+                _HEX = KPATH_BRAVAIS_LIBRARY["Hexagonal"]
+                _TET = KPATH_BRAVAIS_LIBRARY["Tetragonal P"]
+                _CUB = KPATH_BRAVAIS_LIBRARY["Cubic P (simple cubic)"]
+                _ORT = KPATH_BRAVAIS_LIBRARY["Orthorhombic P"]
+
                 KPATH_PRESETS = {
-                    "Γ→M→K→Γ  (Hexagonal / trigonal — phonon.materialscloud.io)": [
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "M", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "M", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "K", "end_x": 1 / 3, "end_y": 1 / 3, "end_z": 0.0},
-                        {"start_label": "K", "start_x": 1 / 3, "start_y": 1 / 3, "start_z": 0.0,
-                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
-                    ],
-                    "Γ→X→M→Γ  (Tetragonal / square)": [
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "M", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
-                        {"start_label": "M", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
-                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
-                    ],
-                    "Γ→X→M→Γ→R→X  (Cubic)": [
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "M", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
-                        {"start_label": "M", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
-                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "R", "end_x": 0.5, "end_y": 0.5, "end_z": 0.5},
-                        {"start_label": "R", "start_x": 0.5, "start_y": 0.5, "start_z": 0.5,
-                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
-                    ],
-                    "Γ→X→S→Y→Γ→Z  (Orthorhombic)": [
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "X", "end_x": 0.5, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "X", "start_x": 0.5, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "S", "end_x": 0.5, "end_y": 0.5, "end_z": 0.0},
-                        {"start_label": "S", "start_x": 0.5, "start_y": 0.5, "start_z": 0.0,
-                         "end_label": "Y", "end_x": 0.0, "end_y": 0.5, "end_z": 0.0},
-                        {"start_label": "Y", "start_x": 0.0, "start_y": 0.5, "start_z": 0.0,
-                         "end_label": "Γ", "end_x": 0.0, "end_y": 0.0, "end_z": 0.0},
-                        {"start_label": "Γ", "start_x": 0.0, "start_y": 0.0, "start_z": 0.0,
-                         "end_label": "Z", "end_x": 0.0, "end_y": 0.0, "end_z": 0.5},
-                    ],
+                    "Γ→M→K→Γ  (Hexagonal — phonon.materialscloud.io)": {
+                        "system": "Hexagonal",
+                        "segments": [
+                            _seg("Γ", _HEX["Γ"], "M", _HEX["M"]),
+                            _seg("M", _HEX["M"], "K", _HEX["K"]),
+                            _seg("K", _HEX["K"], "Γ", _HEX["Γ"]),
+                        ],
+                    },
+                    "Γ→X→M→Γ  (Tetragonal P)": {
+                        "system": "Tetragonal P",
+                        "segments": [
+                            _seg("Γ", _TET["Γ"], "X", _TET["X"]),
+                            _seg("X", _TET["X"], "M", _TET["M"]),
+                            _seg("M", _TET["M"], "Γ", _TET["Γ"]),
+                        ],
+                    },
+                    "Γ→X→M→Γ→R→X  (Cubic P)": {
+                        "system": "Cubic P (simple cubic)",
+                        "segments": [
+                            _seg("Γ", _CUB["Γ"], "X", _CUB["X"]),
+                            _seg("X", _CUB["X"], "M", _CUB["M"]),
+                            _seg("M", _CUB["M"], "Γ", _CUB["Γ"]),
+                            _seg("Γ", _CUB["Γ"], "R", _CUB["R"]),
+                            _seg("R", _CUB["R"], "X", _CUB["X"]),
+                        ],
+                    },
+                    "Γ→X→S→Y→Γ→Z  (Orthorhombic P)": {
+                        "system": "Orthorhombic P",
+                        "segments": [
+                            _seg("Γ", _ORT["Γ"], "X", _ORT["X"]),
+                            _seg("X", _ORT["X"], "S", _ORT["S"]),
+                            _seg("S", _ORT["S"], "Y", _ORT["Y"]),
+                            _seg("Y", _ORT["Y"], "Γ", _ORT["Γ"]),
+                            _seg("Γ", _ORT["Γ"], "Z", _ORT["Z"]),
+                        ],
+                    },
                 }
 
                 if "phonon_kpath_segments" not in st.session_state:
-                    # Default to Γ→X→M→Γ
-                    st.session_state["phonon_kpath_segments"] = KPATH_PRESETS[
-                        "Γ→X→M→Γ  (Tetragonal / square)"
+                    # Default to Γ→X→M→Γ (Tetragonal P, SC convention)
+                    st.session_state["phonon_kpath_segments"] = [
+                        dict(s) for s in KPATH_PRESETS["Γ→X→M→Γ  (Tetragonal P)"]["segments"]
                     ]
+
+                def _clear_kpath_widget_keys():
+                    """Drop all per-segment widget keys so the next render picks
+                    up fresh values from the underlying segments list."""
+                    for k in [k for k in list(st.session_state.keys())
+                              if k.startswith("kpath_w_")]:
+                        del st.session_state[k]
+
+                def _on_label_change(idx, side):
+                    sel_key = f"kpath_w_seg{idx}_{side}_sel"
+                    sel = st.session_state.get(sel_key)
+                    seg = st.session_state["phonon_kpath_segments"][idx]
+                    if sel in HIGH_SYMMETRY_POINTS:
+                        x, y, z = HIGH_SYMMETRY_POINTS[sel]
+                        seg[f"{side}_label"] = sel
+                        seg[f"{side}_x"] = x
+                        seg[f"{side}_y"] = y
+                        seg[f"{side}_z"] = z
+                        st.session_state[f"kpath_w_seg{idx}_{side}_x"] = x
+                        st.session_state[f"kpath_w_seg{idx}_{side}_y"] = y
+                        st.session_state[f"kpath_w_seg{idx}_{side}_z"] = z
+
+                def _on_custom_label_change(idx, side):
+                    key = f"kpath_w_seg{idx}_{side}_custom_label"
+                    val = (st.session_state.get(key, "") or "").strip()
+                    if val:
+                        st.session_state["phonon_kpath_segments"][idx][f"{side}_label"] = val
+
+                def _on_coord_change(idx, side, axis):
+                    key = f"kpath_w_seg{idx}_{side}_{axis}"
+                    val = st.session_state.get(key, 0.0)
+                    st.session_state["phonon_kpath_segments"][idx][f"{side}_{axis}"] = float(val)
+
+                def _delete_segment(idx):
+                    segs = st.session_state["phonon_kpath_segments"]
+                    if 0 <= idx < len(segs):
+                        del segs[idx]
+                    _clear_kpath_widget_keys()
+
+                def _add_segment():
+                    segs = st.session_state["phonon_kpath_segments"]
+                    if segs:
+                        last = segs[-1]
+                        new_start_label = last.get("end_label", "Γ")
+                        new_start_x = float(last.get("end_x", 0.0))
+                        new_start_y = float(last.get("end_y", 0.0))
+                        new_start_z = float(last.get("end_z", 0.0))
+                    else:
+                        new_start_label = "Γ"
+                        new_start_x = new_start_y = new_start_z = 0.0
+                    segs.append({
+                        "start_label": new_start_label,
+                        "start_x": new_start_x,
+                        "start_y": new_start_y,
+                        "start_z": new_start_z,
+                        "end_label": "Γ",
+                        "end_x": 0.0, "end_y": 0.0, "end_z": 0.0,
+                    })
+                    # No need to clear widget keys: new segment uses a fresh idx
+                    # that has no existing keys.
+
+                def _clear_all_segments():
+                    st.session_state["phonon_kpath_segments"] = []
+                    _clear_kpath_widget_keys()
+
+                # Preset / saved-path application happens inside on_click
+                # callbacks. Streamlit forbids writing to a widget's bound
+                # session_state key (here: 'phonon_kpath_system') from regular
+                # script code after the widget has rendered — but callbacks run
+                # before the next rerun re-instantiates the widget, so writes
+                # there are allowed.
+                def _apply_preset_cb(preset_dict):
+                    st.session_state["phonon_kpath_segments"] = [
+                        dict(s) for s in preset_dict["segments"]
+                    ]
+                    st.session_state["phonon_kpath_system"] = preset_dict["system"]
+                    _clear_kpath_widget_keys()
 
                 st.write("**Load a preset path:**")
                 preset_cols = st.columns(len(KPATH_PRESETS))
-                for col, (label, segments) in zip(preset_cols, KPATH_PRESETS.items()):
-                    # Short label for the button: just the arrow path part
+                for col, (label, preset) in zip(preset_cols, KPATH_PRESETS.items()):
                     btn_label = label.split("(")[0].strip()
-                    if col.button(btn_label, key=f"preset_{label[:20]}", width='stretch'):
-                        st.session_state["phonon_kpath_segments"] = [dict(s) for s in segments]
-                        st.rerun()
-
-                # Highlight if Γ→M→K→Γ is active (for phonon.materialscloud.io users)
-                current_labels = [
-                                     s.get("start_label", "") for s in st.session_state["phonon_kpath_segments"]
-                                 ] + [st.session_state["phonon_kpath_segments"][-1].get("end_label", "")]
-                if current_labels == ["Γ", "M", "K", "Γ"]:
-                    st.success(
-                        "✅ **Γ→M→K→Γ path active** — compatible with "
-                        "[phonon.materialscloud.io](https://phonon.materialscloud.io). "
-                        "Download `band.yaml` and upload it there directly."
+                    col.button(
+                        btn_label, key=f"preset_{label[:20]}", width='stretch',
+                        on_click=_apply_preset_cb, args=(preset,),
                     )
 
-                seg_df = pd.DataFrame(st.session_state["phonon_kpath_segments"])
-                edited_df = st.data_editor(
-                    seg_df,
-                    num_rows="dynamic",
-                    width='stretch',
-                    column_config={
-                        "start_label": st.column_config.TextColumn("Start label", width="small"),
-                        "start_x": st.column_config.NumberColumn("Start kx", format="%.4f", step=0.05),
-                        "start_y": st.column_config.NumberColumn("Start ky", format="%.4f", step=0.05),
-                        "start_z": st.column_config.NumberColumn("Start kz", format="%.4f", step=0.05),
-                        "end_label": st.column_config.TextColumn("End label", width="small"),
-                        "end_x": st.column_config.NumberColumn("End kx", format="%.4f", step=0.05),
-                        "end_y": st.column_config.NumberColumn("End ky", format="%.4f", step=0.05),
-                        "end_z": st.column_config.NumberColumn("End kz", format="%.4f", step=0.05),
-                    },
-                    key="kpath_editor",
-                )
-                st.session_state["phonon_kpath_segments"] = edited_df.to_dict("records")
+                # ── User-saved custom paths (persisted to CUSTOM_KPATHS_FILE) ─
+                # Reload from disk every render so paths saved in earlier runs
+                # (or by another tab) show up automatically.
+                _saved_kpaths = load_custom_kpaths()
 
+                st.write("**Your saved paths:**")
+                if _saved_kpaths:
+                    saved_cols = st.columns([4, 1.2, 1.2])
+                    _sel_key = "kpath_saved_select"
+                    saved_cols[0].selectbox(
+                        "Saved path",
+                        options=list(_saved_kpaths.keys()),
+                        key=_sel_key,
+                        label_visibility="collapsed",
+                    )
+
+                    # Load needs to touch the 'phonon_kpath_system' selectbox
+                    # value — that's only allowed inside an on_click callback.
+                    def _load_saved_cb(saved_kpaths, lib_keys, sel_key):
+                        chosen = st.session_state.get(sel_key)
+                        if not (chosen and chosen in saved_kpaths):
+                            return
+                        entry = saved_kpaths[chosen]
+                        st.session_state["phonon_kpath_segments"] = [
+                            dict(s) for s in entry["segments"]
+                        ]
+                        sys_to_restore = entry.get("system")
+                        if sys_to_restore and sys_to_restore in lib_keys:
+                            st.session_state["phonon_kpath_system"] = sys_to_restore
+                        _clear_kpath_widget_keys()
+                        st.session_state["kpath_parse_msg"] = (
+                            "success", f"Loaded saved path '{chosen}'."
+                        )
+
+                    saved_cols[1].button(
+                        "📂 Load", key="kpath_saved_load", width='stretch',
+                        on_click=_load_saved_cb,
+                        args=(_saved_kpaths, set(KPATH_BRAVAIS_LIBRARY.keys()), _sel_key),
+                    )
+                    if saved_cols[2].button(
+                        "🗑️ Delete", key="kpath_saved_delete", width='stretch',
+                        help="Permanently remove the selected saved path.",
+                    ):
+                        chosen = st.session_state.get(_sel_key)
+                        if chosen and chosen in _saved_kpaths:
+                            del _saved_kpaths[chosen]
+                            ok, err = save_custom_kpaths(_saved_kpaths)
+                            st.session_state["kpath_parse_msg"] = (
+                                ("success", f"Deleted saved path '{chosen}'.")
+                                if ok else ("error", f"Delete failed: {err}")
+                            )
+                            st.rerun()
+                else:
+                    st.caption(
+                        "_No saved paths yet — define a path below and use "
+                        "**Save current path** to keep it for future runs._"
+                    )
+
+                save_cols = st.columns([4, 1.5])
+                save_cols[0].text_input(
+                    "Save current path as",
+                    key="kpath_save_name",
+                    placeholder="e.g. My tetragonal path",
+                    label_visibility="collapsed",
+                )
+                if save_cols[1].button(
+                    "💾 Save current", key="kpath_save_btn", width='stretch',
+                    help=f"Append the current segment list to "
+                         f"{CUSTOM_KPATHS_FILE} (overwrites if the name exists).",
+                ):
+                    new_name = (st.session_state.get("kpath_save_name", "") or "").strip()
+                    cur_segs = st.session_state.get("phonon_kpath_segments", [])
+                    if not new_name:
+                        st.session_state["kpath_parse_msg"] = (
+                            "error", "Please enter a name for the saved path."
+                        )
+                    elif not cur_segs:
+                        st.session_state["kpath_parse_msg"] = (
+                            "error", "No segments to save — define a path first."
+                        )
+                    else:
+                        # Store only the persisted fields plus the active
+                        # lattice system, so loading the entry later restores
+                        # the correct SC point library too.
+                        _saved_kpaths[new_name] = {
+                            "system": st.session_state.get("phonon_kpath_system"),
+                            "segments": [
+                                {
+                                    "start_label": str(s.get("start_label", "?")),
+                                    "start_x": float(s.get("start_x", 0.0)),
+                                    "start_y": float(s.get("start_y", 0.0)),
+                                    "start_z": float(s.get("start_z", 0.0)),
+                                    "end_label": str(s.get("end_label", "?")),
+                                    "end_x": float(s.get("end_x", 0.0)),
+                                    "end_y": float(s.get("end_y", 0.0)),
+                                    "end_z": float(s.get("end_z", 0.0)),
+                                }
+                                for s in cur_segs
+                            ],
+                        }
+                        ok, err = save_custom_kpaths(_saved_kpaths)
+                        if ok:
+                            st.session_state["kpath_parse_msg"] = (
+                                "success",
+                                f"Saved path '{new_name}' → {CUSTOM_KPATHS_FILE}",
+                            )
+                        else:
+                            st.session_state["kpath_parse_msg"] = (
+                                "error", f"Could not write {CUSTOM_KPATHS_FILE}: {err}"
+                            )
+                    st.rerun()
+
+                # ── Quick path-string parser ────────────────────────────────
+                # Accepts compact notation like:
+                #     Γ-X-M-Γ-Z-R-A-Z X-R M-A
+                # where each whitespace-separated (or '|'-separated) group is a
+                # continuous sub-path, and labels within a group are joined by
+                # any of:  -  −  –  —  →  ->
+                def _parse_kpath_string(path_str, hsp_dict):
+                    import re as _re
+                    if not path_str or not path_str.strip():
+                        return [], "Path string is empty."
+                    # Treat '|' as a discontinuity separator like whitespace.
+                    groups = path_str.replace("|", " ").split()
+                    sep_re = _re.compile(r"\s*(?:->|→|−|–|—|-)\s*")
+                    new_segs = []
+                    unknown = []
+                    for group in groups:
+                        labels = [l.strip() for l in sep_re.split(group) if l.strip()]
+                        if len(labels) < 2:
+                            continue
+                        for a, b in zip(labels[:-1], labels[1:]):
+                            if a not in hsp_dict:
+                                unknown.append(a)
+                                continue
+                            if b not in hsp_dict:
+                                unknown.append(b)
+                                continue
+                            sx, sy, sz = hsp_dict[a]
+                            ex, ey, ez = hsp_dict[b]
+                            new_segs.append({
+                                "start_label": a,
+                                "start_x": sx, "start_y": sy, "start_z": sz,
+                                "end_label": b,
+                                "end_x": ex, "end_y": ey, "end_z": ez,
+                            })
+                    err = None
+                    if unknown:
+                        uniq = sorted(set(unknown))
+                        err = (f"Unknown label(s) skipped: {uniq}. "
+                               f"Known labels: {list(hsp_dict.keys())}. "
+                               "Use the per-segment editor below to set "
+                               "non-standard points by picking 'Custom…'.")
+                    if not new_segs:
+                        return [], err or "No valid segments parsed."
+                    return new_segs, err
+
+                st.write("**Quick-fill from a path string:**")
+                st.caption(
+                    "Type the full path using `-`, `−` or `→` between labels. "
+                    "A space (or `|`) marks a **discontinuity**, e.g. "
+                    "`Γ-X-M-Γ-Z-R-A-Z X-R M-A` ≡ "
+                    "`Γ−X−M−Γ−Z−R−A−Z∣X−R∣M−A`. "
+                    "Coordinates auto-fill from the high-symmetry library."
+                )
+                parse_cols = st.columns([6, 1.5])
+                parse_cols[0].text_input(
+                    "Path string",
+                    key="kpath_parse_str",
+                    placeholder="Γ-X-M-Γ-Z-R-A-Z X-R M-A",
+                    label_visibility="collapsed",
+                )
+                if parse_cols[1].button(
+                    "Apply path", key="kpath_parse_apply", width='stretch',
+                    help="Parse the string above and replace the current segment list.",
+                ):
+                    parsed_segs, parse_err = _parse_kpath_string(
+                        st.session_state.get("kpath_parse_str", ""),
+                        HIGH_SYMMETRY_POINTS,
+                    )
+                    if parsed_segs:
+                        st.session_state["phonon_kpath_segments"] = parsed_segs
+                        _clear_kpath_widget_keys()
+                        st.session_state["kpath_parse_msg"] = (
+                            ("warning", parse_err) if parse_err
+                            else ("success", f"Loaded {len(parsed_segs)} segment(s) from path string.")
+                        )
+                        st.rerun()
+                    else:
+                        st.session_state["kpath_parse_msg"] = (
+                            "error", parse_err or "Failed to parse path string."
+                        )
+                        st.rerun()
+
+                _parse_msg = st.session_state.pop("kpath_parse_msg", None)
+                if _parse_msg:
+                    _level, _text = _parse_msg
+                    getattr(st, _level)(_text)
+
+                # Path summary banner — render '|' at every discontinuity
+                # (segment N+1's start label different from segment N's end label).
+                segs_now = st.session_state["phonon_kpath_segments"]
+                if segs_now:
+                    _parts = [segs_now[0].get("start_label", "?")]
+                    for _i, _s in enumerate(segs_now):
+                        _s_lbl = _s.get("start_label", "?")
+                        _e_lbl = _s.get("end_label", "?")
+                        if _i > 0:
+                            _prev_e = segs_now[_i - 1].get("end_label", "?")
+                            if _prev_e != _s_lbl:
+                                _parts.append(f"| {_s_lbl}")
+                        _parts.append(f"→ {_e_lbl}")
+                    path_display = " ".join(_parts)
+
+                    st.markdown(
+                        f"**Current path:** {path_display} "
+                        f"&nbsp;&nbsp;_({len(segs_now)} segment"
+                        f"{'s' if len(segs_now) != 1 else ''})_",
+                        unsafe_allow_html=True,
+                    )
+
+                    # Highlight if a continuous Γ→M→K→Γ is active
+                    # (for phonon.materialscloud.io users)
+                    if path_display == "Γ → M → K → Γ":
+                        st.success(
+                            "✅ **Γ→M→K→Γ path active** — compatible with "
+                            "[phonon.materialscloud.io](https://phonon.materialscloud.io). "
+                            "Download `band.yaml` and upload it there directly."
+                        )
+
+                st.write("**Path segments:**")
+
+                for i, seg in enumerate(st.session_state["phonon_kpath_segments"]):
+                    with st.container(border=True):
+                        # Header: segment number + delete button
+                        hdr_cols = st.columns([8, 1])
+                        hdr_cols[0].markdown(f"**Segment #{i + 1}**")
+                        hdr_cols[1].button(
+                            "🗑️", key=f"kpath_del_{i}",
+                            on_click=_delete_segment, args=(i,),
+                            help="Delete this segment")
+
+                        # FROM / TO rows
+                        for side, side_label in (("start", "From"), ("end", "To")):
+                            row = st.columns([0.4, 1.4, 1.0, 1.0, 1.0])
+                            row[0].markdown(
+                                f"<div style='padding-top:1.9em;'><b>{side_label}</b></div>",
+                                unsafe_allow_html=True,
+                            )
+
+                            cur_label = seg.get(f"{side}_label", "Γ")
+                            is_standard = cur_label in HIGH_SYMMETRY_POINTS
+                            sel_default = cur_label if is_standard else CUSTOM_LABEL_SENTINEL
+
+                            sel_key = f"kpath_w_seg{i}_{side}_sel"
+                            if sel_key not in st.session_state:
+                                st.session_state[sel_key] = sel_default
+
+                            with row[1]:
+                                st.selectbox(
+                                    f"{side_label} point",
+                                    LABEL_OPTIONS,
+                                    key=sel_key,
+                                    on_change=_on_label_change,
+                                    args=(i, side),
+                                )
+                                if st.session_state[sel_key] == CUSTOM_LABEL_SENTINEL:
+                                    cust_key = f"kpath_w_seg{i}_{side}_custom_label"
+                                    if cust_key not in st.session_state:
+                                        st.session_state[cust_key] = (
+                                            "" if is_standard else cur_label
+                                        )
+                                    st.text_input(
+                                        "Custom label",
+                                        key=cust_key,
+                                        on_change=_on_custom_label_change,
+                                        args=(i, side),
+                                        placeholder="e.g. X1",
+                                        label_visibility="collapsed",
+                                    )
+
+                            for axis_idx, axis in enumerate(("x", "y", "z")):
+                                k = f"kpath_w_seg{i}_{side}_{axis}"
+                                if k not in st.session_state:
+                                    st.session_state[k] = float(seg.get(f"{side}_{axis}", 0.0))
+                                row[2 + axis_idx].number_input(
+                                    f"k{axis}",
+                                    key=k,
+                                    step=0.05,
+                                    format="%.4f",
+                                    on_change=_on_coord_change,
+                                    args=(i, side, axis),
+                                )
+
+                # Add / clear buttons
+                btn_cols = st.columns([2, 2, 5])
+                btn_cols[0].button(
+                    "➕ Add segment",
+                    key="kpath_add_segment",
+                    on_click=_add_segment,
+                    width='stretch',
+                    help="Append a new segment. The start point auto-fills from "
+                         "the previous segment's endpoint.",
+                )
+                btn_cols[1].button(
+                    "🧹 Clear all",
+                    key="kpath_clear_all",
+                    on_click=_clear_all_segments,
+                    width='stretch',
+                    help="Remove all segments (the automatic path will be used as fallback).",
+                )
+
+                # Build the manual_segs list for the calculator
                 manual_segs = []
-                for row in edited_df.to_dict("records"):
+                for row in st.session_state["phonon_kpath_segments"]:
                     try:
                         manual_segs.append({
                             "start_label": str(row.get("start_label", "?")),
