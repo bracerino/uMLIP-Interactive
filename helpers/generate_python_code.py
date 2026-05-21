@@ -5136,6 +5136,20 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
                           -phonon_params.get('imaginary_freq_threshold', 0.1))
 
+    # Plot-only frequency units for the saved band/DOS PNGs.
+    # CSV outputs are always in THz + meV (+ cm-1 for the Γ-point file).
+    _PLOT_UNIT_FACTORS = {
+        "THz":  (1.0,       "THz",        "THz"),
+        "meV":  (4.136,     "meV",        "meV"),
+        "cm-1": (33.35641,  "cm$^{-1}$",  "cm-1"),
+    }
+    plot_freq_unit_key = str(phonon_params.get('plot_freq_unit', 'meV'))
+    if plot_freq_unit_key not in _PLOT_UNIT_FACTORS:
+        plot_freq_unit_key = 'meV'
+    plot_freq_factor, plot_freq_label_mpl, plot_freq_label_log = (
+        _PLOT_UNIT_FACTORS[plot_freq_unit_key]
+    )
+
     import json as _json
     manual_kpath_repr   = _json.dumps(manual_kpath) if manual_kpath else "None"
     use_auto_kpath_str  = str(use_auto_kpath)
@@ -5230,12 +5244,18 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     imaginary_tol_mev       = {imag_tol_mev}
     imaginary_tol_thz       = imaginary_tol_mev / 4.136
 
+    # Plot-only frequency unit (band/DOS PNGs). CSV files are unit-agnostic.
+    plot_freq_factor    = {plot_freq_factor}      # THz → chosen unit
+    plot_freq_label_mpl = "{plot_freq_label_mpl}" # matplotlib axis label
+    plot_freq_label_log = "{plot_freq_label_log}" # plain-text label for logs
+
     log(f"⚙️  Displacement: {{displacement_distance}} Å")
     log(f"⚙️  k-path: {{'auto (' + kpath_convention + ')' if use_auto_kpath else 'manual'}}")
     log(f"⚙️  Points/segment: {{npoints_per_segment}}")
     log(f"⚙️  DOS mesh: {{dos_mesh}}")
     log(f"⚙️  Pre-relax: {{pre_relax}} ({{pre_relax_optimizer}}, fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)")
     log(f"⚙️  Imaginary mode tolerance: {{imaginary_tol_mev:.3f}} meV")
+    log(f"⚙️  Plot frequency unit: {{plot_freq_label_log}}")
 
     reference_energies = {{}}
 {formation_ref_block}
@@ -5522,6 +5542,32 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     _f.write(band_yaml_content)
                 log(f"  💾 band.yaml → {{yaml_path}}")
 
+            # Save all phonon frequencies at the first Γ (zone-center) k-point.
+            # Locates the first k-point whose fractional coords are (0, 0, 0) along
+            # the user/auto k-path and dumps every band's frequency at that point.
+            try:
+                _kpts_arr = np.array(bands[0])[:min_len]
+                _gamma_hits = np.where(np.linalg.norm(_kpts_arr, axis=1) < 1e-8)[0]
+                if len(_gamma_hits) > 0:
+                    _gamma_idx = int(_gamma_hits[0])
+                    _gamma_freqs_thz = np.asarray(freq_thz[_gamma_idx], dtype=float)
+                    _gamma_df = pd.DataFrame({{
+                        "mode_index":     np.arange(1, len(_gamma_freqs_thz) + 1),
+                        "frequency_THz":  _gamma_freqs_thz,
+                        "frequency_meV":  _gamma_freqs_thz * 4.136,
+                        "frequency_cm-1": _gamma_freqs_thz * 33.35641,
+                    }})
+                    _gamma_csv = out_folder / "gamma_point_frequencies.csv"
+                    _gamma_df.to_csv(_gamma_csv, index=False)
+                    log(f"  💾 gamma_point_frequencies.csv "
+                        f"({{len(_gamma_freqs_thz)}} modes at k-point #{{_gamma_idx}}) "
+                        f"→ {{_gamma_csv}}")
+                else:
+                    log("  ⚠️  No Γ (k = 0) point found along the k-path — "
+                        "gamma_point_frequencies.csv not written")
+            except Exception as _gamma_err:
+                log(f"  ⚠️  Could not save Γ-point frequencies: {{_gamma_err}}")
+
             dos_csv_path = out_folder / "phonon_dos.csv"
             pd.DataFrame({{
                 "frequency_THz":      dos_freq_thz,
@@ -5546,13 +5592,16 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 import matplotlib.pyplot as plt
                 import matplotlib.ticker as ticker
 
-                freq_meV = freq_thz * 4.136
+                # Apply the user-selected plot frequency unit (THz / meV / cm-1)
+                freq_plot     = freq_thz     * plot_freq_factor
+                dos_freq_plot = dos_freq_thz * plot_freq_factor
+                dos_per_unit  = dos_values   / plot_freq_factor
 
                 fig, ax = plt.subplots(figsize=(8, 6))
-                n_bands = freq_meV.shape[1]
+                n_bands = freq_plot.shape[1]
                 _cmap = matplotlib.colormaps["rainbow"].resampled(n_bands)
                 for b in range(n_bands):
-                    ax.plot(dist_array, freq_meV[:, b],
+                    ax.plot(dist_array, freq_plot[:, b],
                             color=_cmap(b), linewidth=0.9, alpha=0.85)
                 ax.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.6)
                 ax.set_xticks(unique_pos)
@@ -5564,7 +5613,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     ax.axvline(xv, color="gray", linewidth=0.6, linestyle="--", alpha=0.5)
                 ax.set_xlim(dist_array[0], dist_array[-1])
                 ax.set_xlabel("Wave vector", fontsize=13)
-                ax.set_ylabel("Frequency (meV)", fontsize=13)
+                ax.set_ylabel(f"Frequency ({{plot_freq_label_mpl}})", fontsize=13)
                 ax.tick_params(axis='both', labelsize=12)
                 path_label = " → ".join(unique_labels) if unique_labels else "k-path"
                 ax.set_title(f"Phonon bands – {{base_name}}\\n{{path_label}}", fontsize=11)
@@ -5573,23 +5622,21 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 band_png = out_folder / "phonon_bands.png"
                 fig.savefig(band_png, dpi=200, bbox_inches="tight")
                 plt.close(fig)
-                log(f"  💾 phonon_bands.png → {{band_png}}")
+                log(f"  💾 phonon_bands.png ({{plot_freq_label_log}}) → {{band_png}}")
 
                 fig2, ax2 = plt.subplots(figsize=(5, 6))
-                dos_meV_axis = dos_freq_thz * 4.136
-                dos_values_per_meV = dos_values / 4.136
-                ax2.plot(dos_values_per_meV, dos_meV_axis, color="steelblue", linewidth=1.2)
-                ax2.fill_betweenx(dos_meV_axis, 0, dos_values_per_meV, alpha=0.3, color="steelblue")
+                ax2.plot(dos_per_unit, dos_freq_plot, color="steelblue", linewidth=1.2)
+                ax2.fill_betweenx(dos_freq_plot, 0, dos_per_unit, alpha=0.3, color="steelblue")
                 ax2.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.6)
-                ax2.set_xlabel("DOS (states / meV)", fontsize=13)
-                ax2.set_ylabel("Frequency (meV)", fontsize=13)
+                ax2.set_xlabel(f"DOS (states / {{plot_freq_label_mpl}})", fontsize=13)
+                ax2.set_ylabel(f"Frequency ({{plot_freq_label_mpl}})", fontsize=13)
                 ax2.set_title(f"Phonon DOS – {{base_name}}", fontsize=11)
                 ax2.set_xlim(left=0)
                 plt.tight_layout()
                 dos_png = out_folder / "phonon_dos.png"
                 fig2.savefig(dos_png, dpi=200, bbox_inches="tight")
                 plt.close(fig2)
-                log(f"  💾 phonon_dos.png → {{dos_png}}")
+                log(f"  💾 phonon_dos.png ({{plot_freq_label_log}}) → {{dos_png}}")
 
             except Exception as plot_err:
                 log(f"  ⚠️ Plot generation failed: {{plot_err}}")
