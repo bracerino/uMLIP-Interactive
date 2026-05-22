@@ -6242,6 +6242,57 @@ with tab1:
                      "Small negatives between this threshold and 0 are treated as numerical noise "
                      "and the structure is still reported as dynamically stable.")
 
+            st.write("### 🔣 Mode symmetry at Γ (irreps)")
+            calc_gamma_irreps = st.checkbox(
+                "Assign irreducible representations to phonon modes at Γ",
+                value=False,
+                help="When enabled, the standalone Python script will instantiate "
+                     "`phonopy.phonon.irreps.IrReps(...)` directly on the dynamical "
+                     "matrix and write two files into the per-structure results folder:\n\n"
+                     "• `gamma_irreps.txt` — human-readable table (Mulliken symbols, "
+                     "frequencies, degeneracies)\n"
+                     "• `gamma_irreps.yaml` — machine-readable YAML with the same info\n\n"
+                     "Frequencies in both files are written in the unit chosen above "
+                     "under **Frequency units for saved plots** (THz, meV, or cm⁻¹).\n\n"
+                     "The phonon calculation itself uses the structure exactly as "
+                     "provided (phonopy's default tight symprec) — the tolerance below "
+                     "is applied **only** when IrReps recognises the point group for "
+                     "irrep labelling, so it can label modes of a slightly-distorted "
+                     "tetragonal/hexagonal cell without changing the underlying force "
+                     "constants.")
+            phonon_params["calc_gamma_irreps"] = calc_gamma_irreps
+
+            if calc_gamma_irreps:
+                col_ir1, col_ir2 = st.columns(2)
+                with col_ir1:
+                    phonon_params["irreps_symprec"] = st.number_input(
+                        "Irreps symmetry tolerance (Å)",
+                        min_value=1e-7, max_value=1.0, value=1e-3, step=1e-4,
+                        format="%.5f",
+                        help="Loosened distance tolerance passed to `IrReps(symprec=...)` "
+                             "in the standalone script — controls only how the point "
+                             "group is recognised for irrep assignment.\n\n"
+                             "The `Phonopy(...)` constructor keeps the default tight "
+                             "1e-5 Å symprec, so the structure is used as-is for "
+                             "displacements and force constants — no symmetry-driven "
+                             "refinement happens.\n\n"
+                             "Typical values: 1e-3 Å for clean MLIP geometries, 1e-2 – "
+                             "0.1 Å for cells whose ideal symmetry was broken by "
+                             "relaxation noise or anisotropic strain.")
+                with col_ir2:
+                    phonon_params["irreps_degeneracy_tolerance"] = st.number_input(
+                        "Degeneracy tolerance (THz)",
+                        min_value=1e-5, max_value=1e-1, value=1e-3, step=1e-4,
+                        format="%.5f",
+                        help="Modes whose frequencies differ by less than this are "
+                             "treated as degenerate when matching them to point-group "
+                             "irreps. Phonopy default is 1e-4 THz; 1e-3 THz is a more "
+                             "forgiving value that handles small numerical noise from "
+                             "MLIP gradients.")
+            else:
+                phonon_params["irreps_symprec"] = 1e-3
+                phonon_params["irreps_degeneracy_tolerance"] = 1e-3
+
             with st.expander("📋 Full parameter summary", expanded=False):
                 st.json({k: (list(v) if isinstance(v, tuple) else v)
                          for k, v in phonon_params.items()
