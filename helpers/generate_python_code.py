@@ -5324,10 +5324,15 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
 
             if manual_kpath_data and not use_auto_kpath:
                 log(f"  Using manual k-path ({{len(manual_kpath_data)}} segments)")
-                all_kpts      = []
-                dist          = 0.0
-                unique_labels = []
-                unique_pos    = []
+                all_kpts          = []
+                dist              = 0.0
+                unique_labels     = []
+                unique_pos        = []
+                # Each contiguous sub-path is (start_idx, end_idx) in all_kpts.
+                # A new chunk starts wherever a segment's start_coords differ from
+                # the previous segment's end_coords (i.e., the user inserted a `|`).
+                contiguous_chunks = []
+                chunk_start_idx   = 0
 
                 cell_obj = np.array(pmg_structure.lattice.matrix)
                 rec_mat  = np.linalg.inv(cell_obj).T
@@ -5337,6 +5342,18 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     end   = np.array(seg["end_coords"],   dtype=float)
                     s_lbl = seg.get("start_label", f"P{{seg_i}}")
                     e_lbl = seg.get("end_label",   f"P{{seg_i+1}}")
+
+                    is_discontinuity = False
+                    if seg_i > 0:
+                        prev_end = np.array(
+                            manual_kpath_data[seg_i - 1]["end_coords"], dtype=float
+                        )
+                        if not np.allclose(start, prev_end, atol=1e-8):
+                            is_discontinuity = True
+
+                    if is_discontinuity:
+                        contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+                        chunk_start_idx = len(all_kpts)
 
                     if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
                         if unique_labels[-1] != s_lbl:
@@ -5348,7 +5365,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     for j in range(npoints_per_segment):
                         t   = j / (npoints_per_segment - 1)
                         kpt = start + t * (end - start)
-                        if all_kpts:
+                        # Skip distance accumulation across a discontinuity (j=0
+                        # of a new chunk) so the band-plot x-axis has no phantom gap.
+                        if all_kpts and not (is_discontinuity and j == 0):
                             dk    = (kpt - all_kpts[-1]) @ rec_mat
                             dist += float(np.linalg.norm(dk))
                         all_kpts.append(kpt)
@@ -5361,9 +5380,14 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                         unique_labels.append(e_lbl)
                         unique_pos.append(dist)
 
+                contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+
                 path_str = " → ".join(unique_labels)
-                log(f"  Manual k-path: {{path_str}}  ({{len(all_kpts)}} k-points)")
-                bands = [all_kpts]
+                log(f"  Manual k-path: {{path_str}}  ({{len(all_kpts)}} k-points, "
+                    f"{{len(contiguous_chunks)}} contiguous chunk(s))")
+                # Pass each contiguous chunk as a separate band path so that
+                # is_band_connection=True does not try to connect bands across `|`.
+                bands = [all_kpts[s:e] for (s, e) in contiguous_chunks]
 
             else:
                 try:
@@ -5490,13 +5514,51 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 log("  ✅ band.yaml captured (via temp file)")
 
             log("  Processing band structure data...")
-            band_dict  = phonon.get_band_structure_dict()
-            freq_array = np.array(band_dict["frequencies"])
-            freq_thz   = freq_array[0]
+            band_dict      = phonon.get_band_structure_dict()
+            freq_array_raw = band_dict["frequencies"]
 
+            # phonopy may return a list of per-path arrays (when `bands` has
+            # several sub-paths from a discontinuous manual k-path) or a single
+            # 3-D ndarray when there is one path. Normalize to a list of parts.
+            if isinstance(freq_array_raw, np.ndarray) and freq_array_raw.ndim == 3:
+                _freq_parts = [freq_array_raw[i] for i in range(freq_array_raw.shape[0])]
+            elif isinstance(freq_array_raw, (list, tuple)):
+                _freq_parts = [np.asarray(p) for p in freq_array_raw]
+            else:
+                _freq_parts = [np.asarray(freq_array_raw)]
+
+            # Flat (no-NaN) view for data exports / Γ-point lookup.
+            freq_thz   = np.concatenate(_freq_parts, axis=0)
+            flat_kpts  = np.concatenate([np.asarray(b) for b in bands], axis=0)
             min_len    = min(len(cumul_dist), freq_thz.shape[0])
             dist_array = np.array(cumul_dist[:min_len])
             freq_thz   = freq_thz[:min_len]
+            flat_kpts  = flat_kpts[:min_len]
+
+            # Plot view: insert a NaN row between contiguous chunks so the band
+            # plot draws clean breaks at every `|` discontinuity.
+            if len(_freq_parts) > 1:
+                _n_bands_plot = _freq_parts[0].shape[1]
+                _nan_row      = np.full((1, _n_bands_plot), np.nan)
+                _pieces_freq  = []
+                _pieces_dist  = []
+                _cursor       = 0
+                for _idx, _part in enumerate(_freq_parts):
+                    _seg_len = _part.shape[0]
+                    _seg_end = min(_cursor + _seg_len, min_len)
+                    if _seg_end <= _cursor:
+                        break
+                    if _idx > 0:
+                        _pieces_freq.append(_nan_row)
+                        _pieces_dist.append(np.array([dist_array[_cursor]]))
+                    _pieces_freq.append(_part[: _seg_end - _cursor])
+                    _pieces_dist.append(dist_array[_cursor:_seg_end])
+                    _cursor = _seg_end
+                freq_thz_plot   = np.concatenate(_pieces_freq, axis=0)
+                dist_array_plot = np.concatenate(_pieces_dist)
+            else:
+                freq_thz_plot   = freq_thz
+                dist_array_plot = dist_array
 
             log(f"  Calculating phonon DOS (mesh {{dos_mesh}})...")
             phonon.run_mesh(dos_mesh, with_eigenvectors=False)
@@ -5546,7 +5608,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             # Locates the first k-point whose fractional coords are (0, 0, 0) along
             # the user/auto k-path and dumps every band's frequency at that point.
             try:
-                _kpts_arr = np.array(bands[0])[:min_len]
+                _kpts_arr = np.asarray(flat_kpts)
                 _gamma_hits = np.where(np.linalg.norm(_kpts_arr, axis=1) < 1e-8)[0]
                 if len(_gamma_hits) > 0:
                     _gamma_idx = int(_gamma_hits[0])
@@ -5593,15 +5655,17 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 import matplotlib.ticker as ticker
 
                 # Apply the user-selected plot frequency unit (THz / meV / cm-1)
-                freq_plot     = freq_thz     * plot_freq_factor
-                dos_freq_plot = dos_freq_thz * plot_freq_factor
-                dos_per_unit  = dos_values   / plot_freq_factor
+                # freq_thz_plot / dist_array_plot include NaN row separators at
+                # `|` discontinuities so matplotlib draws clean breaks there.
+                freq_plot     = freq_thz_plot * plot_freq_factor
+                dos_freq_plot = dos_freq_thz  * plot_freq_factor
+                dos_per_unit  = dos_values    / plot_freq_factor
 
                 fig, ax = plt.subplots(figsize=(8, 6))
                 n_bands = freq_plot.shape[1]
                 _cmap = matplotlib.colormaps["rainbow"].resampled(n_bands)
                 for b in range(n_bands):
-                    ax.plot(dist_array, freq_plot[:, b],
+                    ax.plot(dist_array_plot, freq_plot[:, b],
                             color=_cmap(b), linewidth=0.9, alpha=0.85)
                 ax.axhline(0, color="red", linewidth=0.8, linestyle="--", alpha=0.6)
                 ax.set_xticks(unique_pos)
@@ -5611,7 +5675,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 )
                 for xv in unique_pos:
                     ax.axvline(xv, color="gray", linewidth=0.6, linestyle="--", alpha=0.5)
-                ax.set_xlim(dist_array[0], dist_array[-1])
+                ax.set_xlim(dist_array_plot[0], dist_array_plot[-1])
                 ax.set_xlabel("Wave vector", fontsize=13)
                 ax.set_ylabel(f"Frequency ({{plot_freq_label_mpl}})", fontsize=13)
                 ax.tick_params(axis='both', labelsize=12)
