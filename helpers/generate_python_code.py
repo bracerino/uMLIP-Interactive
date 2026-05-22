@@ -5135,6 +5135,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_steps     = phonon_params.get('pre_relax_steps', 100)
     imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
                           -phonon_params.get('imaginary_freq_threshold', 0.1))
+    calc_gamma_irreps   = bool(phonon_params.get('calc_gamma_irreps', False))
+    irreps_tol_thz      = float(phonon_params.get('irreps_degeneracy_tolerance', 1e-3))
+    irreps_symprec_val  = float(phonon_params.get('irreps_symprec', 1e-3))
 
     # Plot-only frequency units for the saved band/DOS PNGs.
     # CSV outputs are always in THz + meV (+ cm-1 for the Γ-point file).
@@ -5243,6 +5246,12 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_steps         = {pre_relax_steps}
     imaginary_tol_mev       = {imag_tol_mev}
     imaginary_tol_thz       = imaginary_tol_mev / 4.136
+    calc_gamma_irreps       = {calc_gamma_irreps!r}
+    irreps_tol_thz          = {irreps_tol_thz}
+    # Symmetry tolerance applied ONLY to the IrReps point-group recognition.
+    # Phonopy(...) itself keeps the default tight 1e-5 Å symprec, so the
+    # structure is used exactly as given for displacements / force constants.
+    irreps_symprec          = {irreps_symprec_val}
 
     # Plot-only frequency unit (band/DOS PNGs). CSV files are unit-agnostic.
     plot_freq_factor    = {plot_freq_factor}      # THz → chosen unit
@@ -5256,6 +5265,10 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     log(f"⚙️  Pre-relax: {{pre_relax}} ({{pre_relax_optimizer}}, fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)")
     log(f"⚙️  Imaginary mode tolerance: {{imaginary_tol_mev:.3f}} meV")
     log(f"⚙️  Plot frequency unit: {{plot_freq_label_log}}")
+    if calc_gamma_irreps:
+        log(f"⚙️  Γ-point irreps: enabled "
+            f"(irreps symprec {{irreps_symprec:g}} Å, "
+            f"degeneracy tol {{irreps_tol_thz:g}} THz)")
 
     reference_energies = {{}}
 {formation_ref_block}
@@ -5295,6 +5308,10 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 scaled_positions=pmg_structure.frac_coords,
                 cell=pmg_structure.lattice.matrix,
             )
+            # NOTE: leave `symprec` at phonopy's default (1e-5 Å) so the
+            # structure is used as-is — no symmetry-driven displacement
+            # reduction or refinement. The irreps block below uses its
+            # OWN, looser symprec via IrReps(symprec=irreps_symprec).
             phonon = Phonopy(phonopy_atoms,
                              supercell_matrix=supercell_matrix,
                              primitive_matrix="auto")
@@ -5629,6 +5646,103 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                         "gamma_point_frequencies.csv not written")
             except Exception as _gamma_err:
                 log(f"  ⚠️  Could not save Γ-point frequencies: {{_gamma_err}}")
+
+            # Optional: assign irreducible representations to phonon modes at Γ.
+            #
+            # We instantiate phonopy.phonon.irreps.IrReps DIRECTLY (rather than
+            # going through phonon.set_irreps) so we can pass a custom, looser
+            # `symprec` only for the point-group recognition step. The phonopy
+            # object itself was built with the default tight symprec, so the
+            # structure / displacements / force constants are untouched —
+            # the looser tolerance affects ONLY which irrep labels are assigned.
+            #
+            # The YAML writer hard-codes the filename `irreps.yaml` in cwd, so
+            # we chdir into out_folder before calling it, then rename to
+            # `gamma_irreps.yaml`.
+            if calc_gamma_irreps:
+                try:
+                    import contextlib as _ctxlib
+                    from phonopy.phonon.irreps import IrReps as _IrReps
+                    log(f"  Assigning Γ-point irreps "
+                        f"(irreps symprec {{irreps_symprec:g}} Å, "
+                        f"degeneracy tol {{irreps_tol_thz:g}} THz, "
+                        f"output unit {{plot_freq_label_log}})...")
+
+                    # phonon.run_band_structure(...) earlier already built the
+                    # dynamical matrix, so it's available here.
+                    _dm = phonon.dynamical_matrix
+                    if _dm is None:
+                        phonon.run_qpoints([[0.0, 0.0, 0.0]])
+                        _dm = phonon.dynamical_matrix
+
+                    # IrReps' `factor` is multiplied with sqrt(eigenvalue) to
+                    # produce the printed frequency. Phonopy's default factor
+                    # gives THz; multiplying by `plot_freq_factor` (THz → chosen
+                    # unit) yields meV or cm⁻¹ when the user picked them in
+                    # "Frequency units for saved plots". The degeneracy
+                    # tolerance is compared against those same frequencies, so
+                    # convert it from THz to the chosen unit as well.
+                    _ir_factor  = phonon.unit_conversion_factor * plot_freq_factor
+                    _ir_deg_tol = irreps_tol_thz * plot_freq_factor
+
+                    _ir = _IrReps(
+                        _dm,
+                        [0.0, 0.0, 0.0],
+                        factor=_ir_factor,
+                        symprec=irreps_symprec,
+                        degeneracy_tolerance=_ir_deg_tol,
+                    )
+                    _ir.run()
+
+                    _irreps_buf = io.StringIO()
+                    with _ctxlib.redirect_stdout(_irreps_buf):
+                        _ir.show(show_irreps=True)
+                    _irreps_header = (
+                        f"# Γ-point irreducible representations\\n"
+                        f"# Frequencies are reported in: {{plot_freq_label_log}}\\n"
+                        f"# IrReps symprec:         {{irreps_symprec:g}} Å\\n"
+                        f"# Degeneracy tolerance:   {{_ir_deg_tol:g}} {{plot_freq_label_log}} "
+                        f"({{irreps_tol_thz:g}} THz)\\n"
+                        f"#\\n"
+                    )
+                    _irreps_text = _irreps_header + _irreps_buf.getvalue()
+                    _irreps_txt_path = out_folder / "gamma_irreps.txt"
+                    _irreps_txt_path.write_text(_irreps_text)
+                    log(f"  💾 gamma_irreps.txt ({{plot_freq_label_log}}) "
+                        f"→ {{_irreps_txt_path}}")
+
+                    _orig_cwd = os.getcwd()
+                    try:
+                        os.chdir(out_folder)
+                        _ir.write_yaml(show_irreps=True)
+                    finally:
+                        os.chdir(_orig_cwd)
+
+                    _yaml_src = out_folder / "irreps.yaml"
+                    _yaml_dst = out_folder / "gamma_irreps.yaml"
+                    if _yaml_src.exists():
+                        if _yaml_dst.exists():
+                            _yaml_dst.unlink()
+                        _yaml_src.rename(_yaml_dst)
+                        # Prepend a YAML comment so the unit is discoverable
+                        # without consulting the txt / log.
+                        _yaml_body = _yaml_dst.read_text()
+                        _yaml_dst.write_text(
+                            f"# Frequencies in this file are reported in: "
+                            f"{{plot_freq_label_log}}\\n"
+                            f"# IrReps symprec={{irreps_symprec:g}} Å, "
+                            f"degeneracy tol={{_ir_deg_tol:g}} {{plot_freq_label_log}}\\n"
+                            + _yaml_body
+                        )
+                        log(f"  💾 gamma_irreps.yaml ({{plot_freq_label_log}}) "
+                            f"→ {{_yaml_dst}}")
+                    else:
+                        log("  ⚠️  IrReps did not produce irreps.yaml — "
+                            "the point group may not be supported "
+                            "(try a looser irreps_symprec)")
+                except Exception as _irreps_err:
+                    log(f"  ⚠️  Γ-point irreps assignment failed: {{_irreps_err}}")
+                    log("  (Try increasing irreps_symprec — band/DOS data is unaffected.)")
 
             dos_csv_path = out_folder / "phonon_dos.csv"
             pd.DataFrame({{
