@@ -413,6 +413,16 @@ def _phonon(p):
     pre_relax_fmax  = p.get('pre_relax_fmax', 0.01)
     pre_relax_steps = p.get('pre_relax_steps', 100)
     imag_tol        = p.get('imaginary_mode_tol_mev', -0.1)
+    calc_irreps     = bool(p.get('calc_gamma_irreps', False))
+    irreps_tol      = float(p.get('irreps_degeneracy_tolerance', 1e-3))
+    irreps_symprec  = float(p.get('irreps_symprec', 1e-3))
+    _UNIT_FACTORS   = {"THz": 1.0, "meV": 4.136, "cm-1": 33.35641}
+    _UNIT_LABELS    = {"THz": "THz", "meV": "meV", "cm-1": "cm-1"}
+    _plot_unit_key  = str(p.get('plot_freq_unit', 'meV'))
+    if _plot_unit_key not in _UNIT_FACTORS:
+        _plot_unit_key = 'meV'
+    plot_unit_factor = _UNIT_FACTORS[_plot_unit_key]
+    plot_unit_label  = _UNIT_LABELS[_plot_unit_key]
 
     lines = [
         "from phonopy import Phonopy",
@@ -453,6 +463,8 @@ def _phonon(p):
         "    scaled_positions=pmg.frac_coords,",
         "    cell=pmg.lattice.matrix,",
         ")",
+        "# Phonopy(...) uses its default tight symprec (1e-5 Å) → structure is",
+        "# used as-is, no symmetry-driven displacement reduction or refinement.",
         "phonon = Phonopy(ph_atoms, supercell_matrix=sc_matrix, primitive_matrix=\"auto\")",
         f"phonon.generate_displacements(distance={delta})",
         "",
@@ -584,6 +596,39 @@ def _phonon(p):
         "else:",
         "    print('No Γ (k=0) point along the path — gamma file not written')",
     ]
+
+    if calc_irreps:
+        lines += [
+            "",
+            "# Optional: assign irreducible representations to Γ-point modes.",
+            "# IrReps is instantiated DIRECTLY so a looser `symprec` can be used",
+            "# only for point-group recognition — the dynamical matrix above was",
+            "# built with phonopy's tight default symprec, so the structure / force",
+            f"# constants stay untouched. Output frequencies are in {plot_unit_label}",
+            "# (controlled by the 'Frequency units for saved plots' selector).",
+            "import io, os, contextlib",
+            "from phonopy.phonon.irreps import IrReps",
+            "ir = IrReps(",
+            "    phonon.dynamical_matrix,",
+            "    [0.0, 0.0, 0.0],",
+            f"    factor=phonon.unit_conversion_factor * {plot_unit_factor:g},   "
+            f"# THz → {plot_unit_label}",
+            f"    symprec={irreps_symprec:g},                # loose symmetry tol for irrep labels",
+            f"    degeneracy_tolerance={irreps_tol * plot_unit_factor:g},    "
+            f"# {irreps_tol:g} THz → {plot_unit_label}",
+            ")",
+            "ir.run()",
+            "buf = io.StringIO()",
+            "with contextlib.redirect_stdout(buf):",
+            "    ir.show(show_irreps=True)",
+            f"open('gamma_irreps.txt', 'w').write("
+            f"'# Frequencies in {plot_unit_label}\\n' + buf.getvalue())",
+            "ir.write_yaml(show_irreps=True)  # writes irreps.yaml in cwd",
+            "if os.path.exists('irreps.yaml'):",
+            "    os.replace('irreps.yaml', 'gamma_irreps.yaml')",
+            f"print('Γ-point irreps saved ({plot_unit_label}) "
+            f"→ gamma_irreps.txt, gamma_irreps.yaml')",
+        ]
 
     return "\n".join(lines) + "\n"
 
