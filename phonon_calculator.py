@@ -315,6 +315,10 @@ def _build_kpath_manual(segments: list, npoints: int, cell, log: Callable):
     labels: list[str] = []
     label_positions: list[float] = []
     dist = 0.0
+    # Per-k-point flag: True if this k-point is the first of a chunk that
+    # follows a `|` discontinuity. Used below to avoid adding the gap-jump
+    # to the cumulative-distance axis.
+    disc_flags: list[bool] = []
 
     for seg_idx, seg in enumerate(segments):
         start = np.array(seg["start_coords"], dtype=float)
@@ -322,6 +326,11 @@ def _build_kpath_manual(segments: list, npoints: int, cell, log: Callable):
         s_lbl = _greek(str(seg.get("start_label", f"P{seg_idx}")))
         e_lbl = _greek(str(seg.get("end_label",   f"P{seg_idx+1}")))
 
+        is_discontinuity = False
+        if seg_idx > 0:
+            prev_end = np.array(segments[seg_idx - 1]["end_coords"], dtype=float)
+            if not np.allclose(start, prev_end, atol=1e-8):
+                is_discontinuity = True
 
         if label_positions and abs(label_positions[-1] - dist) < 1e-8:
             if labels[-1] != s_lbl:
@@ -333,10 +342,11 @@ def _build_kpath_manual(segments: list, npoints: int, cell, log: Callable):
         for j in range(npoints):
             t = j / (npoints - 1)
             kpt = start + t * (end - start)
-            if len(all_kpts) > 0:
+            if len(all_kpts) > 0 and not (is_discontinuity and j == 0):
                 dk_cart = (kpt - all_kpts[-1]) @ rec
                 dist += float(np.linalg.norm(dk_cart))
             all_kpts.append(kpt)
+            disc_flags.append(is_discontinuity and j == 0)
 
 
         labels.append(e_lbl)
@@ -348,13 +358,16 @@ def _build_kpath_manual(segments: list, npoints: int, cell, log: Callable):
     rec_mat = cell.reciprocal()
     dist_array[0] = 0.0
     for i in range(1, len(kpts_array)):
-        dk = (kpts_array[i] - kpts_array[i - 1]) @ rec_mat
-        dist_array[i] = dist_array[i - 1] + float(np.linalg.norm(dk))
+        if disc_flags[i]:
+            # Discontinuity boundary — do not advance the cumulative distance.
+            dist_array[i] = dist_array[i - 1]
+        else:
+            dk = (kpts_array[i] - kpts_array[i - 1]) @ rec_mat
+            dist_array[i] = dist_array[i - 1] + float(np.linalg.norm(dk))
 
 
     label_positions_clean: list[float] = []
     labels_clean: list[str] = []
-    seg_boundary_idx = 0
     for seg_idx, seg in enumerate(segments):
         idx = seg_idx * npoints
         label_positions_clean.append(float(dist_array[min(idx, len(dist_array) - 1)]))
