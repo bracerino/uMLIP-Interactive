@@ -25,7 +25,7 @@ mace-torch==0.3.16
 chgnet==0.3.8
 sevenn==0.10.4
 #mattersim
-orb-models==0.5.5
+orb-models==0.7.0
 nequix==0.2.0
 #pet-mad==1.4.3
 
