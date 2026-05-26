@@ -21,6 +21,11 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
         "POLAR" in (actual_selected_model or "").upper()
         or isinstance(actual_model_size, str) and actual_model_size.lower().startswith("polar-")
     )
+    is_orbmol = (
+        "ORBMOL" in (actual_selected_model or "").upper()
+        or (isinstance(actual_model_size, str) and actual_model_size.lower().startswith("orbmol"))
+    )
+    is_orbmol_v2 = isinstance(actual_model_size, str) and actual_model_size == "orbmol_v2"
     _polar_charge = (polar_settings or {}).get("charge", 0)
     _polar_spin = (polar_settings or {}).get("spin", 1)
     _polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
@@ -516,31 +521,94 @@ except Exception as e:
         print(f"❌ SevenNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
-    elif "ORB" in actual_selected_model:
+    elif "ORB" in actual_selected_model.upper() or is_orbmol:
         imports_str += """
 try:
     from orb_models.forcefield import pretrained
-    from orb_models.forcefield.calculator import ORBCalculator
+    try:
+        # New location in orb-models v0.7.0+
+        from orb_models.forcefield.inference.calculator import ORBCalculator
+    except ImportError:
+        # Legacy location (older orb-models)
+        from orb_models.forcefield.calculator import ORBCalculator
 except ImportError:
     print("Error: ORB models not found. Please install with: pip install orb-models")
     exit()
 """
         precision = "float32-high" if dtype == "float32" else "float32-highest"
+        _enable_stress_outer = ""
+        _enable_stress_inner = ""
+        if is_orbmol_v2:
+            _enable_stress_outer = """
+    try:
+        orbff.enable_stress()
+        print("⚡ OrbMol-v2 stress prediction enabled")
+    except Exception as _se:
+        print(f"⚠️ OrbMol-v2 enable_stress() failed: {_se}")"""
+            _enable_stress_inner = """
+        try:
+            orbff.enable_stress()
+            print("⚡ OrbMol-v2 stress prediction enabled")
+        except Exception as _se:
+            print(f"⚠️ OrbMol-v2 enable_stress() failed: {_se}")"""
+        _orbmol_inject_outer = ""
+        _orbmol_inject_inner = ""
+        if is_orbmol:
+            _orbmol_inject_outer = f"""
+    from ase.calculators.calculator import all_changes as _ac
+    _orig_calc = calculator.calculate
+    _ORBMOL_CHARGE = {int(_polar_charge)}
+    _ORBMOL_SPIN = {int(_polar_spin)}
+    def _patched_calculate(atoms=None, properties=None, system_changes=_ac,
+                           _o=_orig_calc, _c=_ORBMOL_CHARGE, _s=_ORBMOL_SPIN):
+        if atoms is not None:
+            atoms.info["charge"] = _c
+            atoms.info["spin"] = _s
+        return _o(atoms=atoms, properties=properties, system_changes=system_changes)
+    calculator.calculate = _patched_calculate
+    print(f"⚡ OrbMol charge/spin auto-injection enabled (charge={{_ORBMOL_CHARGE}}, spin={{_ORBMOL_SPIN}})")"""
+            _orbmol_inject_inner = f"""
+        from ase.calculators.calculator import all_changes as _ac
+        _orig_calc = calculator.calculate
+        _ORBMOL_CHARGE = {int(_polar_charge)}
+        _ORBMOL_SPIN = {int(_polar_spin)}
+        def _patched_calculate(atoms=None, properties=None, system_changes=_ac,
+                               _o=_orig_calc, _c=_ORBMOL_CHARGE, _s=_ORBMOL_SPIN):
+            if atoms is not None:
+                atoms.info["charge"] = _c
+                atoms.info["spin"] = _s
+            return _o(atoms=atoms, properties=properties, system_changes=system_changes)
+        calculator.calculate = _patched_calculate"""
         calculator_setup_str = f"""
 print("Setting up ORB calculator...")
 precision = "{precision}"
 try:
     model_func = getattr(pretrained, "{actual_model_size}")
-    orbff = model_func(device="{device}", precision=precision)
-    calculator = ORBCalculator(orbff, device="{device}")
+    _orb_result = model_func(device="{device}", precision=precision)
+    # orb-models v0.7.0+ returns (model, atoms_adapter); older returns model only
+    if isinstance(_orb_result, tuple):
+        orbff, _atoms_adapter = _orb_result
+    else:
+        orbff, _atoms_adapter = _orb_result, None{_enable_stress_outer}
+    if _atoms_adapter is not None:
+        calculator = ORBCalculator(orbff, _atoms_adapter, device="{device}")
+    else:
+        calculator = ORBCalculator(orbff, device="{device}"){_orbmol_inject_outer}
     print(f"✅ ORB {actual_model_size} initialized on {device}")
 except Exception as e:
     print(f"❌ ORB initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
         model_func = getattr(pretrained, "{actual_model_size}")
-        orbff = model_func(device="cpu", precision=precision)
-        calculator = ORBCalculator(orbff, device="cpu")
+        _orb_result = model_func(device="cpu", precision=precision)
+        if isinstance(_orb_result, tuple):
+            orbff, _atoms_adapter = _orb_result
+        else:
+            orbff, _atoms_adapter = _orb_result, None{_enable_stress_inner}
+        if _atoms_adapter is not None:
+            calculator = ORBCalculator(orbff, _atoms_adapter, device="cpu")
+        else:
+            calculator = ORBCalculator(orbff, device="cpu"){_orbmol_inject_inner}
         print("✅ ORB initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ ORB CPU fallback failed: {{cpu_e}}")
@@ -1192,6 +1260,11 @@ def extract_polar_final(atoms, basename, polar_settings=None, output_dir="md_res
             f"spin={_polar_spin}, "
             f"E_field={_polar_efield} V/Å"
         )
+    if is_orbmol:
+        mace_header_lines += (
+            f"\nOrbMol: charge={_polar_charge}, "
+            f"spin={_polar_spin} (2S+1)"
+        )
     script_content = f"""
 \"\"\"
 Standalone Python script for Molecular Dynamics simulation.
@@ -1215,7 +1288,15 @@ MD Parameters:
 md_params = {md_params_script_str}
 
 is_mace_polar = {is_mace_polar}
+is_orbmol = {is_orbmol}
 polar_settings = {{"charge": {_polar_charge}, "spin": {_polar_spin}, "external_field": {list(_polar_efield)}}}
+
+def apply_orbmol_metadata(atoms, polar_settings):
+    \"\"\"Stamp OrbMol charge/spin metadata onto an Atoms object.\"\"\"
+    if not polar_settings:
+        return
+    atoms.info["charge"] = int(polar_settings.get("charge", 0))
+    atoms.info["spin"] = int(polar_settings.get("spin", 1))
 
 def run_md_simulation(atoms, basename, calculator):
     print(f"--- Starting MD for {{basename}} ---")
@@ -1233,6 +1314,11 @@ def run_md_simulation(atoms, basename, calculator):
         print(f"  ⚡ Polar metadata set — charge={{atoms.info['charge']}}, "
               f"spin={{atoms.info['spin']}}, "
               f"E_field={{atoms.info['external_field']}} V/Å")
+
+    if is_orbmol:
+        apply_orbmol_metadata(atoms, polar_settings)
+        print(f"  ⚡ OrbMol metadata set — charge={{atoms.info['charge']}}, "
+              f"spin={{atoms.info['spin']}}")
 
     try:
         MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
@@ -1858,6 +1944,11 @@ def main():
                     print(f"      ... polar metadata applied for warmup "
                           f"(charge={{atoms.info['charge']}}, spin={{atoms.info['spin']}}, "
                           f"E_field={{atoms.info['external_field']}} V/Å)")
+
+                if is_orbmol:
+                    apply_orbmol_metadata(atoms, polar_settings)
+                    print(f"      ... OrbMol metadata applied for warmup "
+                          f"(charge={{atoms.info['charge']}}, spin={{atoms.info['spin']}})")
 
                 _ = atoms.get_potential_energy()
                 print("      ... energy graph compiled.")
