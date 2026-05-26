@@ -46,7 +46,12 @@ except ImportError:
 # ORB imports
 try:
     from orb_models.forcefield import pretrained
-    from orb_models.forcefield.calculator import ORBCalculator
+    try:
+        # New location in orb-models v0.7.0+
+        from orb_models.forcefield.inference.calculator import ORBCalculator
+    except ImportError:
+        # Legacy location (older orb-models)
+        from orb_models.forcefield.calculator import ORBCalculator
     ORB_AVAILABLE = True
 except ImportError:
     ORB_AVAILABLE = False
@@ -114,6 +119,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                            custom_mace_path=None, custom_upet_path=None, polar_settings=None):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
+    is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
+                (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
@@ -126,12 +133,14 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(
-            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
             optimization_params, calc_formation_energy,
             preserve_atom_order=optimization_params.get('preserve_atom_order', False),
-            is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -143,7 +152,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(
-            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
@@ -158,6 +168,12 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             f"\nMACE-POLAR-1: charge={_ps.get('charge', 0)}, "
             f"spin={_ps.get('spin', 1)}, "
             f"E_field={_ps.get('external_field', [0.0, 0.0, 0.0])} V/Å"
+        )
+    if is_orbmol:
+        _ps = polar_settings or {}
+        config_info += (
+            f"\nOrbMol: charge={_ps.get('charge', 0)}, "
+            f"spin={_ps.get('spin', 1)} (2S+1)"
         )
     script = f"""#!/usr/bin/env python3
 \"\"\"
@@ -224,6 +240,7 @@ def main():
     Path("optimized_structures").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
     {'Path("polar_results").mkdir(exist_ok=True)' if is_mace_polar else ''}
+    {'Path("orbmol_charges").mkdir(exist_ok=True)' if is_orbmol else ''}
     {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
 
     # Create structure files
@@ -262,6 +279,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     """
 
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
+    is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
+                (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
@@ -273,12 +292,14 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
 
     if calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(
-            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     elif calc_type == "Geometry Optimization":
         calculation_code = _generate_optimization_code(
             optimization_params, calc_formation_energy,
             preserve_atom_order=optimization_params.get('preserve_atom_order', False),
-            is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
             phonon_params, optimization_params, calc_formation_energy)
@@ -290,7 +311,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
             substitutions, ga_params, calc_formation_energy, supercell_info)
     else:
         calculation_code = _generate_energy_only_code(
-            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings)
+            calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
+            is_orbmol=is_orbmol)
     config_info = ""
     if mace_head:
         config_info += f"\nMACE Head: {mace_head}"
@@ -305,6 +327,12 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
             f"\nMACE-POLAR-1: charge={_ps.get('charge', 0)}, "
             f"spin={_ps.get('spin', 1)}, "
             f"E_field={_ps.get('external_field', [0.0, 0.0, 0.0])} V/Å"
+        )
+    if is_orbmol:
+        _ps = polar_settings or {}
+        config_info += (
+            f"\nOrbMol: charge={_ps.get('charge', 0)}, "
+            f"spin={_ps.get('spin', 1)} (2S+1)"
         )
     script = f"""#!/usr/bin/env python3
 \"\"\"
@@ -374,6 +402,7 @@ def main():
     Path("optimized_structures").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
     {'Path("polar_results").mkdir(exist_ok=True)' if is_mace_polar else ''}
+    {'Path("orbmol_charges").mkdir(exist_ok=True)' if is_orbmol else ''}
     {'Path("ga_results").mkdir(exist_ok=True)' if calc_type == "GA Structure Optimization" else ''}
 
     # Find and validate POSCAR files in current directory
@@ -1970,7 +1999,9 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_sevennet = selected_model_key is not None and "SevenNet" in selected_model_key
     is_nequix = selected_model_key is not None and "Nequix" in selected_model_key
     is_mattersim = selected_model_key is not None and "MatterSim" in selected_model_key
-    is_orb = selected_model_key is not None and "ORB" in selected_model_key
+    is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
+                (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
+    is_orb = (selected_model_key is not None and "ORB" in selected_model_key.upper()) or is_orbmol
     is_mace_off = selected_model_key is not None and "OFF" in selected_model_key
     is_url_model = isinstance(model_size, str) and (
             "http://" in model_size or "https://" in model_size)
@@ -2188,11 +2219,19 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             raise e'''
     elif is_orb:
         # ORB setup
+        _orbmol_v2_flag = (model_size == "orbmol_v2")
+        _is_orbmol_flag = (isinstance(model_size, str) and model_size.lower().startswith("orbmol")) \
+            or (selected_model_key is not None and "ORBMOL" in selected_model_key.upper())
+        _orbmol_charge_default = (polar_settings or {}).get("charge", 0)
+        _orbmol_spin_default = (polar_settings or {}).get("spin", 1)
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing ORB calculator on {{device}}...")
     try:
         from orb_models.forcefield import pretrained
-        from orb_models.forcefield.calculator import ORBCalculator
+        try:
+            from orb_models.forcefield.inference.calculator import ORBCalculator
+        except ImportError:
+            from orb_models.forcefield.calculator import ORBCalculator
 
         # Convert dtype to ORB precision format
         if "{dtype}" == "float32":
@@ -2204,11 +2243,58 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
         # Get the pretrained model function by name
         model_function = getattr(pretrained, "{model_size}")
-        orbff = model_function(
+        _orb_result = model_function(
             device=device,
             precision=precision
         )
-        calculator = ORBCalculator(orbff, device=device)
+        # orb-models v0.7.0+ returns (model, atoms_adapter); older returns model only
+        if isinstance(_orb_result, tuple):
+            orbff, _atoms_adapter = _orb_result
+        else:
+            orbff, _atoms_adapter = _orb_result, None
+        if {_orbmol_v2_flag}:
+            try:
+                orbff.enable_stress()
+                print("⚡ OrbMol-v2 stress prediction enabled")
+            except Exception as _se:
+                print(f"⚠️ OrbMol-v2 enable_stress() failed: {{_se}}")
+        if _atoms_adapter is not None:
+            calculator = ORBCalculator(orbff, _atoms_adapter, device=device)
+        else:
+            calculator = ORBCalculator(orbff, device=device)
+        if {_is_orbmol_flag}:
+            from ase.calculators.calculator import all_changes as _ac
+            _orig_calc = calculator.calculate
+            _ORBMOL_CHARGE = {_orbmol_charge_default}
+            _ORBMOL_SPIN = {_orbmol_spin_default}
+            # Install forward hook on LatentChargeHead (OrbMol-v2 only) to capture per-atom charges
+            _orbmol_charge_slot = {{}}
+            try:
+                for _nm, _sub in orbff.named_modules():
+                    if type(_sub).__name__ == "LatentChargeHead":
+                        def _orbmol_hook(_m, _i, _o, _s=_orbmol_charge_slot):
+                            try:
+                                _s["v"] = _o.detach().cpu().numpy()
+                            except Exception:
+                                pass
+                        _sub.register_forward_hook(_orbmol_hook)
+                        print("⚡ OrbMol latent-charge capture hook installed")
+                        break
+            except Exception as _he:
+                print(f"⚠️ Could not install OrbMol charge hook: {{_he}}")
+            def _patched_calculate(atoms=None, properties=None, system_changes=_ac,
+                                   _o=_orig_calc, _c=_ORBMOL_CHARGE, _s=_ORBMOL_SPIN,
+                                   _slot=_orbmol_charge_slot, _calc=calculator):
+                if atoms is not None:
+                    atoms.info["charge"] = _c
+                    atoms.info["spin"] = _s
+                _slot.pop("v", None)
+                _ret = _o(atoms=atoms, properties=properties, system_changes=system_changes)
+                if _slot.get("v") is not None:
+                    _calc.results["latent_charges"] = _slot["v"]
+                return _ret
+            calculator.calculate = _patched_calculate
+            print(f"⚡ OrbMol charge/spin auto-injection enabled (charge={{_ORBMOL_CHARGE}}, spin={{_ORBMOL_SPIN}})")
         print(f"✅ ORB {model_size} initialized successfully on {{device}}")
 
     except Exception as e:
@@ -2217,11 +2303,54 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 model_function = getattr(pretrained, "{model_size}")
-                orbff = model_function(
+                _orb_result = model_function(
                     device="cpu",
                     precision=precision
                 )
-                calculator = ORBCalculator(orbff, device="cpu")
+                if isinstance(_orb_result, tuple):
+                    orbff, _atoms_adapter = _orb_result
+                else:
+                    orbff, _atoms_adapter = _orb_result, None
+                if {_orbmol_v2_flag}:
+                    try:
+                        orbff.enable_stress()
+                        print("⚡ OrbMol-v2 stress prediction enabled")
+                    except Exception as _se:
+                        print(f"⚠️ OrbMol-v2 enable_stress() failed: {{_se}}")
+                if _atoms_adapter is not None:
+                    calculator = ORBCalculator(orbff, _atoms_adapter, device="cpu")
+                else:
+                    calculator = ORBCalculator(orbff, device="cpu")
+                if {_is_orbmol_flag}:
+                    from ase.calculators.calculator import all_changes as _ac
+                    _orig_calc = calculator.calculate
+                    _ORBMOL_CHARGE = {_orbmol_charge_default}
+                    _ORBMOL_SPIN = {_orbmol_spin_default}
+                    _orbmol_charge_slot = {{}}
+                    try:
+                        for _nm, _sub in orbff.named_modules():
+                            if type(_sub).__name__ == "LatentChargeHead":
+                                def _orbmol_hook(_m, _i, _o, _s=_orbmol_charge_slot):
+                                    try:
+                                        _s["v"] = _o.detach().cpu().numpy()
+                                    except Exception:
+                                        pass
+                                _sub.register_forward_hook(_orbmol_hook)
+                                break
+                    except Exception:
+                        pass
+                    def _patched_calculate(atoms=None, properties=None, system_changes=_ac,
+                                           _o=_orig_calc, _c=_ORBMOL_CHARGE, _s=_ORBMOL_SPIN,
+                                           _slot=_orbmol_charge_slot, _calc=calculator):
+                        if atoms is not None:
+                            atoms.info["charge"] = _c
+                            atoms.info["spin"] = _s
+                        _slot.pop("v", None)
+                        _ret = _o(atoms=atoms, properties=properties, system_changes=system_changes)
+                        if _slot.get("v") is not None:
+                            _calc.results["latent_charges"] = _slot["v"]
+                        return _ret
+                    calculator.calculate = _patched_calculate
                 print("✅ ORB initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
@@ -2498,7 +2627,8 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     return calc_code
 
 
-def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar_settings=None):
+def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar_settings=None,
+                               is_orbmol=False):
     """Generate code for energy-only calculations."""
     polar_charge = (polar_settings or {}).get("charge", 0)
     polar_spin = (polar_settings or {}).get("spin", 1)
@@ -2507,6 +2637,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
     results = []
     is_mace_polar = {is_mace_polar}
+    is_orbmol = {is_orbmol}
     polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
     polar_results_all = []
     print(f"📊 Found {{len(structure_files)}} structure files")
@@ -2560,6 +2691,13 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
                 print(f"  ⚡ Polar metadata set — charge={atoms.info['charge']}, "
                       f"spin={atoms.info['spin']}, "
                       f"E_field={atoms.info['external_field']} V/Å")
+
+            if is_orbmol:
+                atoms.info["charge"] = int(polar_settings.get("charge", 0))
+                atoms.info["spin"] = int(polar_settings.get("spin", 1))
+                print(f"  ⚡ OrbMol metadata set — charge={atoms.info['charge']}, "
+                      f"spin={atoms.info['spin']}")
+                Path("orbmol_charges").mkdir(exist_ok=True)
 
             print(f"  🔬 Calculating energy for {len(atoms)} atoms...")
             energy = atoms.get_potential_energy()
@@ -2633,6 +2771,21 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
             print(f"  ✅ Energy: {energy:.6f} eV")'''
 
     code += '''
+            if is_orbmol:
+                print(f"  ⚡ Extracting OrbMol latent charges for {filename}...")
+                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                if not _base_name_orbmol:
+                    _base_name_orbmol = f"structure_{i+1}"
+                orbmol_data = extract_orbmol_charges(atoms, filename)
+                if orbmol_data.get("success"):
+                    save_orbmol_charges(orbmol_data, atoms, _base_name_orbmol, output_dir="orbmol_charges")
+                    result["orbmol_charge_min_e"] = orbmol_data["charge_min"]
+                    result["orbmol_charge_max_e"] = orbmol_data["charge_max"]
+                    result["orbmol_charge_sum_e"] = orbmol_data["charge_sum"]
+                    result["orbmol_json"] = f"orbmol_charges/orbmol_{_base_name_orbmol}.json"
+                else:
+                    print(f"  ⚠️ OrbMol charges unavailable: {orbmol_data.get('error')}")
+
             if is_mace_polar:
                 print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
                 base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
@@ -3733,6 +3886,60 @@ def apply_polar_metadata(atoms, polar_settings):
     atoms.info["external_field"] = list(polar_settings.get("external_field", [0.0, 0.0, 0.0]))
 
 
+def extract_orbmol_charges(atoms, structure_name=None):
+    \"\"\"Extract OrbMol-v2 per-atom latent charges from calculator.results.
+
+    Returns a dict {success, charges, charge_min, charge_max, charge_sum} or
+    {success: False, error} when the model has no LatentChargeHead.
+    \"\"\"
+    try:
+        res = atoms.calc.results if (hasattr(atoms, 'calc') and atoms.calc is not None) else {}
+        charges = res.get("latent_charges")
+        if charges is None:
+            return {"success": False, "error": "latent_charges not captured (not an OrbMol-v2 model?)"}
+        charges = np.asarray(charges, dtype=float).reshape(-1)
+        return {
+            "success": True,
+            "charges": charges.tolist(),
+            "charge_min": float(charges.min()),
+            "charge_max": float(charges.max()),
+            "charge_sum": float(charges.sum()),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def save_orbmol_charges(orbmol_data, atoms, base_name, output_dir="orbmol_charges"):
+    \"\"\"Save OrbMol-v2 per-atom latent charges to JSON + CSV.\"\"\"
+    if not orbmol_data or not orbmol_data.get("success"):
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    symbols = atoms.get_chemical_symbols()
+    charges = orbmol_data["charges"]
+
+    json_path = os.path.join(output_dir, f"orbmol_{base_name}.json")
+    payload = {
+        "structure": base_name,
+        "num_atoms": len(charges),
+        "symbols": symbols,
+        "charges_e": charges,
+        "charge_min_e": orbmol_data["charge_min"],
+        "charge_max_e": orbmol_data["charge_max"],
+        "charge_sum_e": orbmol_data["charge_sum"],
+    }
+    with open(json_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(f"    💾 Saved OrbMol charges JSON: {json_path}")
+
+    csv_path = os.path.join(output_dir, f"orbmol_{base_name}_charges.csv")
+    rows = [
+        {"atom_index": i, "element": symbols[i], "charge_e": charges[i]}
+        for i in range(len(charges))
+    ]
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    print(f"    💾 Saved per-atom CSV: {csv_path}")
+
+
 def wrap_positions_in_cell(atoms):
     wrapped_atoms = atoms.copy()
     fractional_coords = wrapped_atoms.get_scaled_positions()
@@ -4319,7 +4526,7 @@ class OptimizationLogger:
 
 
 def _generate_optimization_code(optimization_params, calc_formation_energy,preserve_atom_order=False,
-                                is_mace_polar=False, polar_settings=None):
+                                is_mace_polar=False, polar_settings=None, is_orbmol=False):
     optimizer = optimization_params.get('optimizer', 'BFGS')
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
@@ -4360,6 +4567,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     force_divergence_threshold = {force_divergence_threshold}
     preserve_atom_order = {preserve_atom_order}
     is_mace_polar = {is_mace_polar}
+    is_orbmol = {is_orbmol}
     polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
     polar_results_all = []
 
@@ -4411,6 +4619,13 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                 print(f"  ⚡ Polar metadata set — charge={atoms.info['charge']}, "
                       f"spin={atoms.info['spin']}, "
                       f"E_field={atoms.info['external_field']} V/Å")
+
+            if is_orbmol:
+                atoms.info["charge"] = int(polar_settings.get("charge", 0))
+                atoms.info["spin"] = int(polar_settings.get("spin", 1))
+                print(f"  ⚡ OrbMol metadata set — charge={atoms.info['charge']}, "
+                      f"spin={atoms.info['spin']}")
+                Path("orbmol_charges").mkdir(exist_ok=True)
 
             print(f"  📊 Structure has {len(atoms)} atoms")
             if fix_symmetry:
@@ -4583,25 +4798,26 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                     except:
                         max_stress = 0.0
 
-                    # Check energy convergence
-                    energy_converged = False
+                    # Convergence — force (and stress for cell modes) only, matching
+                    # standard ASE optimizer behavior. Energy change is logged for reference
+                    # but is NOT required for convergence.
+                    energy_change = None
                     if logger.trajectory and len(logger.trajectory) > 1:
                         energy_change = abs(logger.trajectory[-1]['energy'] - logger.trajectory[-2]['energy'])
-                        energy_converged = energy_change < ediff
 
                     # Determine convergence
                     if opt_mode == "atoms_only":
                         force_converged = max_force < fmax
                         stress_converged = True
-                        converged = force_converged and energy_converged
+                        converged = force_converged
                     elif opt_mode == "cell_only":
                         force_converged = True
                         stress_converged = max_stress < stress_threshold
-                        converged = stress_converged and energy_converged
+                        converged = stress_converged
                     else:  # Both
                         force_converged = max_force < fmax
                         stress_converged = max_stress < stress_threshold
-                        converged = force_converged and stress_converged and energy_converged
+                        converged = force_converged and stress_converged
 
                     if converged:
                         print(f"  ✅ Tetragonal optimization converged at step {step + 1}!")
@@ -4609,7 +4825,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                             print(f"     Stress: {max_stress:.4f} < {stress_threshold} GPa ✓")
                         if opt_mode != "cell_only":
                             print(f"     Force: {max_force:.4f} < {fmax} eV/Å ✓")
-                        print(f"     Energy change: {energy_change:.2e} < {ediff} eV ✓")
+                        if energy_change is not None:
+                            print(f"     Energy change: {energy_change:.2e} eV (informational)")
                         break
 
                     if step >= max_steps - 1:
@@ -4782,6 +4999,31 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             result["formation_energy_eV_per_atom"] = formation_energy'''
 
     code += '''
+
+            if is_orbmol:
+                print(f"  ⚡ Extracting OrbMol latent charges for {filename}...")
+                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                if not _base_name_orbmol:
+                    _base_name_orbmol = f"structure_{i+1}"
+                # Re-stamp OrbMol metadata on final_atoms and trigger a fresh singlepoint
+                # so the LatentChargeHead hook fires for the final geometry.
+                if not hasattr(final_atoms, "calc") or final_atoms.calc is None:
+                    final_atoms.calc = calculator
+                final_atoms.info["charge"] = int(polar_settings.get("charge", 0))
+                final_atoms.info["spin"] = int(polar_settings.get("spin", 1))
+                try:
+                    _ = final_atoms.get_potential_energy()
+                except Exception as _orb_sp_err:
+                    print(f"    ⚠️ OrbMol singlepoint on final geometry failed: {_orb_sp_err}")
+                orbmol_data = extract_orbmol_charges(final_atoms, filename)
+                if orbmol_data.get("success"):
+                    save_orbmol_charges(orbmol_data, final_atoms, _base_name_orbmol, output_dir="orbmol_charges")
+                    result["orbmol_charge_min_e"] = orbmol_data["charge_min"]
+                    result["orbmol_charge_max_e"] = orbmol_data["charge_max"]
+                    result["orbmol_charge_sum_e"] = orbmol_data["charge_sum"]
+                    result["orbmol_json"] = f"orbmol_charges/orbmol_{_base_name_orbmol}.json"
+                else:
+                    print(f"  ⚠️ OrbMol charges unavailable: {orbmol_data.get('error')}")
 
             if is_mace_polar:
                 print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
