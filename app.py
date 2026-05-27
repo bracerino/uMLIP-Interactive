@@ -4340,7 +4340,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.4 · 5/24/2026
+            v0.9.4.2 · 5/27/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6874,6 +6874,7 @@ with tab_st:
                 mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
+                polar_settings=st.session_state.get('polar_settings'),
             )
 
         if st.session_state.get('core_preview_code'):
