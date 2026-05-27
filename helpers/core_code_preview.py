@@ -5,7 +5,8 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           neb_params=None, tensile_params=None,
                           mace_head=None,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
-                          custom_mace_path=None, custom_upet_path=None):
+                          custom_mace_path=None, custom_upet_path=None,
+                          polar_settings=None):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -19,6 +20,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             selected_model, model_size, device, dtype,
             mace_head, mace_dispersion, mace_dispersion_xc,
             custom_mace_path, custom_upet_path,
+            polar_settings=polar_settings,
         )
         effective_model_label = selected_model or model_size
 
@@ -88,7 +90,8 @@ def _fairchem_calculator_snippet(md_params, device):
 
 def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
-                        custom_mace_path, custom_upet_path):
+                        custom_mace_path, custom_upet_path,
+                        polar_settings=None):
 
     if custom_mace_path:
         args = [f'model="{custom_mace_path}"']
@@ -177,12 +180,49 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
 
     if "ORB" in (selected_model or ""):
         prec = "float32-high" if dtype == "float32" else "float32-highest"
-        return (
-            f'from orb_models.forcefield import pretrained\n'
-            f'from orb_models.forcefield.calculator import ORBCalculator\n'
-            f'orbff = pretrained.{model_size}(device="{device}", precision="{prec}")\n'
-            f'calculator = ORBCalculator(orbff, device="{device}")'
-        )
+        is_orbmol = isinstance(model_size, str) and model_size.lower().startswith("orbmol")
+        lines = [
+            "from orb_models.forcefield import pretrained",
+            "try:",
+            "    # orb-models v0.7.0+",
+            "    from orb_models.forcefield.inference.calculator import ORBCalculator",
+            "except ImportError:",
+            "    # legacy location (older orb-models)",
+            "    from orb_models.forcefield.calculator import ORBCalculator",
+            "",
+            f'orbff = pretrained.{model_size}(device="{device}", precision="{prec}")',
+            "# orb-models v0.7.0+ returns (model, atoms_adapter); older returns the model only",
+            "if isinstance(orbff, tuple):",
+            "    orbff, _atoms_adapter = orbff",
+            "else:",
+            "    _atoms_adapter = None",
+        ]
+        if is_orbmol and model_size == "orbmol_v2":
+            lines.append("orbff.enable_stress()   # OrbMol-v2 supports stress prediction")
+        lines += [
+            "if _atoms_adapter is not None:",
+            f'    calculator = ORBCalculator(orbff, _atoms_adapter, device="{device}")',
+            "else:",
+            f'    calculator = ORBCalculator(orbff, device="{device}")',
+        ]
+        if is_orbmol:
+            ps = polar_settings or {}
+            try:
+                charge = int(ps.get('charge', 0))
+            except (TypeError, ValueError):
+                charge = 0
+            try:
+                spin = int(ps.get('spin', 1))
+            except (TypeError, ValueError):
+                spin = 1
+            lines += [
+                "",
+                "# OrbMol is a molecular model: it needs the total charge and spin",
+                "# multiplicity of the system, set on atoms.info before any calculation.",
+                f"atoms.info['charge'] = {charge}   # net charge (integer)",
+                f"atoms.info['spin'] = {spin}   # spin multiplicity (2S+1)",
+            ]
+        return "\n".join(lines)
 
     if "OFF" in (selected_model or ""):
         return (
