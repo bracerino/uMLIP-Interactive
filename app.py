@@ -95,6 +95,7 @@ from helpers.tensile_test import (
 )
 
 from helpers.generate_md_script import generate_md_python_script
+from helpers.structure_preview import render_structure_preview
 
 import py3Dmol
 from pymatgen.core import Structure
@@ -5175,41 +5176,10 @@ with tab1:
         )
 
     if True:
-        show_preview = st.checkbox("Show Structure Preview & MACE Compatibility", value=False)
+        show_preview = st.checkbox("Show Structure Preview", value=False)
 
         if show_preview:
-            st.header("2. Structure Preview & MACE Compatibility")
-
-            structure_names = list(st.session_state.structures.keys())
-
-            for i, (name, structure) in enumerate(st.session_state.structures.items()):
-                with st.expander(f"Structure {i + 1}: {name}"):
-                    col1, col2 = st.columns([1, 1.5])
-
-                    with col1:
-                        st.iframe(view_structure(structure, height=250, width=350), height=260)
-
-                    with col2:
-                        st.write(f"**Formula:** {structure.composition.reduced_formula}")
-                        st.write(f"**Number of atoms:** {structure.num_sites}")
-                        st.write(f"**Lattice parameters:**")
-                        st.write(f"  a = {structure.lattice.a:.3f} Å")
-                        st.write(f"  b = {structure.lattice.b:.3f} Å")
-                        st.write(f"  c = {structure.lattice.c:.3f} Å")
-
-                        is_compatible, unsupported, elements, detected_model_type = check_mace_compatibility(structure,
-                                                                                                             selected_model)
-
-                        if is_compatible:
-                            st.success(f"✅ Compatible with {detected_model_type}")
-                        else:
-                            st.error(f"❌ Unsupported elements: {', '.join(unsupported)}")
-
-                        st.write(f"**Elements:** {', '.join(elements)}")
-                        if hasattr(structure, 'constraints_info') and structure.constraints_info:
-                            st.write("📌 **Selective Dynamics:** Present (some atoms fixed)")
-                        else:
-                            st.write("🔄 **Selective Dynamics:** None (all atoms free to move)")
+            render_structure_preview(st.session_state.structures)
 
         st.divider()
 
