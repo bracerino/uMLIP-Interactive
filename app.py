@@ -96,6 +96,7 @@ from helpers.tensile_test import (
 
 from helpers.generate_md_script import generate_md_python_script
 from helpers.structure_preview import render_structure_preview
+from helpers.postprocessing_scripts import render_postprocessing_panel
 
 import py3Dmol
 from pymatgen.core import Structure
@@ -1359,8 +1360,11 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
                 temp_atoms = atoms.copy()
                 temp_atoms.calc = calculator
-                opt = FIRE(temp_atoms, logfile=None) if opt_name == 'FIRE'\
-                      else LBFGS(temp_atoms, logfile=None)
+                lattice_mode = phonon_params.get('pre_relax_lattice_mode', 'none')
+                relax_target, relax_desc = build_relax_target(temp_atoms, lattice_mode)
+                log_queue.put(f"  Pre-relax target: {relax_desc}")
+                opt = FIRE(relax_target, logfile=None) if opt_name == 'FIRE'\
+                      else LBFGS(relax_target, logfile=None)
                 opt.run(fmax=fmax_crit, steps=max_steps)
 
                 atoms = temp_atoms
@@ -2073,6 +2077,10 @@ class OptimizationLogger:
 
         if optimizer is not None and hasattr(optimizer, 'atoms'):
             atoms = optimizer.atoms
+            # When the optimiser wraps a cell filter (UnitCellFilter / ExpCellFilter),
+            # unwrap to the underlying Atoms so .cell/.positions are available.
+            if hasattr(atoms, 'atoms'):
+                atoms = atoms.atoms
             self.step_count += 1
             forces = atoms.get_forces()
             max_force = np.max(np.linalg.norm(forces, axis=1))
@@ -2562,6 +2570,35 @@ def create_cell_filter(atoms, optimization_params):
         else:
             mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
             return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+
+
+# Lattice-relaxation options shared by the Phonon and Elastic pre-optimisation.
+LATTICE_OPT_LABELS = {
+    "Atomic positions only": "none",
+    "Atoms + lattice parameters (a, b, c; fix angles)": "lengths",
+    "Atoms + full lattice (lengths + angles)": "full",
+}
+
+
+def build_relax_target(atoms, lattice_mode):
+    """Wrap ``atoms`` in a cell filter for a pre-relaxation step.
+
+    ``lattice_mode``:
+        ``'none'``    – optimise atomic positions only (cell held fixed)
+        ``'lengths'`` – optimise atoms + a, b, c lengths (angles fixed)
+        ``'full'``    – optimise atoms + full cell (lengths and angles)
+
+    Returns ``(opt_target, description)``. The optimiser is run on
+    ``opt_target`` but the underlying ``atoms`` object is updated in place.
+    Falls back to atoms-only when the cell-filter classes are unavailable.
+    """
+    if lattice_mode in ("lengths", "full") and CELL_OPT_AVAILABLE:
+        if lattice_mode == "lengths":
+            mask = [True, True, True, False, False, False]
+            return (UnitCellFilter(atoms, mask=mask),
+                    "atoms + lattice lengths (a, b, c; angles fixed)")
+        return ExpCellFilter(atoms), "atoms + full lattice (lengths + angles)"
+    return atoms, "atomic positions only"
 
 
 def check_selective_dynamics(atoms):
@@ -4036,25 +4073,28 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             )
                             temp_atoms = atoms.copy()
                             temp_atoms.calc = calculator
+                            lattice_mode = elastic_params.get('pre_opt_lattice_mode', 'none')
+                            relax_target, relax_desc = build_relax_target(temp_atoms, lattice_mode)
+                            log_queue.put(f"  Pre-elastic optimization target: {relax_desc}")
                             temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt")
                             try:
                                 # Select optimizer
                                 if opt_name == "LBFGS":
-                                    temp_optimizer = LBFGS(temp_atoms, logfile=None)
+                                    temp_optimizer = LBFGS(relax_target, logfile=None)
                                 elif opt_name == "FIRE":
-                                    temp_optimizer = FIRE(temp_atoms, logfile=None)
+                                    temp_optimizer = FIRE(relax_target, logfile=None)
                                 elif opt_name == "BFGSLineSearch (QuasiNewton)":
-                                    temp_optimizer = BFGSLineSearch(temp_atoms, logfile=None)
+                                    temp_optimizer = BFGSLineSearch(relax_target, logfile=None)
                                 elif opt_name == "LBFGSLineSearch":
-                                    temp_optimizer = LBFGSLineSearch(temp_atoms, logfile=None)
+                                    temp_optimizer = LBFGSLineSearch(relax_target, logfile=None)
                                 elif opt_name == "MDMin":
-                                    temp_optimizer = MDMin(temp_atoms, logfile=None)
+                                    temp_optimizer = MDMin(relax_target, logfile=None)
                                 elif opt_name == "SciPyFminBFGS":
-                                    temp_optimizer = SciPyFminBFGS(temp_atoms, logfile=None)
+                                    temp_optimizer = SciPyFminBFGS(relax_target, logfile=None)
                                 elif opt_name == "SciPyFminCG":
-                                    temp_optimizer = SciPyFminCG(temp_atoms, logfile=None)
+                                    temp_optimizer = SciPyFminCG(relax_target, logfile=None)
                                 else:  # BFGS default
-                                    temp_optimizer = BFGS(temp_atoms, logfile=None)
+                                    temp_optimizer = BFGS(relax_target, logfile=None)
 
                                 temp_optimizer.attach(lambda: temp_logger(temp_optimizer), interval=1)
                                 temp_optimizer.run(fmax=fmax_val, steps=pre_opt_steps)
@@ -4341,7 +4381,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.4.2 · 5/27/2026
+            v0.9.5 · 5/30/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -4810,246 +4850,9 @@ if st.session_state.calculation_running:
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
 
-tab1, tab_st, tab2, tab3, tab4, tab4_1,tab_vir, tab5,  = st.tabs(
+tab1, tab_st, tab2, tab3, tab4 = st.tabs(
     ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence", "🧬 MD Trajectories and Analysis", "🔧 Virtual Tensile Tests",  "🔬 MACE Models Info"])
-
-with tab_vir:
-    st.header("Virtual Tensile Test Results")
-
-    tensile_results_list = [r for r in st.session_state.results if
-                            r['calc_type'] == 'Virtual Tensile Test' and r.get('tensile_results')]
-
-    if tensile_results_list:
-        st.subheader("🔧 Mechanical Properties from Tensile Testing")
-
-        if len(tensile_results_list) == 1:
-            selected_tensile = tensile_results_list[0]
-        else:
-            tensile_names = [r['name'] for r in tensile_results_list]
-            selected_name = st.selectbox("Select structure:", tensile_names, key="tensile_selector")
-            selected_tensile = next(r for r in tensile_results_list if r['name'] == selected_name)
-
-        tensile_data = selected_tensile['tensile_results']
-
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-
-        with col_m1:
-            st.metric("Ultimate Stress", f"{tensile_data['ultimate_stress']:.2f} GPa")
-
-        with col_m2:
-            if tensile_data['youngs_modulus']:
-                st.metric("Young's Modulus", f"{tensile_data['youngs_modulus']:.2f} GPa")
-            else:
-                st.metric("Young's Modulus", "N/A")
-
-        with col_m3:
-            if tensile_data['yield_strain']:
-                st.metric("Yield Strain", f"{tensile_data['yield_strain']:.2f}%")
-            else:
-                st.metric("Yield Strain", "N/A")
-
-        with col_m4:
-            st.metric("Max Strain", f"{tensile_data['max_strain_reached']:.2f}%")
-
-        st.subheader("📊 Stress-Strain Analysis")
-        fig_tensile = create_stress_strain_plot(tensile_data)
-        st.plotly_chart(fig_tensile, width='stretch')
-
-        with st.expander("Test Parameters"):
-            params_data = {
-                'Parameter': [
-                    'Strain Direction',
-                    'Temperature',
-                    'Strain Rate',
-                    'Max Strain',
-                    'Timestep',
-                    'Equilibration Steps'
-                ],
-                'Value': [
-                    tensile_data['strain_direction'],
-                    f"{tensile_data['tensile_params']['temperature']} K",
-                    f"{tensile_data['tensile_params']['strain_rate']}%/ps",
-                    f"{tensile_data['tensile_params']['max_strain']}%",
-                    f"{tensile_data['tensile_params']['timestep']} fs",
-                    f"{tensile_data['tensile_params']['equilibration_steps']}"
-                ]
-            }
-            st.dataframe(params_data, width='stretch', hide_index=True)
-
-        st.subheader("📥 Download Data")
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
-
-        with col_dl1:
-            tensile_json = export_tensile_results(tensile_data, selected_tensile['name'])
-            st.download_button(
-                label="📊 Download Results (JSON)",
-                data=tensile_json,
-                file_name=f"tensile_test_{selected_tensile['name'].replace('.', '_')}.json",
-                mime="application/json",
-                type='primary'
-            )
-
-        with col_dl2:
-            if tensile_data.get('trajectory_data'):
-                from helpers.tensile_test import create_tensile_trajectory_xyz
-
-                xyz_content = create_tensile_trajectory_xyz(
-                    tensile_data['trajectory_data'],
-                    selected_tensile['name'],
-                    tensile_data['tensile_params']
-                )
-
-                if xyz_content:
-                    st.download_button(
-                        label="📥 Download Trajectory (XYZ)",
-                        data=xyz_content,
-                        file_name=f"tensile_trajectory_{selected_tensile['name'].replace('.', '_')}.xyz",
-                        mime="text/plain",
-                        type='primary'
-                    )
-            else:
-                st.info("No trajectory data available")
-with tab4_1:
-    st.header("MD Trajectories and Analysis")
-
-    st.write("DEBUG INFO:")
-    st.write(f"'md_trajectories' in session_state: {'md_trajectories' in st.session_state}")
-    if 'md_trajectories' in st.session_state:
-        st.write(f"md_trajectories keys: {list(st.session_state.md_trajectories.keys())}")
-        for key, value in st.session_state.md_trajectories.items():
-            st.write(
-                f"  {key}: success={value.get('success', 'N/A')}, has_trajectory={len(value.get('trajectory_data', [])) > 0}")
-    st.write("---")
-
-    if 'md_trajectories' in st.session_state and st.session_state.md_trajectories:
-        for structure_name, result in st.session_state.md_trajectories.items():
-            if result['success']:
-                st.subheader(f"Results for: {structure_name}")
-
-                trajectory_data = result.get('trajectory_data', [])
-                md_params = result.get('md_params', {})
-
-                if trajectory_data:
-                    fig_main, fig_pressure, fig_conservation = create_md_analysis_plots(
-                        trajectory_data,
-                        md_params
-                    )
-
-                    if fig_main:
-                        st.plotly_chart(fig_main, width='stretch')
-
-                    if fig_pressure:
-                        st.subheader("Pressure Evolution")
-                        st.plotly_chart(fig_pressure, width='stretch')
-
-                    if fig_conservation:
-                        st.subheader("Energy Conservation")
-                        st.plotly_chart(fig_conservation, width='stretch')
-
-                    if md_params.get('ensemble') == 'NPT':
-                        st.subheader("NPT Cell Evolution Analysis")
-                        st.info(
-                            "📊 Tracking lattice parameters, volume, angles, and density changes during NPT simulation")
-
-                        npt_fig = create_npt_analysis_plots(trajectory_data, md_params)
-                        if npt_fig:
-                            st.plotly_chart(npt_fig, width='stretch')
-
-                        # NPT metrics
-                        final_data = trajectory_data[-1]
-                        initial_data = trajectory_data[0]
-
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric(
-                                "Volume Change",
-                                f"{final_data['volume']:.2f} Å³",
-                                f"{((final_data['volume'] - initial_data['volume']) / initial_data['volume'] * 100):.2f}%"
-                            )
-                        with col2:
-                            if 'mass' in final_data and final_data['volume'] > 0:
-                                final_density = (final_data['mass'] / final_data['volume']) * 1.66054
-                                st.metric("Final Density", f"{final_density:.3f} g/cm³")
-                        with col3:
-                            if final_data.get('pressure') is not None:
-                                st.metric("Final Pressure", f"{final_data['pressure']:.2f} GPa")
-
-                    st.markdown("---")
-
-                    st.subheader("Download Trajectory")
-
-                    element_symbols_list = None
-                    if structure_name in st.session_state.structures:
-                        try:
-                            element_symbols_list = [site.specie.symbol for site in
-                                                    st.session_state.structures[structure_name]]
-                        except AttributeError:
-                            try:
-                                element_symbols_list = st.session_state.structures[
-                                    structure_name].get_chemical_symbols()
-                            except:
-                                pass
-
-                    xyz_content = create_md_trajectory_xyz(
-                        trajectory_data,
-                        structure_name,
-                        md_params,
-                        element_symbols=element_symbols_list
-                    )
-
-                    st.download_button(
-                        label="📥 Download MD Trajectory (XYZ)",
-                        data=xyz_content,
-                        file_name=f"md_trajectory_{structure_name.replace('.', '_')}.xyz",
-                        mime="text/plain",
-                        help="Extended XYZ format with cell parameters, velocities, and energies",
-                        type='primary'
-                    )
-
-                    json_export = export_md_results(result, structure_name)
-                    if json_export:
-                        st.download_button(
-                            label="📊 Download MD Summary (JSON)",
-                            data=json_export,
-                            file_name=f"md_summary_{structure_name.replace('.', '_')}.json",
-                            mime="application/json",
-                            help="JSON file with MD parameters and statistics"
-                        )
-
-                else:
-                    st.warning(f"No trajectory data available for {structure_name}")
-
-    elif st.session_state.calculation_running:
-        st.info("🔄 MD simulation in progress... Results will appear here when complete.")
-
-    else:
-        st.info("Run an MD simulation to see trajectory analysis and results here.")
-        st.markdown("""
-        **Available MD Features:**
-        - Energy, temperature, and pressure evolution plots
-        - **NPT-specific:** Cell parameter evolution, volume changes, density tracking
-        - Trajectory download in extended XYZ format
-        - Summary statistics export
-        """)
-
-with tab5:
-    display_mace_models_info()
-    st.markdown("---")
-
-    create_citation_info()
-
-    st.markdown("---")
-
-    st.info("""
-    💡 **Tips for Model Selection:**
-
-    • **For general use**: MACE-MP-0b3 (medium) - Latest and most stable
-    • **For highest accuracy**: MACE-MPA-0 (medium) - State-of-the-art performance  
-    • **For phonon calculations**: MACE-OMAT-0 (medium) - Excellent vibrational properties
-    • **For fast screening**: Any small model - Lower computational cost
-    • **For complex systems**: Large models - Higher accuracy for difficult cases
-    """)
+     "📈 Optimization Trajectories and Convergence"])
 
 with tab1:
     st.sidebar.header("Upload Structure Files")
@@ -5158,18 +4961,21 @@ with tab1:
           border-radius: 8px;
           font-family: Arial, sans-serif;
           color: #0d47a1;
-          max-width: 800px;
+          max-width: 1100px;
           margin: 10px 0;
         ">
-          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file 
-          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).<br><br>
-
+          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file
+          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).
+          Alternatively, you can select a calculation setup, configure it, generate the standalone
+          Python script, and run it directly in a folder containing your crystal structure.
+          <div style="margin-top: 8px;">
           If you like the uMLIP-Interactive, please
           <strong><a style="color:#0b63c4;" href="https://www.sciencedirect.com/science/article/pii/S2238785426004540" target="_blank">📖 cite this work</a></strong>
           Please also cite the:
           <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
           and the publications corresponding to the employed uMLIPs:
           <strong><span style="color:#0b63c4;">(see 'Show Model Citations' in the right corner)</span></strong>
+          </div>
         </div>
             """,
             unsafe_allow_html=True,
@@ -5191,14 +4997,14 @@ with tab1:
             st.error(
                 "⚠️ Some structures contain elements not supported by MACE-MP-0. Please remove incompatible structures.")
 
-        col_calc_setup, col_calc_image = st.columns([2, 1])
+        col_calc_setup, col_calc_image = st.columns([2, 1.6])
 
         with col_calc_setup:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
                  "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics", "Virtual Tensile Test",
-                 "Energy Grid Scan", "NEB Calculation"],
+                 "Energy Grid Scan", "NEB Calculation", "Selected postprocessing scripts"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -5209,83 +5015,65 @@ with tab1:
             )
 
         with col_calc_image:
-            svg_image = create_calculation_type_image(calc_type)
-
-            st.iframe(
-                f"""
-                <div style="display: flex; justify-content: center; align-items: center; height: 220px; padding: 10px;">
-                    {svg_image}
-                </div>
-                """,
-                height=240
+            illustration_name = (
+                calc_type.lower()
+                .replace("-", " ")
+                .replace("/", " ")
+                .strip()
+                .replace(" ", "_")
             )
+            illustration_path = os.path.join(
+                "images", "illustration_modes", f"{illustration_name}.png"
+            )
+
+            if os.path.exists(illustration_path):
+                # Scale the image proportionally to fit a fixed-height window
+                # (aspect ratio preserved, no scrolling).
+                import base64
+                with open(illustration_path, "rb") as _img_f:
+                    _img_b64 = base64.b64encode(_img_f.read()).decode()
+                st.markdown(
+                    f"""
+                    <div style="display:flex; justify-content:center; align-items:center; height:360px;">
+                        <img src="data:image/png;base64,{_img_b64}"
+                             style="max-height:100%; max-width:100%; object-fit:contain;" />
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                svg_image = create_calculation_type_image(calc_type)
+
+                st.iframe(
+                    f"""
+                    <div style="display: flex; justify-content: center; align-items: center; height: 220px; padding: 10px;">
+                        {svg_image}
+                    </div>
+                    """,
+                    height=240
+                )
         with col_calc_image:
-            if calc_type == "Energy Only":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">⚡ Fast & Efficient</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Single point energy calculation<br>
-                Ideal for energy comparisons
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            elif calc_type == "Geometry Optimization":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #059669, #0d9488); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">🔄 Structure Relaxation</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Optimizes atomic positions<br>
-                & lattice parameters
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            elif calc_type == "Phonon Calculation":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #dc2626, #ea580c); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">🎵 Vibrational Analysis</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Phonon dispersion & DOS<br>
-                Thermodynamic properties
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            elif calc_type == "Elastic Properties":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #7c2d12, #a16207); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">⚙️ Mechanical Properties</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Elastic tensor & moduli<br>
-                Bulk, shear, Young's modulus
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
-            elif calc_type == "GA Structure Optimization":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">🧬 Evolutionary Optimization</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Optimal substitution patterns<br>
-                & defect configurations
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
-            elif calc_type == "Energy Grid Scan":
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #0ea5e9, #6366f1); padding: 20px; border-radius: 15px; margin-top: 15px; color: white; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <strong style="font-size: 22px; display: block; margin-bottom: 10px;">🗺️ 3-D Energy Map</strong>
-                <div style="font-size: 18px; line-height: 1.4;">
-                Probe-atom energy on a grid<br>
-                Interstitial / adsorption scan
-                </div>
-                </div>
-                """, unsafe_allow_html=True)
+            _calc_type_captions = {
+                "Energy Only": "⚡ **Fast** — single point energy calculation, ideal for energy comparisons.",
+                "Geometry Optimization": "🔄 **Structure relaxation** — optimizes atomic positions & lattice parameters.",
+                "Phonon Calculation": "🎵 **Vibrational analysis** — phonon dispersion & DOS, thermodynamic properties.",
+                "Elastic Properties": "⚙️ **Mechanical properties** — elastic tensor & moduli (bulk, shear, Young's).",
+                "GA Structure Optimization": "🧬 **Evolutionary optimization** — optimal substitution patterns & defect configurations.",
+                "Energy Grid Scan": "🗺️ **3-D energy map** — probe-atom energy on a grid (interstitial / adsorption scan).",
+                "Molecular Dynamics": "🌡️ **Molecular dynamics** — time evolution, NVE / NVT / NPT ensembles.",
+                "Virtual Tensile Test": "🔧 **Virtual tensile test** — uniaxial strain ramp, stress-strain response & mechanical strength.",
+                "PET-MAD-DOS": "📊 **PET-MAD-DOS** — electronic density of states from the PET-MAD universal model.",
+                "Selected postprocessing scripts": "🛠️ **Postprocessing scripts** — generate standalone scripts to analyse existing results.",
+                "NEB Calculation": "🧗 **NEB** — minimum energy path & migration barrier between two endpoints.",
+            }
+            if calc_type in _calc_type_captions:
+                st.caption(_calc_type_captions[calc_type])
         if calc_type == "Molecular Dynamics":
             #st.warning("**!!! UNDER CONSTRUCTION !!! NOT EVERTHING WORKING YET PROPERLY FOR THIS OPTION**")
-            md_params = setup_md_parameters_ui()
+            md_params = setup_md_parameters_ui(
+                default_settings=st.session_state.default_settings,
+                save_settings_function=save_default_settings,
+            )
             st.divider()
             st.subheader("Generate Standalone MD Script")
 
@@ -5498,6 +5286,8 @@ with tab1:
                 mace_dispersion_xc=mace_dispersion_xc,
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
             )
+        if calc_type == "Selected postprocessing scripts":
+            render_postprocessing_panel()
         optimization_params = {
             'optimizer': "BFGS",
             'fmax': 0.05,
@@ -5731,10 +5521,29 @@ with tab1:
 
             phonon_params: dict = {}
 
+            _phonon_defaults = st.session_state.default_settings.get('phonon_calculation', {})
+
+            def _pg(key, fallback):
+                """Saved phonon default for ``key`` or ``fallback`` (type-matched)."""
+                val = _phonon_defaults.get(key, fallback)
+                if isinstance(fallback, bool):
+                    return bool(val)
+                if isinstance(fallback, int) and not isinstance(fallback, bool):
+                    try:
+                        return int(val)
+                    except (TypeError, ValueError):
+                        return fallback
+                if isinstance(fallback, float):
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        return fallback
+                return val
+
             st.write("### 🔲 Supercell")
 
             auto_supercell = st.checkbox(
-                "Automatic supercell size estimation", value=True,
+                "Automatic supercell size estimation", value=_pg('auto_supercell', True),
                 help="Automatically estimate the supercell so each dimension is at least "
                      "'target length' Å long.")
             phonon_params["auto_supercell"] = auto_supercell
@@ -5744,7 +5553,7 @@ with tab1:
                 with col_a1:
                     target_length = st.number_input(
                         "Target supercell length (Å)",
-                        min_value=8.0, max_value=150.0, value=15.0, step=1.0,
+                        min_value=8.0, max_value=150.0, value=_pg('target_supercell_length', 15.0), step=1.0,
                         help="Minimum supercell length per Cartesian direction")
                 with col_a2:
                     max_multiplier = st.number_input(
@@ -5791,12 +5600,12 @@ with tab1:
             with col_d1:
                 phonon_params["displacement_distance"] = st.number_input(
                     "Displacement distance (Å)",
-                    min_value=0.001, max_value=0.1, value=0.01, step=0.001, format="%.3f",
+                    min_value=0.001, max_value=0.1, value=_pg('displacement_distance', 0.01), step=0.001, format="%.3f",
                     help="Finite-displacement amplitude for force constant evaluation")
             with col_d2:
                 phonon_params["temperature"] = st.number_input(
                     "Temperature for thermodynamics (K)",
-                    min_value=0, max_value=5000, value=300, step=10,
+                    min_value=0, max_value=5000, value=_pg('temperature', 300), step=10,
                     help="Single temperature at which F, S, Cv snapshot is reported")
 
             st.write("### 📏 Frequency units for saved plots")
@@ -5805,10 +5614,14 @@ with tab1:
                 "THz (terahertz)":         "THz",
                 "cm⁻¹ (wavenumber)":       "cm-1",
             }
+            _unit_labels = list(_PLOT_UNIT_OPTIONS.keys())
+            _saved_unit = _phonon_defaults.get('plot_freq_unit', 'meV')
+            _unit_idx = next((i for i, lbl in enumerate(_unit_labels)
+                              if _PLOT_UNIT_OPTIONS[lbl] == _saved_unit), 0)
             _unit_label = st.selectbox(
                 "Y-axis units in saved phonon_bands.png and phonon_dos.png",
-                options=list(_PLOT_UNIT_OPTIONS.keys()),
-                index=0,
+                options=_unit_labels,
+                index=_unit_idx,
                 help="Applies only to the band-structure and DOS PNG images written "
                      "by the standalone Python script. The CSV outputs always include "
                      "THz, meV, and cm⁻¹ columns. "
@@ -5819,7 +5632,7 @@ with tab1:
             st.write("### 📐 k-point path for dispersion")
 
             auto_kpath = st.checkbox(
-                "Use automatic high-symmetry k-path (recommended)", value=True,
+                "Use automatic high-symmetry k-path (recommended)", value=_pg('use_auto_kpath', True),
                 help="Uses Pymatgen + SpacegroupAnalyzer to detect the correct "
                      "high-symmetry path for the crystal's Bravais lattice")
             phonon_params["use_auto_kpath"] = auto_kpath
@@ -5828,7 +5641,8 @@ with tab1:
                 col_kp1, col_kp2 = st.columns(2)
                 with col_kp1:
                     phonon_params["npoints_per_segment"] = st.number_input(
-                        "k-points per segment", min_value=10, max_value=500, value=101, step=10,
+                        "k-points per segment", min_value=10, max_value=500,
+                        value=_pg('npoints_per_segment', 101), step=10,
                         help="Sampling density along each high-symmetry segment")
                 with col_kp2:
                     _CONVENTION_OPTIONS = {
@@ -5845,10 +5659,14 @@ with tab1:
                         "**Latimer-Munro** — newer convention optimised for "
                         "minimal path length."
                     )
+                    _conv_labels = list(_CONVENTION_OPTIONS.keys())
+                    _saved_conv = _phonon_defaults.get('kpath_convention', 'setyawan_curtarolo')
+                    _conv_idx = next((i for i, lbl in enumerate(_conv_labels)
+                                      if _CONVENTION_OPTIONS[lbl] == _saved_conv), 0)
                     chosen_label = st.selectbox(
                         "k-path convention",
-                        options=list(_CONVENTION_OPTIONS.keys()),
-                        index=0,
+                        options=_conv_labels,
+                        index=_conv_idx,
                         help=_CONVENTION_HELP,
                     )
                     phonon_params["kpath_convention"] = _CONVENTION_OPTIONS[chosen_label]
@@ -6464,33 +6282,58 @@ with tab1:
 
             st.write("### 🔧 Brief pre-optimisation")
             pre_relax = st.checkbox(
-                "Perform brief geometry pre-optimisation before phonons", value=True,
+                "Perform brief geometry pre-optimisation before phonons", value=_pg('pre_relax', True),
                 help="Reduces residual forces so force constants are cleaner. "
                      "Recommended unless the structure is already well-relaxed.")
             phonon_params["pre_relax"] = pre_relax
 
             if pre_relax:
                 col_r1, col_r2, col_r3 = st.columns(3)
+                _opt_opts = ["LBFGS", "FIRE"]
                 with col_r1:
                     phonon_params["pre_relax_optimizer"] = st.selectbox(
-                        "Optimiser", options=["LBFGS", "FIRE"], index=0,
+                        "Optimiser", options=_opt_opts,
+                        index=_opt_opts.index(_pg('pre_relax_optimizer', 'LBFGS'))
+                              if _pg('pre_relax_optimizer', 'LBFGS') in _opt_opts else 0,
                         help="LBFGS is faster for most systems; FIRE can handle highly disordered ones better")
                 with col_r2:
                     phonon_params["pre_relax_fmax"] = st.number_input(
                         "Force convergence (eV/Å)",
-                        min_value=0.0001, max_value=1.0, value=0.01, step=0.001, format="%.4f",
+                        min_value=0.0001, max_value=1.0, value=_pg('pre_relax_fmax', 0.01), step=0.001, format="%.4f",
                         help="Optimisation stops when max atomic force is below this value")
                 with col_r3:
                     phonon_params["pre_relax_steps"] = st.number_input(
                         "Max steps",
-                        min_value=1, max_value=2000, value=100, step=10,
+                        min_value=1, max_value=2000, value=_pg('pre_relax_steps', 100), step=10,
                         help="Hard cap on optimisation steps — convergence may not be reached")
+
+                _lat_opts = list(LATTICE_OPT_LABELS.keys())
+                _saved_lat_mode = _phonon_defaults.get('pre_relax_lattice_mode', 'none')
+                _saved_lat_idx = next(
+                    (i for i, lbl in enumerate(_lat_opts)
+                     if LATTICE_OPT_LABELS[lbl] == _saved_lat_mode), 0)
+                _phonon_lat_label = st.selectbox(
+                    "What to optimise",
+                    options=_lat_opts,
+                    index=_saved_lat_idx,
+                    help="Atomic positions only keeps the cell fixed. The lattice "
+                         "options also relax the cell — either the a, b, c lengths "
+                         "(angles fixed) or the full cell including angles.",
+                    key="phonon_pre_relax_lattice",
+                )
+                phonon_params["pre_relax_lattice_mode"] = LATTICE_OPT_LABELS[_phonon_lat_label]
+
+                if (phonon_params["pre_relax_lattice_mode"] != "none"
+                        and not CELL_OPT_AVAILABLE):
+                    st.warning(
+                        "⚠️ Cell-optimisation filters are unavailable in this ASE "
+                        "install — only atomic positions will be relaxed.")
 
 
             st.write("### ⚖️ Stability tolerance")
             phonon_params["imaginary_mode_tol_mev"] = st.number_input(
                 "Imaginary mode tolerance (meV)",
-                min_value=-10.0, max_value=0.0, value=-0.1, step=0.05, format="%.2f",
+                min_value=-10.0, max_value=0.0, value=_pg('imaginary_mode_tol_mev', -0.1), step=0.05, format="%.2f",
                 help="Modes more negative than this value are counted as genuinely imaginary. "
                      "Small negatives between this threshold and 0 are treated as numerical noise "
                      "and the structure is still reported as dynamically stable.")
@@ -6498,7 +6341,7 @@ with tab1:
             st.write("### 🔣 Mode symmetry at Γ (irreps)")
             calc_gamma_irreps = st.checkbox(
                 "Assign irreducible representations to phonon modes at Γ",
-                value=False,
+                value=_pg('calc_gamma_irreps', False),
                 help="When enabled, the standalone Python script will instantiate "
                      "`phonopy.phonon.irreps.IrReps(...)` directly on the dynamical "
                      "matrix and write two files into the per-structure results folder:\n\n"
@@ -6553,6 +6396,21 @@ with tab1:
                 if phonon_params.get("manual_kpath"):
                     st.write(f"Manual k-path: {len(phonon_params['manual_kpath'])} segment(s)")
 
+            _PHONON_PERSIST_KEYS = [
+                'auto_supercell', 'target_supercell_length', 'displacement_distance',
+                'temperature', 'use_auto_kpath', 'npoints_per_segment', 'kpath_convention',
+                'plot_freq_unit', 'pre_relax', 'pre_relax_optimizer', 'pre_relax_fmax',
+                'pre_relax_steps', 'pre_relax_lattice_mode', 'imaginary_mode_tol_mev',
+                'calc_gamma_irreps',
+            ]
+            if st.button("💾 Save Phonon Settings as Default", key="save_phonon_defaults"):
+                persisted = {k: phonon_params[k] for k in _PHONON_PERSIST_KEYS if k in phonon_params}
+                st.session_state.default_settings['phonon_calculation'] = persisted
+                if save_default_settings(st.session_state.default_settings):
+                    st.toast("✅ Phonon settings saved as default!")
+                else:
+                    st.toast("❌ Failed to save phonon settings")
+
         elif calc_type == "Elastic Properties":
             if not ELASTIC_AVAILABLE:
                 st.error(
@@ -6598,15 +6456,36 @@ with tab1:
                         help="Hard cap on pre-optimization steps."
                     )
 
+                _elastic_lat_label = st.selectbox(
+                    "What to optimize",
+                    options=list(LATTICE_OPT_LABELS.keys()),
+                    index=0,
+                    help="Atomic positions only keeps the cell fixed (the original "
+                         "cell becomes the equilibrium reference for straining). The "
+                         "lattice options also relax the cell first — either the "
+                         "a, b, c lengths (angles fixed) or the full cell including "
+                         "angles — so strains are applied around a fully relaxed cell.",
+                    key="elastic_pre_opt_lattice",
+                )
+                elastic_params['pre_opt_lattice_mode'] = LATTICE_OPT_LABELS[_elastic_lat_label]
+
+                if (elastic_params['pre_opt_lattice_mode'] != "none"
+                        and not CELL_OPT_AVAILABLE):
+                    st.warning(
+                        "⚠️ Cell-optimization filters are unavailable in this ASE "
+                        "install — only atomic positions will be relaxed.")
+
                 st.info(
                     f"Pre-optimization: **{elastic_params['pre_opt_optimizer']}**, "
                     f"fmax = **{elastic_params['pre_opt_fmax']} eV/Å**, "
-                    f"max **{elastic_params['pre_opt_steps']} steps**"
+                    f"max **{elastic_params['pre_opt_steps']} steps**, "
+                    f"relaxing **{_elastic_lat_label.lower()}**"
                 )
             else:
                 elastic_params['pre_opt_optimizer'] = 'LBFGS'
                 elastic_params['pre_opt_fmax'] = 0.01
                 elastic_params['pre_opt_steps'] = 0
+                elastic_params['pre_opt_lattice_mode'] = 'none'
                 st.warning(
                     "⚠️ Skipping pre-optimization. Make sure your structure is already well-relaxed, "
                     "otherwise elastic constants may be inaccurate."
@@ -9148,7 +9027,7 @@ with tab3:
                             title_font=dict(size=18),
                             tickfont=dict(size=18)
                         ),
-                        text=[[f"{val:.1f}" for val in row] for row in elastic_tensor],
+                        text=[[f"{(round(val, 1) + 0.0):.1f}" for val in row] for row in elastic_tensor],
                         texttemplate="%{text}",
                         textfont={"size": 20},
                         hovertemplate='C<sub>%{y}%{x}</sub> = %{z:.2f} GPa<extra></extra>'
