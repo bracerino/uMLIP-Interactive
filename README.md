@@ -5,7 +5,7 @@ Run basic molecular dynamics/static simulations:
 - **Geometry optimization**
 - **Elastic properties**
 - **Phonons**
-- **Genetic algorithm for finding the energetically most favorible atomic site configurations of substitutes/vacancies**
+- **Genetic algorithm for finding energetically favorible atomic site configurations of substitutes/vacancies**
 - **Basic MD simulations (NVE, NVT, NPT)** (with generated Python script)  
 - **Nudge elastic band (NEB) calculations** (with generated Python script)  
 - **Energy grid scan** (with generated Python script)
