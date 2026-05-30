@@ -1,7 +1,7 @@
 import numpy as np
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
-from ase.md.nptberendsen import NPTBerendsen
+from ase.md.nptberendsen import NPTBerendsen, Inhomogeneous_NPTBerendsen
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase import units
 import json
@@ -66,28 +66,39 @@ class MDTrajectoryLogger:
         self.start_time = time.perf_counter()
         self.last_log_time = time.perf_counter()
         self.log_interval = md_params.get('log_interval', 10)
+        self.traj_interval = md_params.get('traj_interval', 100)
 
     def __call__(self):
         current_time = time.perf_counter()
         self.step_count += 1
 
-        if self.step_count % self.log_interval == 0:
-            atoms = self.md_object.atoms
+        # Console logging and trajectory-frame saving are independent: logging
+        # happens every `log_interval` steps, a trajectory frame is stored every
+        # `traj_interval` steps.
+        is_log_step = (self.step_count % self.log_interval == 0)
+        is_traj_step = (self.step_count % self.traj_interval == 0)
+
+        if not (is_log_step or is_traj_step):
+            return
+
+        atoms = self.md_object.atoms
+        try:
+            energy = atoms.get_potential_energy()
+            kinetic_energy = atoms.get_kinetic_energy()
+            total_energy = energy + kinetic_energy
+            temperature = atoms.get_temperature()
+
             try:
-                energy = atoms.get_potential_energy()
-                kinetic_energy = atoms.get_kinetic_energy()
-                total_energy = energy + kinetic_energy
-                temperature = atoms.get_temperature()
+                stress = atoms.get_stress(voigt=True)
+                pressure = -np.mean(stress[:3]) / units.GPa
+            except:
+                pressure = None
 
-                try:
-                    stress = atoms.get_stress(voigt=True)
-                    pressure = -np.mean(stress[:3]) / units.GPa
-                except:
-                    pressure = None
+            forces = atoms.get_forces()
+            max_force = np.max(np.linalg.norm(forces, axis=1))
 
-                forces = atoms.get_forces()
-                max_force = np.max(np.linalg.norm(forces, axis=1))
-
+            # Save a trajectory frame at the trajectory interval
+            if is_traj_step:
                 step_data = {
                     'step': self.step_count,
                     'time_ps': self.step_count * self.md_params['timestep'] / 1000.0,
@@ -106,15 +117,16 @@ class MDTrajectoryLogger:
                 }
                 self.trajectory_data.append(step_data)
 
-                # Calculate displacement
+                # Calculate displacement between consecutive trajectory frames
                 if len(self.trajectory_data) >= 2:
                     prev_pos = self.trajectory_data[-2]['positions']
                     curr_pos = self.trajectory_data[-1]['positions']
                     max_displacement = np.max(np.linalg.norm(curr_pos - prev_pos, axis=1))
-                    if self.step_count % (self.log_interval * 10) == 0:
+                    if self.step_count % (self.traj_interval * 10) == 0:
                         self.log_queue.put(f"    Step-to-step displacement: {max_displacement:.6f} Å")
 
-                # Time estimates
+            # Console / progress logging at the log interval
+            if is_log_step:
                 elapsed_time = current_time - self.start_time
                 if self.step_count > 0:
                     avg_time_per_step = elapsed_time / self.step_count
@@ -153,17 +165,54 @@ class MDTrajectoryLogger:
                         log_message += f", P = {pressure:.2f} GPa"
                     self.log_queue.put(log_message)
 
-            except Exception as e:
-                self.log_queue.put(f"  Warning: MD logging error at step {self.step_count}: {str(e)}")
+        except Exception as e:
+            self.log_queue.put(f"  Warning: MD logging error at step {self.step_count}: {str(e)}")
 
     def set_md_object(self, md_object):
         self.md_object = md_object
 
 
-def setup_md_parameters_ui():
-    """Setup MD parameters UI with all NPT options"""
+# Settings persisted by the "Save MD Settings as Default" button. Secrets
+# (Fairchem token) and per-run/transient values are intentionally excluded.
+MD_PERSIST_KEYS = [
+    'ensemble', 'n_steps', 'timestep', 'temperature', 'friction',
+    'taut', 'taup', 'target_pressure_gpa', 'bulk_modulus',
+    'pressure_coupling_type', 'remove_com_motion', 'log_interval', 'traj_interval',
+]
+
+
+def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
+    """Setup MD parameters UI with all NPT options.
+
+    When ``default_settings`` and ``save_settings_function`` are provided, the
+    principal settings are seeded from any previously saved defaults and a
+    "Save MD Settings as Default" button is shown.
+    """
     st.subheader("Molecular Dynamics Parameters")
     md_params = {}
+
+    _md_defaults = (default_settings or {}).get('molecular_dynamics', {})
+
+    def _g(key, fallback):
+        """Saved default for ``key`` or ``fallback`` (type-matched to fallback)."""
+        val = _md_defaults.get(key, fallback)
+        if isinstance(fallback, bool):
+            return bool(val)
+        if isinstance(fallback, int) and not isinstance(fallback, bool):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return fallback
+        if isinstance(fallback, float):
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return fallback
+        return val
+
+    def _sel_idx(options, key, fallback_idx):
+        val = _md_defaults.get(key)
+        return options.index(val) if val in options else fallback_idx
 
     # Fairchem/UMA override option
     md_params['use_fairchem'] = st.checkbox(
@@ -218,7 +267,7 @@ def setup_md_parameters_ui():
         md_params['ensemble'] = st.selectbox(
             "Ensemble",
             ensemble_options,
-            index=default_npt_index,
+            index=_sel_idx(ensemble_options, 'ensemble', default_npt_index),
             help="NVE: Constant energy\nNVT: Constant temperature\nNPT: Constant pressure & temperature"
         )
 
@@ -296,7 +345,7 @@ def setup_md_parameters_ui():
                 "Target Pressure (GPa)",
                 min_value=-10.0,
                 max_value=100.0,
-                value=0.0,
+                value=_g('target_pressure_gpa', 0.0),
                 step=0.1,
                 format="%.2f",
                 help="Target pressure for NPT simulation"
@@ -325,7 +374,7 @@ def setup_md_parameters_ui():
                 time_label,
                 min_value=10.0,
                 max_value=10000.0,
-                value=default_time,
+                value=_g('taup', default_time),
                 step=100.0,
                 help=time_help
             )
@@ -334,20 +383,34 @@ def setup_md_parameters_ui():
             if is_npt_berendsen or is_npt_melchionna:
                 md_params['bulk_modulus'] = st.number_input(
                     "Bulk Modulus (GPa)",
-                    min_value=1.0, max_value=1000.0, value=140.0, step=10.0,
+                    min_value=1.0, max_value=1000.0, value=_g('bulk_modulus', 140.0), step=10.0,
                     help="Bulk modulus used for compressibility (Berendsen) or pfactor (Melchionna).",
                 )
 
-        # Anisotropic pressure settings for Berendsen
+        # Anisotropic (axis-selective) settings for Berendsen
         if is_npt_berendsen and md_params['pressure_coupling_type'] == "anisotropic":
-            st.markdown("**Anisotropic Axis Pressures (GPa):**")
-            col_px, col_py, col_pz = st.columns(3)
-            with col_px:
-                md_params['pressure_x'] = st.number_input("P_x", value=md_params['target_pressure_gpa'], step=0.1)
-            with col_py:
-                md_params['pressure_y'] = st.number_input("P_y", value=md_params['target_pressure_gpa'], step=0.1)
-            with col_pz:
-                md_params['pressure_z'] = st.number_input("P_z", value=md_params['target_pressure_gpa'], step=0.1)
+            st.markdown("**Anisotropic Axis Coupling:**")
+            st.caption(
+                "The Berendsen barostat couples each lattice vector (a, b, c) to the same "
+                "target pressure above, but lets their lengths relax independently (angles stay "
+                "fixed). Uncheck an axis to hold its length constant. ASE's Berendsen barostat "
+                "does not support different target pressures per axis — for that use an MTK or "
+                "Nose-Hoover NPT ensemble."
+            )
+            col_ma, col_mb, col_mc = st.columns(3)
+            with col_ma:
+                md_params['berendsen_mask_a'] = st.checkbox("Couple a-axis", value=True, key="berendsen_mask_a")
+            with col_mb:
+                md_params['berendsen_mask_b'] = st.checkbox("Couple b-axis", value=True, key="berendsen_mask_b")
+            with col_mc:
+                md_params['berendsen_mask_c'] = st.checkbox("Couple c-axis", value=True, key="berendsen_mask_c")
+
+            if not any([md_params['berendsen_mask_a'], md_params['berendsen_mask_b'],
+                        md_params['berendsen_mask_c']]):
+                st.error(
+                    "❌ At least one axis must be coupled. "
+                    "If you don't want any cell changes, switch to NVT instead of NPT."
+                )
 
         # Semi-isotropic mask for MTK Full
         # Axis-selective mask for MTK Full
@@ -386,7 +449,7 @@ def setup_md_parameters_ui():
             "Number of steps",
             min_value=100,
             max_value=1000000,
-            value=10000,
+            value=_g('n_steps', 10000),
             step=1000,
             help="Total number of MD steps to run"
         )
@@ -395,7 +458,7 @@ def setup_md_parameters_ui():
             "Timestep (fs)",
             min_value=0.1,
             max_value=10.0,
-            value=1.0,
+            value=_g('timestep', 1.0),
             step=0.1,
             format="%.1f",
             help="MD timestep in femtoseconds"
@@ -405,7 +468,7 @@ def setup_md_parameters_ui():
             "Temperature (K)",
             min_value=1,
             max_value=5000,
-            value=300,
+            value=_g('temperature', 300),
             step=50,
             help="Target temperature for the simulation"
         )
@@ -418,7 +481,7 @@ def setup_md_parameters_ui():
             md_params['friction'] = st.number_input(
                 "Friction coefficient (1/fs)",  # was "1/ps"
                 min_value=0.001, max_value=1.0,
-                value=0.02, step=0.001, format="%.3f",
+                value=_g('friction', 0.02), step=0.001, format="%.3f",
                 help="Langevin friction coefficient (higher = stronger coupling)"
             )
         if is_npt_baoab:
@@ -438,7 +501,7 @@ def setup_md_parameters_ui():
                 "Temperature Time Constant (taut) (fs)",
                 min_value=10.0,
                 max_value=1000.0,
-                value=100.0,
+                value=_g('taut', 100.0),
                 step=10.0,
                 help="Berendsen temperature coupling time constant"
             )
@@ -462,7 +525,7 @@ def setup_md_parameters_ui():
     with col_init1:
         md_params['remove_com_motion'] = st.checkbox(
             "Remove COM motion",
-            value=True,
+            value=_g('remove_com_motion', True),
             help="Remove center-of-mass motion (done during initialization)"
         )
     with col_init2:
@@ -470,7 +533,7 @@ def setup_md_parameters_ui():
             "Log interval (steps)",
             min_value=1,
             max_value=1000,
-            value=10,
+            value=_g('log_interval', 10),
             step=10,
             help="Frequency of logging MD properties (console, file, csv)"
         )
@@ -479,7 +542,7 @@ def setup_md_parameters_ui():
             "Trajectory interval (steps)",
             min_value=1,
             max_value=1000,
-            value=100,
+            value=_g('traj_interval', 100),
             step=10,
             help="Frequency of saving trajectory frames (.xyz)"
         )
@@ -488,6 +551,15 @@ def setup_md_parameters_ui():
     total_time_fs = md_params['n_steps'] * md_params['timestep']
     total_time_ps = total_time_fs / 1000.0
     st.info(f"**Simulation time:** {total_time_fs:.0f} fs = {total_time_ps:.2f} ps")
+
+    if default_settings is not None and save_settings_function is not None:
+        if st.button("💾 Save MD Settings as Default", key="save_md_defaults"):
+            persisted = {k: md_params[k] for k in MD_PERSIST_KEYS if k in md_params}
+            default_settings['molecular_dynamics'] = persisted
+            if save_settings_function(default_settings):
+                st.toast("✅ MD settings saved as default!")
+            else:
+                st.toast("❌ Failed to save MD settings")
 
     return md_params
 
@@ -589,22 +661,28 @@ def run_md_simulation(atoms, calculator, md_params, log_queue, structure_name):
                     f"✓ NPT-Berendsen (isotropic) initialized: P={target_pressure_gpa} GPa, taup={taup_fs} fs")
 
             elif coupling_type == "anisotropic":
-                px = md_params.get('pressure_x', 0.0) * units.GPa
-                py = md_params.get('pressure_y', 0.0) * units.GPa
-                pz = md_params.get('pressure_z', 0.0) * units.GPa
-                pressure_au = np.array([px, py, pz, 0, 0, 0])
+                # ASE's Berendsen barostat scales each lattice vector independently
+                # toward a single (hydrostatic) target pressure. The mask selects which
+                # axes are coupled; it does NOT support different pressures per axis.
+                mask = (
+                    int(md_params.get('berendsen_mask_a', True)),
+                    int(md_params.get('berendsen_mask_b', True)),
+                    int(md_params.get('berendsen_mask_c', True)),
+                )
 
-                md_object = NPTBerendsen(
+                md_object = Inhomogeneous_NPTBerendsen(
                     atoms,
                     timestep=dt,
                     temperature_K=md_params['temperature'],
-                    pressure_au=pressure_au,
+                    pressure_au=target_pressure_gpa * units.GPa,
                     taut=taut_fs * units.fs,
                     taup=taup_fs * units.fs,
-                    compressibility_au=compressibility_au
+                    compressibility_au=compressibility_au,
+                    mask=mask
                 )
                 log_queue.put(
-                    f"✓ NPT-Berendsen (anisotropic) initialized: Px={md_params.get('pressure_x', 0)} GPa, Py={md_params.get('pressure_y', 0)} GPa, Pz={md_params.get('pressure_z', 0)} GPa")
+                    f"✓ NPT-Berendsen (anisotropic) initialized: P={target_pressure_gpa} GPa, "
+                    f"axis mask (a,b,c)={mask}, taup={taup_fs} fs")
 
         elif ensemble == "NPT (MTK Isotropic)":
             if not NPT_MTK_ISO_AVAILABLE:
