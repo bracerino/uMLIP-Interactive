@@ -789,6 +789,11 @@ def _molecular_dynamics(p):
     couple_x        = p.get('couple_x', True)
     couple_y        = p.get('couple_y', True)
     couple_z        = p.get('couple_z', True)
+    berendsen_mask  = (
+        int(p.get('berendsen_mask_a', True)),
+        int(p.get('berendsen_mask_b', True)),
+        int(p.get('berendsen_mask_c', True)),
+    )
 
     is_npt = "NPT" in ensemble
 
@@ -828,29 +833,40 @@ def _molecular_dynamics(p):
         ]
 
     elif ensemble == "NPT (Berendsen)":
-        lines += [
-            "from ase.md.nptberendsen import NPTBerendsen",
-            "",
-            f"compressibility_au = 1.0 / ({bulk_mod} * units.GPa)",
-        ]
         if coupling_type == 'anisotropic':
+            # ASE's Berendsen barostat couples each lattice vector to the SAME
+            # target pressure but relaxes their lengths independently (angles
+            # fixed). The mask selects which axes are coupled; it does not
+            # support different target pressures per axis.
             lines += [
-                f"pressure_factor = 1e9 * units.Pascal",
-                f"pressure_au = np.diag([{px} * pressure_factor,",
-                f"                       {py} * pressure_factor,",
-                f"                       {pz} * pressure_factor])",
+                "from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen",
+                "",
+                f"compressibility_au = 1.0 / ({bulk_mod} * units.GPa)",
+                f"pressure_au = {target_p} * units.GPa",
+                f"mask = {berendsen_mask}  # couple (a, b, c) axes",
+                "",
+                f"dyn = Inhomogeneous_NPTBerendsen(atoms, timestep=dt,",
+                f"                                 temperature_K={temperature},",
+                f"                                 pressure_au=pressure_au,",
+                f"                                 taut={taut} * units.fs,",
+                f"                                 taup={taup} * units.fs,",
+                f"                                 compressibility_au=compressibility_au,",
+                f"                                 mask=mask)",
             ]
         else:
-            lines.append(f"pressure_au = {target_p} * 1e9 * units.Pascal")
-        lines += [
-            "",
-            f"dyn = NPTBerendsen(atoms, timestep=dt,",
-            f"                   temperature_K={temperature},",
-            f"                   pressure_au=pressure_au,",
-            f"                   taut={taut} * units.fs,",
-            f"                   taup={taup} * units.fs,",
-            f"                   compressibility_au=compressibility_au)",
-        ]
+            lines += [
+                "from ase.md.nptberendsen import NPTBerendsen",
+                "",
+                f"compressibility_au = 1.0 / ({bulk_mod} * units.GPa)",
+                f"pressure_au = {target_p} * units.GPa",
+                "",
+                f"dyn = NPTBerendsen(atoms, timestep=dt,",
+                f"                   temperature_K={temperature},",
+                f"                   pressure_au=pressure_au,",
+                f"                   taut={taut} * units.fs,",
+                f"                   taup={taup} * units.fs,",
+                f"                   compressibility_au=compressibility_au)",
+            ]
 
     elif ensemble == "NPT (Nose-Hoover)":
         lines += [
