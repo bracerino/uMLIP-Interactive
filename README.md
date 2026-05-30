@@ -103,23 +103,6 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
- 
-### **Tested Python packages**  
-- streamlit - 1.46.0  
-- plotly - 6.1.2  
-- pymatgen - 2025.6.14  
-- ase - 3.27.0  
-- phonopy - 2.40.0  
-- py3Dmol - 2.5.0  
-- psutil - 7.0.0  
-- gputil - 1.4.0  
-- torch - 2.7.1  
-- torchvision - 0.22.1    
-- torchaudio - 2.7.1
-- mace-torch - 0.3.13    
-- cuequivariance - 0.5.1  
-- cuequivariance-torch - 0.5.1  
-- cuequivariance-ops-torch-cu12 - 0.5.1  
 
 ### **Workflow**
 
