@@ -87,8 +87,15 @@ trajectory. For each trajectory it then:
   * saves the individual per-step patterns (raw discrete peaks, and -- when
     broadening is enabled -- the broadened profile),
   * saves the average pattern over all evaluated frames,
+  * computes the PBC-aware average structure (circular mean of fractional
+    coordinates + average lattice parameters) and saves it as CIF, VASP and
+    extended-XYZ files,
+  * computes the powder XRD pattern of that average structure and saves it as
+    a publication-ready PNG (+ PDF) image,
   * saves a single animation file `xrd_trajectory_animation.json` that you can
-    upload back into the GUI to scrub through the steps or play an animation.
+    upload back into the GUI to scrub through the steps or play an animation;
+    this file also carries the pattern of the average structure so it can be
+    overlaid on the plot in the GUI.
 
 When BROADEN is True the discrete reflections are convolved with a Gaussian
 onto a common 2-theta grid. When BROADEN is False the raw discrete peaks are
@@ -115,7 +122,9 @@ import glob
 import json
 
 import numpy as np
-from ase.io import read
+from ase import Atoms
+from ase.io import read, write
+from ase.geometry import cellpar_to_cell
 from pymatgen.io.ase import AseAtomsAdaptor
 
 try:
@@ -180,10 +189,24 @@ def accumulate_sticks(grid, peak_positions, peak_intensities):
     return profile
 
 
-def save_average_plot(grid, average, out_dir, name):
-    """Save a publication-ready figure of the averaged pattern (PNG + PDF)."""
+def circular_mean_frac(fracs):
+    """Periodic mean of fractional coordinates, shape (nframes, natoms, 3)."""
+    angles = 2.0 * np.pi * fracs
+    mean_cos = np.cos(angles).mean(axis=0)
+    mean_sin = np.sin(angles).mean(axis=0)
+    mean_angle = np.arctan2(mean_sin, mean_cos)
+    return (mean_angle / (2.0 * np.pi)) % 1.0
+
+
+def save_pattern_plot(grid, profile, out_dir, name, title_prefix,
+                      filename_base, is_broadened, use_sticks_data=None):
+    """Save a publication-ready figure of a single pattern (PNG + PDF).
+
+    When ``is_broadened`` is True ``profile`` is a continuous curve on ``grid``.
+    Otherwise ``use_sticks_data`` is expected as (peak_x, peak_y) and is drawn
+    as vertical stick lines."""
     if not HAVE_MPL:
-        print("  [skip] matplotlib not installed - no average plot "
+        print("  [skip] matplotlib not installed - no plot "
               "(pip install matplotlib).")
         return
 
@@ -208,19 +231,23 @@ def save_average_plot(grid, average, out_dir, name):
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    if BROADEN:
-        ax.plot(grid, average, color="#1f3a93", lw=1.8)
-        ax.fill_between(grid, average, color="#1f3a93", alpha=0.10)
+    if is_broadened:
+        ax.plot(grid, profile, color="#1f3a93", lw=1.8)
+        ax.fill_between(grid, profile, color="#1f3a93", alpha=0.10)
+    elif use_sticks_data is not None:
+        # Discrete stick spectrum (direct from XRD calculator).
+        peak_x, peak_y = use_sticks_data
+        ax.vlines(peak_x, 0.0, peak_y, color="#1f3a93", lw=1.2)
     else:
-        # Average of stick spectra -> draw stems at the populated grid points.
-        nz = np.where(average > 0)[0]
-        ax.vlines(grid[nz], 0.0, average[nz], color="#1f3a93", lw=1.2)
+        # Average of stick spectra deposited on grid -> draw stems at populated points.
+        nz = np.where(profile > 0)[0]
+        ax.vlines(grid[nz], 0.0, profile[nz], color="#1f3a93", lw=1.2)
 
     ax.set_xlim(grid.min(), grid.max())
     ax.set_ylim(bottom=0.0)
     ax.set_xlabel(r"2$\\theta$ (degrees)", fontsize=16)
     ax.set_ylabel(intensity_label, fontsize=16)
-    ax.set_title(f"Average powder XRD - {{name}}", fontsize=16, pad=10)
+    ax.set_title(f"{{title_prefix}} - {{name}}", fontsize=16, pad=10)
     ax.minorticks_on()
     ax.tick_params(which="both", top=True, right=True, labelsize=13)
 
@@ -228,12 +255,12 @@ def save_average_plot(grid, average, out_dir, name):
             fontsize=12, color="#444")
 
     fig.tight_layout()
-    png = os.path.join(out_dir, "average_pattern.png")
-    pdf = os.path.join(out_dir, "average_pattern.pdf")
+    png = os.path.join(out_dir, f"{{filename_base}}.png")
+    pdf = os.path.join(out_dir, f"{{filename_base}}.pdf")
     fig.savefig(png, dpi=600, bbox_inches="tight")
     fig.savefig(pdf, bbox_inches="tight")          # vector copy for journals
     plt.close(fig)
-    print(f"  average plot    -> {{png}} (+ .pdf)")
+    print(f"  plot           -> {{png}} (+ .pdf)")
 
 
 def format_hkl(hkls_for_peak):
@@ -266,6 +293,10 @@ def process_trajectory(traj_path, calc, adaptor, grid):
     grid_accum = []          # per-frame profile on the common grid (for the average)
     frame_payload = []       # what gets stored per step in the animation file
     evaluated_steps = []
+    cellpars_list = []       # for averaging the cell
+    fracs_list = []          # for circular-mean averaging of fractional coords
+    ref_symbols = None       # symbol order taken from the first valid frame
+    struct_avg_ok = True     # turn off if composition changes between frames
 
     for frame_idx in selected_indices:
         atoms = frames[frame_idx]
@@ -273,6 +304,20 @@ def process_trajectory(traj_path, calc, adaptor, grid):
             print(f"  [skip] frame {{frame_idx}} has no 3-D cell; "
                   "powder XRD needs a periodic cell.")
             continue
+
+        # Collect per-frame data for the average structure (only if composition
+        # has stayed consistent so far).
+        if struct_avg_ok:
+            symbols = atoms.get_chemical_symbols()
+            if ref_symbols is None:
+                ref_symbols = symbols
+            elif symbols != ref_symbols:
+                struct_avg_ok = False
+                print(f"  [warn] frame {{frame_idx}} has different composition; "
+                      "skipping average-structure calculation.")
+            if struct_avg_ok:
+                cellpars_list.append(atoms.cell.cellpar())
+                fracs_list.append(atoms.get_scaled_positions(wrap=True))
 
         structure = adaptor.get_structure(atoms)
         pattern = calc.get_pattern(
@@ -336,7 +381,116 @@ def process_trajectory(traj_path, calc, adaptor, grid):
     print(f"  average pattern -> {{avg_csv}}")
 
     # Publication-ready figure of the average pattern (PNG + PDF).
-    save_average_plot(grid, average, out_dir, name)
+    save_pattern_plot(
+        grid, average, out_dir, name,
+        title_prefix="Average powder XRD",
+        filename_base="average_pattern",
+        is_broadened=BROADEN,
+    )
+
+    # ----- Average structure (PBC-aware) + its XRD pattern ------------------ #
+    avg_struct_payload = None  # added to the animation JSON if available
+    if struct_avg_ok and len(cellpars_list) >= 1:
+        cellpars_arr = np.array(cellpars_list)
+        avg_cellpar = cellpars_arr.mean(axis=0)
+        std_cellpar = cellpars_arr.std(axis=0)
+        avg_cell = cellpar_to_cell(avg_cellpar)
+        avg_frac = circular_mean_frac(np.array(fracs_list))
+
+        avg_atoms = Atoms(
+            symbols=ref_symbols, scaled_positions=avg_frac,
+            cell=avg_cell, pbc=True,
+        )
+        avg_atoms.wrap()
+
+        for fname, kw in (
+            ("average_structure.cif",  {{"format": "cif"}}),
+            ("average_structure.vasp", {{"format": "vasp", "sort": True}}),
+            ("average_structure.xyz",  {{"format": "extxyz"}}),
+        ):
+            path = os.path.join(out_dir, fname)
+            try:
+                write(path, avg_atoms, **kw)
+                print(f"  avg structure  -> {{path}}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [warn] could not write {{path}}: {{exc}}")
+
+        # Lattice summary mirrors the average-structure script.
+        labels = ["a (A)", "b (A)", "c (A)",
+                  "alpha (deg)", "beta (deg)", "gamma (deg)"]
+        summary_path = os.path.join(out_dir, "average_lattice.txt")
+        with open(summary_path, "w") as fh:
+            fh.write(f"# Average structure for trajectory: {{os.path.basename(traj_path)}}\\n")
+            fh.write(f"# frames averaged: {{len(cellpars_list)}} "
+                     f"(of {{n_frames}}; stride={{STRIDE}})\\n")
+            fh.write(f"# atoms: {{len(ref_symbols)}}\\n")
+            fh.write("# parameter: mean +/- std (sample fluctuation across frames)\\n")
+            for lab, m, s in zip(labels, avg_cellpar, std_cellpar):
+                fh.write(f"{{lab:>12s}} : {{m:12.5f}} +/- {{s:10.5f}}\\n")
+        print(f"  lattice summary -> {{summary_path}}")
+
+        # XRD pattern of the average structure.
+        try:
+            avg_structure_pmg = adaptor.get_structure(avg_atoms)
+            avg_pattern = calc.get_pattern(
+                avg_structure_pmg, scaled=SCALED, two_theta_range=TWO_THETA_RANGE
+            )
+            avg_struct_peak_x = np.asarray(avg_pattern.x, dtype=float)
+            avg_struct_peak_y = np.asarray(avg_pattern.y, dtype=float)
+            if (INTENSITY_MODE == "relative"
+                    and avg_struct_peak_y.size and avg_struct_peak_y.max() > 0):
+                avg_struct_peak_y = (
+                    avg_struct_peak_y / avg_struct_peak_y.max() * 100.0
+                )
+
+            if BROADEN:
+                avg_struct_profile = gaussian_broaden(
+                    grid, avg_struct_peak_x, avg_struct_peak_y, FWHM
+                )
+                if (INTENSITY_MODE == "relative"
+                        and avg_struct_profile.max() > 0):
+                    avg_struct_profile = (
+                        avg_struct_profile / avg_struct_profile.max() * 100.0
+                    )
+                # CSV.
+                np.savetxt(
+                    os.path.join(out_dir, "average_structure_pattern.csv"),
+                    np.column_stack([grid, avg_struct_profile]),
+                    delimiter=",", header="2theta,intensity", comments="",
+                )
+                # Plot.
+                save_pattern_plot(
+                    grid, avg_struct_profile, out_dir, name,
+                    title_prefix="Powder XRD of average structure",
+                    filename_base="average_structure_pattern",
+                    is_broadened=True,
+                )
+                avg_struct_payload = avg_struct_profile.tolist()
+            else:
+                # Discrete sticks for the average structure.
+                with open(os.path.join(out_dir,
+                                       "average_structure_pattern.csv"), "w") as fh:
+                    fh.write("2theta,intensity\\n")
+                    for x_, y_ in zip(avg_struct_peak_x, avg_struct_peak_y):
+                        fh.write(f"{{x_}},{{y_}}\\n")
+                save_pattern_plot(
+                    grid, None, out_dir, name,
+                    title_prefix="Powder XRD of average structure",
+                    filename_base="average_structure_pattern",
+                    is_broadened=False,
+                    use_sticks_data=(avg_struct_peak_x, avg_struct_peak_y),
+                )
+                avg_struct_payload = {{
+                    "x": avg_struct_peak_x.tolist(),
+                    "y": avg_struct_peak_y.tolist(),
+                }}
+            print("  avg-structure XRD pattern saved.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [warn] could not compute XRD of average structure: {{exc}}")
+            avg_struct_payload = None
+    else:
+        print("  [skip] average-structure calculation skipped "
+              "(composition changes or no valid frames).")
 
     # Animation file consumed by the GUI viewer.
     animation = {{
@@ -353,6 +507,7 @@ def process_trajectory(traj_path, calc, adaptor, grid):
             "n_points": N_POINTS,
             "n_frames_total": n_frames,
             "n_frames_evaluated": len(evaluated_steps),
+            "has_average_structure": avg_struct_payload is not None,
         }},
         "two_theta": grid.tolist(),
         "steps": evaluated_steps,                 # e.g. [0, 10, 20, 30, ...]
@@ -360,6 +515,9 @@ def process_trajectory(traj_path, calc, adaptor, grid):
         # sticks    -> list of {{"x": [...], "y": [...]}} raw peaks per step.
         "frames": frame_payload,
         "average": average.tolist(),              # always a grid profile
+        # Pattern from the PBC-aware average structure (matches representation):
+        # broadened -> list[float] on `two_theta`; sticks -> {{"x":[...],"y":[...]}}
+        "average_structure_pattern": avg_struct_payload,
     }}
     anim_path = os.path.join(out_dir, "xrd_trajectory_animation.json")
     with open(anim_path, "w") as fh:
@@ -658,7 +816,8 @@ def render_xrd_animation_viewer():
     st.caption(
         "Upload the `xrd_trajectory_animation.json` produced by the generated "
         "script to scrub through the individual trajectory-step patterns or "
-        "play an animation. The average pattern can be overlaid as a reference."
+        "play an animation. Reference patterns (first step, overall average, "
+        "and the pattern from the average structure) can be overlaid."
     )
 
     upload = st.file_uploader(
@@ -678,6 +837,8 @@ def render_xrd_animation_viewer():
     steps = list(data["steps"])
     raw_frames = data["frames"]
     average = np.asarray(data["average"], dtype=float)
+    avg_struct_payload = data.get("average_structure_pattern")
+    has_avg_struct = avg_struct_payload is not None
 
     intensity_label = (
         "Relative intensity (max = 100)"
@@ -699,18 +860,103 @@ def render_xrd_animation_viewer():
         f"{' …' if len(steps) > 12 else ''}"
     )
 
-    view_cols = st.columns([1, 1])
-    with view_cols[0]:
+    st.markdown("**Reference overlays to always show on the plot:**")
+    overlay_cols = st.columns(3)
+    _STEP_OVERLAY_OFF = "(off)"
+    with overlay_cols[0]:
+        overlay_step_choice = st.selectbox(
+            "Overlay trajectory step",
+            options=[_STEP_OVERLAY_OFF] + [str(s) for s in steps],
+            index=0,
+            key="xrd_overlay_step_choice",
+            help="Pick a specific trajectory step whose pattern is always "
+                 "overlaid on the plot (in addition to whatever the slider / "
+                 "animation is currently showing). Select '(off)' to disable.",
+        )
+    with overlay_cols[1]:
         overlay_avg = st.checkbox(
-            "Overlay average pattern", value=True, key="xrd_overlay_avg"
+            "Overall average", value=True, key="xrd_overlay_avg",
+            help="Overlay the average pattern over all evaluated steps.",
         )
-    with view_cols[1]:
-        mode = st.radio(
-            "View mode",
-            ["Single step", "Play animation"],
-            horizontal=True,
-            key="xrd_view_mode",
+    with overlay_cols[2]:
+        overlay_avg_struct = st.checkbox(
+            "Pattern of average structure",
+            value=has_avg_struct,
+            key="xrd_overlay_avg_struct",
+            disabled=not has_avg_struct,
+            help=("Overlay the pattern computed from the PBC-averaged structure. "
+                  "Available only when the script produced it.")
+            if has_avg_struct else
+            "This animation file was produced without an average-structure pattern.",
         )
+
+    # Resolve the chosen step (if any) to its index inside `steps`.
+    overlay_step_idx = None
+    if overlay_step_choice != _STEP_OVERLAY_OFF:
+        try:
+            overlay_step_idx = steps.index(int(overlay_step_choice))
+        except (ValueError, TypeError):
+            overlay_step_idx = None
+
+    # Per-overlay line styling controls.
+    _DASH_OPTIONS = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
+    with st.expander("🎨 Overlay line style", expanded=False):
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            overlay_step_width = st.slider(
+                "Selected-step line width",
+                min_value=0.5, max_value=6.0, value=1.5, step=0.1,
+                key="xrd_overlay_step_width",
+            )
+            overlay_avg_width = st.slider(
+                "Overall-average line width",
+                min_value=0.5, max_value=6.0, value=1.5, step=0.1,
+                key="xrd_overlay_avg_width",
+            )
+            overlay_struct_width = st.slider(
+                "Average-structure line width",
+                min_value=0.5, max_value=6.0, value=1.5, step=0.1,
+                key="xrd_overlay_struct_width",
+                disabled=not has_avg_struct,
+            )
+        with sc2:
+            overlay_step_dash = st.selectbox(
+                "Selected-step line style",
+                options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("dot"),
+                key="xrd_overlay_step_dash",
+            )
+            overlay_avg_dash = st.selectbox(
+                "Overall-average line style",
+                options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("dash"),
+                key="xrd_overlay_avg_dash",
+            )
+            overlay_struct_dash = st.selectbox(
+                "Average-structure line style",
+                options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("dashdot"),
+                key="xrd_overlay_struct_dash",
+                disabled=not has_avg_struct,
+            )
+
+    mode = st.radio(
+        "View mode",
+        ["Single step", "Play animation"],
+        horizontal=True,
+        key="xrd_view_mode",
+    )
+
+    # Resolve the payload of the user-picked overlay step (if any).
+    overlay_step_payload = (
+        raw_frames[overlay_step_idx] if overlay_step_idx is not None else None
+    )
+
+    def _payload_y_max(payload):
+        """Return max intensity of either a list (broadened) or {x,y} (sticks)."""
+        if payload is None:
+            return 0.0
+        if is_sticks:
+            ys = payload.get("y", []) if isinstance(payload, dict) else []
+            return max(ys) if ys else 0.0
+        return max(payload) if payload else 0.0
 
     # Per-frame y for axis scaling, plus a trace builder per representation.
     if is_sticks:
@@ -719,7 +965,12 @@ def render_xrd_animation_viewer():
         ) if raw_frames else 0.0
     else:
         frame_max = max((max(fr) if fr else 0.0) for fr in raw_frames) if raw_frames else 0.0
-    y_max = float(max(frame_max, average.max() if average.size else 0.0)) * 1.05 or 1.0
+    y_max = float(max(
+        frame_max,
+        average.max() if average.size else 0.0,
+        _payload_y_max(avg_struct_payload),
+        _payload_y_max(overlay_step_payload),
+    )) * 1.05 or 1.0
 
     # Bigger fonts everywhere on the pattern plots.
     base_font = dict(family="Arial", size=18, color="#1a1a1a")
@@ -764,16 +1015,58 @@ def render_xrd_animation_viewer():
             line=dict(color="#2563eb", width=2),
         )
 
+    def _payload_trace(payload, name, color, dash="dash", width=1.5):
+        """Reference-pattern trace built from either a list (broadened) or
+        a {x, y} dict (sticks)."""
+        if payload is None:
+            return None
+        if is_sticks:
+            xs, ys = _stick_xy(payload["x"], payload["y"])
+            return go.Scatter(
+                x=xs, y=ys, mode="lines", name=name,
+                line=dict(color=color, width=width, dash=dash),
+                connectgaps=False,
+            )
+        return go.Scatter(
+            x=two_theta, y=payload, mode="lines", name=name,
+            line=dict(color=color, width=width, dash=dash),
+        )
+
     avg_trace = go.Scatter(
-        x=two_theta, y=average, mode="lines", name="Average",
-        line=dict(color="#dc2626", width=1.5, dash="dash"),
+        x=two_theta, y=average, mode="lines", name="Overall average",
+        line=dict(color="#dc2626", width=overlay_avg_width, dash=overlay_avg_dash),
     )
+    overlay_step_trace = (
+        _payload_trace(
+            overlay_step_payload,
+            f"Step {overlay_step_choice}",
+            "#16a34a", dash=overlay_step_dash, width=overlay_step_width,
+        )
+        if overlay_step_payload is not None else None
+    )
+    avg_struct_trace = (
+        _payload_trace(avg_struct_payload, "Pattern of average structure",
+                       "#7c3aed", dash=overlay_struct_dash,
+                       width=overlay_struct_width)
+        if has_avg_struct else None
+    )
+
+    def _add_overlays(fig, current_idx=None):
+        """Append the user-selected reference overlays. ``current_idx`` lets us
+        avoid drawing the chosen overlay step twice when the moving pattern is
+        already at that step."""
+        if (overlay_step_trace is not None
+                and current_idx != overlay_step_idx):
+            fig.add_trace(overlay_step_trace)
+        if overlay_avg:
+            fig.add_trace(avg_trace)
+        if overlay_avg_struct and avg_struct_trace is not None:
+            fig.add_trace(avg_struct_trace)
 
     def _single_step_fig(idx):
         fig = go.Figure()
         fig.add_trace(_pattern_trace(idx, f"Step {steps[idx]}"))
-        if overlay_avg:
-            fig.add_trace(avg_trace)
+        _add_overlays(fig, current_idx=idx)
         _apply_layout(
             fig, f"Powder XRD — trajectory step {steps[idx]}", height=500
         )
@@ -788,7 +1081,7 @@ def render_xrd_animation_viewer():
             key="xrd_step_slider",
         )
         st.plotly_chart(_single_step_fig(steps.index(sel_step)),
-                        use_container_width=True)
+                        width='stretch')
 
     else:
         anim_cols = st.columns([1, 1])
@@ -813,7 +1106,7 @@ def render_xrd_animation_viewer():
             idx = st.session_state.get("xrd_loop_idx", 0) % len(steps)
             placeholder = st.empty()
             placeholder.plotly_chart(
-                _single_step_fig(idx), use_container_width=True,
+                _single_step_fig(idx), width='stretch',
                 key="xrd_loop_chart",
             )
             st.caption(f"▶ Looping — showing step {steps[idx]} "
@@ -829,8 +1122,9 @@ def render_xrd_animation_viewer():
             # Plotly native animation: built-in play/pause button + frame slider.
             base_step = steps[0]
             fig = go.Figure(data=[_pattern_trace(0, "Pattern")])
-            if overlay_avg:
-                fig.add_trace(avg_trace)
+            # Static overlays are appended after trace 0; the animation only
+            # swaps trace 0 each frame, so the overlays stay visible throughout.
+            _add_overlays(fig, current_idx=None)
 
             fig.frames = [
                 go.Frame(
@@ -910,7 +1204,7 @@ def render_xrd_animation_viewer():
                     ],
                 ),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             st.caption(
                 "Use ▶ Play for a one-shot animation with the step slider, or "
                 "tick **Loop** above to repeat continuously until stopped."
@@ -924,10 +1218,12 @@ def render_xrd_animation_viewer():
                 x=two_theta,
                 y=average,
                 mode="lines",
-                name="Average",
+                name="Overall average",
                 line=dict(color="#dc2626", width=2),
             )
         )
+        if has_avg_struct and avg_struct_trace is not None:
+            avg_fig.add_trace(avg_struct_trace)
         avg_fig.update_layout(
             font=base_font,
             title=dict(text="Average powder XRD pattern", font=title_font,
@@ -940,7 +1236,7 @@ def render_xrd_animation_viewer():
             height=460,
             hovermode="x unified",
         )
-        st.plotly_chart(avg_fig, use_container_width=True)
+        st.plotly_chart(avg_fig, width='stretch')
 
         avg_csv = "2theta,intensity\n" + "\n".join(
             f"{x},{y}" for x, y in zip(two_theta, average)
@@ -952,6 +1248,11 @@ def render_xrd_animation_viewer():
             mime="text/csv",
             key="xrd_download_avg",
         )
+        if not has_avg_struct:
+            st.caption(
+                "ℹ️ This animation file does not include the average-structure "
+                "pattern. Re-run the latest generated script to add it."
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -1147,12 +1448,14 @@ def _xrd_script_generation_ui():
             "the folder), or pass a folder / specific files as arguments.\n"
             "5. Each trajectory's results land in "
             "`xrd_trajectory_results/<trajectory-name>/`: per-step CSVs, "
-            "`average_pattern.csv`, a publication-ready "
-            "`average_pattern.png` (+ `.pdf`), and "
+            "`average_pattern.csv` (+ `.png`/`.pdf`), the PBC-averaged "
+            "structure (`average_structure.cif`, `.vasp`, `.xyz`) with its own "
+            "`average_structure_pattern.csv` (+ `.png`/`.pdf`), and "
             "`xrd_trajectory_animation.json`.\n"
             "6. Open the **📈 Output analysis** tab and upload a trajectory's "
-            "`xrd_trajectory_animation.json` to scrub through the steps or play "
-            "the animation."
+            "`xrd_trajectory_animation.json` to scrub through the steps, play "
+            "the animation, and overlay the first-step / overall-average / "
+            "average-structure reference patterns."
         )
 
 
