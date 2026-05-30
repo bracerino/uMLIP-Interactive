@@ -39,7 +39,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [GRACE](https://github.com/ICAMS/grace-tensorpotential)
 
 ---
-![MACE GUI illustration](images/Mace-1.png)
+![MACE GUI illustration](images/Mace-01.png)
 ---
 ![MACE GUI Console](images/Mace-2.png)
 ---
