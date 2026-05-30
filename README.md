@@ -45,6 +45,9 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 ![MACE GUI Console](images/Mace-02.png)
 ---
 
+![MACE GUI Console](images/Mace-03.png)
+---
+
 ### **Compile the app**  
 
 If you are using Windows, please compile the app in WSL (if you do not have WSL, see how to install it first e.g. at: https://www.youtube.com/watch?v=zZf4YH4WiZo).
