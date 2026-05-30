@@ -41,7 +41,8 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 ---
 ![MACE GUI illustration](images/Mace-01.png)
 ---
-![MACE GUI Console](images/Mace-2.png)
+
+![MACE GUI Console](images/Mace-02.png)
 ---
 
 ### **Compile the app**  
