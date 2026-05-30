@@ -3019,6 +3019,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     pre_opt_steps = elastic_params.get('pre_opt_steps', 400)
     pre_opt_fmax = elastic_params.get('pre_opt_fmax', 0.01)
     pre_opt_optimizer = elastic_params.get('pre_opt_optimizer', 'LBFGS')
+    pre_opt_lattice = elastic_params.get('pre_opt_lattice_mode', 'none')
 
     if use_multi_strain:
         strain_magnitudes_list = [-strain_magnitude, -strain_magnitude / 2, 0.0, strain_magnitude / 2, strain_magnitude]
@@ -3043,6 +3044,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     pre_opt_steps = {pre_opt_steps}
     pre_opt_fmax = {pre_opt_fmax}
     pre_opt_optimizer = "{pre_opt_optimizer}"
+    pre_opt_lattice = "{pre_opt_lattice}"   # 'none' | 'lengths' | 'full'
 
     print(f"⚙️ Strain magnitudes: {{strain_magnitudes}}")
     print(f"⚙️ Method: {{'linear fit' if use_multi_strain else 'central difference'}}")
@@ -3163,12 +3165,21 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
             if pre_optimize and pre_opt_steps > 0:
                 print(f"  🔧 Running pre-elastic {pre_opt_optimizer} optimization "
                       f"(fmax={pre_opt_fmax} eV/Å, max {pre_opt_steps} steps)...")
-                if pre_opt_optimizer == "FIRE":
-                    pre_opt = FIRE(atoms, logfile=None)
-                elif pre_opt_optimizer == "BFGS":
-                    pre_opt = BFGS(atoms, logfile=None)
+                if pre_opt_lattice == "lengths":
+                    pre_opt_target = UnitCellFilter(
+                        atoms, mask=[True, True, True, False, False, False])
+                    print("  Relaxing atoms + lattice lengths (a, b, c; angles fixed)")
+                elif pre_opt_lattice == "full":
+                    pre_opt_target = FrechetCellFilter(atoms)
+                    print("  Relaxing atoms + full lattice (lengths + angles)")
                 else:
-                    pre_opt = LBFGS(atoms, logfile=None)
+                    pre_opt_target = atoms
+                if pre_opt_optimizer == "FIRE":
+                    pre_opt = FIRE(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "BFGS":
+                    pre_opt = BFGS(pre_opt_target, logfile=None)
+                else:
+                    pre_opt = LBFGS(pre_opt_target, logfile=None)
 
                 step_counter_pre = [0]
                 prev_energy_pre = [None]
@@ -5375,6 +5386,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_optimizer = phonon_params.get('pre_relax_optimizer', 'LBFGS')
     pre_relax_fmax      = phonon_params.get('pre_relax_fmax', 0.01)
     pre_relax_steps     = phonon_params.get('pre_relax_steps', 100)
+    pre_relax_lattice   = phonon_params.get('pre_relax_lattice_mode', 'none')
     imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
                           -phonon_params.get('imaginary_freq_threshold', 0.1))
     calc_gamma_irreps   = bool(phonon_params.get('calc_gamma_irreps', False))
@@ -5486,6 +5498,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_optimizer     = "{pre_relax_optimizer}"
     pre_relax_fmax          = {pre_relax_fmax}
     pre_relax_steps         = {pre_relax_steps}
+    pre_relax_lattice       = "{pre_relax_lattice}"   # 'none' | 'lengths' | 'full'
     imaginary_tol_mev       = {imag_tol_mev}
     imaginary_tol_thz       = imaginary_tol_mev / 4.136
     calc_gamma_irreps       = {calc_gamma_irreps!r}
@@ -5528,10 +5541,19 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     f"fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)...")
                 pre_atoms = atoms.copy()
                 pre_atoms.calc = calculator
-                if pre_relax_optimizer == "FIRE":
-                    pre_opt = FIRE(pre_atoms, logfile=None)
+                if pre_relax_lattice == "lengths":
+                    relax_target = UnitCellFilter(
+                        pre_atoms, mask=[True, True, True, False, False, False])
+                    log("  Relaxing atoms + lattice lengths (a, b, c; angles fixed)")
+                elif pre_relax_lattice == "full":
+                    relax_target = FrechetCellFilter(pre_atoms)
+                    log("  Relaxing atoms + full lattice (lengths + angles)")
                 else:
-                    pre_opt = LBFGS(pre_atoms, logfile=None)
+                    relax_target = pre_atoms
+                if pre_relax_optimizer == "FIRE":
+                    pre_opt = FIRE(relax_target, logfile=None)
+                else:
+                    pre_opt = LBFGS(relax_target, logfile=None)
                 pre_opt.run(fmax=pre_relax_fmax, steps=pre_relax_steps)
                 atoms = pre_atoms
                 log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
