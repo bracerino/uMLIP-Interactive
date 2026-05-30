@@ -5203,74 +5203,81 @@ with tab1:
                 render_energy_grid_viewer,
             )
 
-            energy_grid_params = setup_energy_grid_scan_ui(
-                default_settings=st.session_state.get("default_settings"),
-                save_settings_function=save_default_settings,
+            tab_gen, tab_out = st.tabs(
+                ["📝 Generate standalone script", "📊 Output analysis"]
             )
 
-            st.markdown("---")
-            render_energy_grid_viewer()
+            with tab_gen:
+                energy_grid_params = setup_energy_grid_scan_ui(
+                    default_settings=st.session_state.get("default_settings"),
+                    save_settings_function=save_default_settings,
+                )
 
-            st.markdown("---")
-            st.subheader("Generate Standalone Energy Grid Scan Script")
+                st.markdown("---")
+                st.subheader("Generate Standalone Energy Grid Scan Script")
 
-            if "generated_energy_grid_script" not in st.session_state:
-                st.session_state.generated_energy_grid_script = None
-
-            if st.button(
-                "📝 Generate Energy Grid Scan Script (using current settings)",
-                key="generate_energy_grid_script_button",
-                type="secondary",
-            ):
-                try:
-                    mace_config = st.session_state.get("mace_config", {})
-                    generated_script = generate_energy_grid_scan_script(
-                        energy_grid_params,
-                        model_size=model_size,
-                        device=device,
-                        dtype=dtype,
-                        thread_count=st.session_state.thread_count,
-                        selected_model_key=selected_model,
-                        mace_head=mace_config.get("head"),
-                        mace_dispersion=mace_config.get("dispersion", False),
-                        mace_dispersion_xc=mace_config.get("dispersion_xc", "pbe"),
-                        custom_mace_path=custom_mace_path if is_custom_mace else None,
-                        custom_upet_path=custom_upet_path if is_custom_upet else None,
-                        polar_settings=st.session_state.get("polar_settings", {}),
-                    )
-                    st.session_state.generated_energy_grid_script = generated_script
-                    st.success("✅ Energy grid scan script generated successfully!")
-                except Exception as exc:
-                    st.error(f"❌ Failed to generate script: {exc}")
+                if "generated_energy_grid_script" not in st.session_state:
                     st.session_state.generated_energy_grid_script = None
 
-            if st.session_state.generated_energy_grid_script:
-                with st.expander("🐍 View Generated Energy Grid Scan Script", expanded=True):
-                    st.code(
-                        st.session_state.generated_energy_grid_script,
-                        language="python",
+                if st.button(
+                    "📝 Generate Energy Grid Scan Script (using current settings)",
+                    key="generate_energy_grid_script_button",
+                    type="secondary",
+                ):
+                    try:
+                        mace_config = st.session_state.get("mace_config", {})
+                        generated_script = generate_energy_grid_scan_script(
+                            energy_grid_params,
+                            model_size=model_size,
+                            device=device,
+                            dtype=dtype,
+                            thread_count=st.session_state.thread_count,
+                            selected_model_key=selected_model,
+                            mace_head=mace_config.get("head"),
+                            mace_dispersion=mace_config.get("dispersion", False),
+                            mace_dispersion_xc=mace_config.get("dispersion_xc", "pbe"),
+                            custom_mace_path=custom_mace_path if is_custom_mace else None,
+                            custom_upet_path=custom_upet_path if is_custom_upet else None,
+                            polar_settings=st.session_state.get("polar_settings", {}),
+                        )
+                        st.session_state.generated_energy_grid_script = generated_script
+                        st.success("✅ Energy grid scan script generated successfully!")
+                    except Exception as exc:
+                        st.error(f"❌ Failed to generate script: {exc}")
+                        st.session_state.generated_energy_grid_script = None
+
+                if st.session_state.generated_energy_grid_script:
+                    with st.expander("🐍 View Generated Energy Grid Scan Script", expanded=True):
+                        st.code(
+                            st.session_state.generated_energy_grid_script,
+                            language="python",
+                        )
+                        st.download_button(
+                            label="💾 Download Energy Grid Scan Script (.py)",
+                            data=st.session_state.generated_energy_grid_script,
+                            file_name="run_energy_grid_scan.py",
+                            mime="text/x-python",
+                            key="download_generated_energy_grid_script",
+                            type="primary",
+                        )
+                    st.info(
+                        "**Instructions (Energy Grid Scan):**\n"
+                        "1. Save the script (e.g. `run_energy_grid_scan.py`).\n"
+                        "2. Place one or more structure files (`.cif`, `.vasp`, `POSCAR*`) "
+                        "in the same directory.\n"
+                        "3. Install dependencies (`pip install ase pandas numpy torch …` "
+                        "plus the MLIP package matching your model selection).\n"
+                        "4. Run: `python run_energy_grid_scan.py`.\n"
+                        "5. Per-structure results land in "
+                        "`energy_grid_results/<basename>/` as `energy_grid.npz`, "
+                        "`energy_grid.csv`, and (optionally) `energy_grid.xsf` for "
+                        "VESTA / XCrysDen visualisation.\n"
+                        "6. Switch to the **📊 Output analysis** tab and upload an "
+                        "`energy_grid.npz` to render 3-D volume / 2-D slice views."
                     )
-                    st.download_button(
-                        label="💾 Download Energy Grid Scan Script (.py)",
-                        data=st.session_state.generated_energy_grid_script,
-                        file_name="run_energy_grid_scan.py",
-                        mime="text/x-python",
-                        key="download_generated_energy_grid_script",
-                        type="primary",
-                    )
-                st.info(
-                    "**Instructions (Energy Grid Scan):**\n"
-                    "1. Save the script (e.g. `run_energy_grid_scan.py`).\n"
-                    "2. Place one or more structure files (`.cif`, `.vasp`, `POSCAR*`) "
-                    "in the same directory.\n"
-                    "3. Install dependencies (`pip install ase pandas numpy torch …` "
-                    "plus the MLIP package matching your model selection).\n"
-                    "4. Run: `python run_energy_grid_scan.py`.\n"
-                    "5. Per-structure results land in "
-                    "`energy_grid_results/<basename>/` as `energy_grid.npz`, "
-                    "`energy_grid.csv`, and (optionally) `energy_grid.xsf` for "
-                    "VESTA / XCrysDen visualisation."
-                )
+
+            with tab_out:
+                render_energy_grid_viewer()
         if calc_type == "NEB Calculation":
             neb_params = setup_neb_parameters_ui()
 
