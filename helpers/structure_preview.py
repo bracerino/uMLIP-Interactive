@@ -26,7 +26,11 @@ def render_structure_preview(structures):
     structural information (geometry, formula, lattice, elements) without
     any model compatibility checks.
     """
-    st.header("2. Structure Preview")
+    st.header("Structure Preview")
+
+    if not structures:
+        st.info("No structure uploaded yet. Upload a structure file to see its preview here.")
+        return
 
     for i, (name, structure) in enumerate(structures.items()):
         with st.expander(f"Structure {i + 1}: {name}"):
