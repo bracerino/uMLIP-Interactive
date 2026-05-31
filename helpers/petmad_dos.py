@@ -418,8 +418,39 @@ def _layout_base(title):
 def _fermi_vline(fig):
     fig.add_vline(
         x=0, line_dash="dash", line_color="black", line_width=1.5,
-        annotation_text="E<sub>F</sub>", annotation_font_size=18,
+        annotation_text="E<sub>F</sub> = VBM", annotation_font_size=18,
         annotation_position="top right",
+    )
+
+
+def _cbm_vline(fig, bandgap):
+    """Draw the predicted conduction-band-minimum line. PET-MAD's
+    `calculate_efermi` places E_F at the VBM, so CBM sits at x = +bandgap on
+    the shifted axis. Drawn only when bandgap is non-trivial."""
+    if bandgap is None or bandgap < 0.05:
+        return
+    fig.add_vline(
+        x=float(bandgap), line_dash="dot", line_color="#c0392b", line_width=1.5,
+        annotation_text="CBM", annotation_font_size=18,
+        annotation_position="top left",
+        annotation_font_color="#c0392b",
+    )
+
+
+def _shade_gap(fig, bandgap):
+    """Lightly shade the [VBM, CBM] band so the user can see what PET-MAD's
+    bandgap head predicts as forbidden — any DOS visible inside this band is
+    a disagreement between the bandgap head and the DOS head."""
+    if bandgap is None or bandgap < 0.05:
+        return
+    fig.add_vrect(
+        x0=0.0, x1=float(bandgap),
+        fillcolor="rgba(127, 127, 127, 0.08)",
+        line_width=0,
+        annotation_text="Predicted gap region",
+        annotation_position="top",
+        annotation_font_size=14,
+        annotation_font_color="#555",
     )
 
 
@@ -466,33 +497,66 @@ def _plot_single(result, params):
                 mode="lines", line=dict(color=col, width=2.5), name=lbl,
             ))
 
+        _shade_gap(fig, bandgap)
         _fermi_vline(fig)
+        _cbm_vline(fig, bandgap)
         fig.update_layout(**_layout_base(f"Per-atom DOS — {formula}  ({gap_txt})"))
         st.plotly_chart(fig, width='stretch')
 
     else:
         gs, smooth = _get_curve(result, params)
-        occ = gs <= 0
+        is_insulator = bandgap >= 0.05
         fig = go.Figure()
+        # Occupied: everything below the VBM (== E_F at x=0).
+        occ = gs <= 0.0
         fig.add_trace(go.Scatter(
             x=gs[occ], y=smooth[occ],
             fill="tozeroy", fillcolor="rgba(41,128,185,0.35)",
-            mode="lines", line=dict(color="#2980b9", width=2.5), name="Occupied",
+            mode="lines", line=dict(color="#2980b9", width=2.5), name="Occupied (≤ VBM)",
         ))
+        if is_insulator:
+            # Anything PET-MAD's DOS head predicted inside the gap-head's
+            # forbidden window — this is the disagreement region.
+            in_gap = (gs > 0.0) & (gs < bandgap)
+            fig.add_trace(go.Scatter(
+                x=gs[in_gap], y=smooth[in_gap],
+                fill="tozeroy", fillcolor="rgba(127,127,127,0.30)",
+                mode="lines", line=dict(color="#7f7f7f", width=2.0),
+                name="DOS-head leakage into gap",
+            ))
+            unocc = gs >= bandgap
+        else:
+            unocc = gs > 0.0
         fig.add_trace(go.Scatter(
-            x=gs[~occ], y=smooth[~occ],
+            x=gs[unocc], y=smooth[unocc],
             fill="tozeroy", fillcolor="rgba(231,76,60,0.25)",
-            mode="lines", line=dict(color="#e74c3c", width=2.5), name="Unoccupied",
+            mode="lines", line=dict(color="#e74c3c", width=2.5),
+            name="Unoccupied (≥ CBM)" if is_insulator else "Unoccupied",
         ))
+        _shade_gap(fig, bandgap)
         _fermi_vline(fig)
+        _cbm_vline(fig, bandgap)
         fig.update_layout(**_layout_base(f"Electronic DOS — {formula}  ({gap_txt})"))
         st.plotly_chart(fig, width='stretch')
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Fermi Level", f"{fermi:.4f} eV")
-    c2.metric("Band Gap",    f"{bandgap:.4f} eV")
-    c3.metric("Formula",     formula)
-    c4.metric("Atoms",       result.get("n_atoms", "—"))
+    c1.metric("Fermi Level (VBM)", f"{fermi:.4f} eV")
+    c2.metric("Band Gap",          f"{bandgap:.4f} eV")
+    c3.metric("Formula",           formula)
+    c4.metric("Atoms",             result.get("n_atoms", "—"))
+
+    if bandgap >= 0.05:
+        st.caption(
+            "ℹ️ PET-MAD has **two independent prediction heads**: the Fermi "
+            "level (E_F = VBM under the T = 0 K cumulative-DOS convention) and "
+            "the band-gap scalar. The grey-shaded **[VBM, CBM]** region is "
+            "where the band-gap head predicts no states. Any DOS still visible "
+            "inside that band is the **DOS head disagreeing with the band-gap "
+            "head**, plus a few × σ of Gaussian-broadening tail leakage — not "
+            "a plotting error. Lower `dos_sigma` to reduce the tail; states "
+            "still visible after that are PET-MAD's intrinsic DOS-vs-gap "
+            "inconsistency."
+        )
 
 
 def _plot_overlay(results, params):
