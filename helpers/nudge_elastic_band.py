@@ -743,6 +743,91 @@ def save_images_poscar(images, out_dir):
     print(f"  {{len(images)}} image POSCARs -> {{out_dir}}/")
 
 
+def plot_profile_publication(energies, distances, bi, result, out_path_no_ext):
+    """Single-panel publication-ready figure: relative energy vs distance
+    along path. Saves both PNG (600 dpi) and PDF (vector) copies."""
+    try:
+        import matplotlib.pyplot as plt
+        from scipy.interpolate import PchipInterpolator
+        e_arr = np.array(energies)
+        eV_rel = e_arr - e_arr[0]
+        x = np.array(distances)
+
+        plt.rcParams.update({{
+            "font.family": "DejaVu Sans",
+            "font.size": 14,
+            "axes.linewidth": 1.4,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.major.size": 6,
+            "ytick.major.size": 6,
+            "xtick.minor.size": 3,
+            "ytick.minor.size": 3,
+            "legend.frameon": False,
+        }})
+
+        fig, ax = plt.subplots(figsize=(7.5, 5.0))
+
+        # Smooth monotone-cubic curve through the image points so the eye
+        # picks out the barrier without inventing maxima between images.
+        try:
+            x_dense = np.linspace(x.min(), x.max(), 400)
+            y_dense = PchipInterpolator(x, eV_rel)(x_dense)
+            ax.plot(x_dense, y_dense, color="#1f3a93", lw=2.0,
+                    alpha=0.85, zorder=2)
+        except Exception:
+            ax.plot(x, eV_rel, color="#1f3a93", lw=2.0, zorder=2)
+
+        # Image points + endpoints + TS marker.
+        ax.plot(x, eV_rel, "o", ms=8, color="#1f3a93",
+                markeredgecolor="white", markeredgewidth=1.1, zorder=3,
+                label="NEB images")
+        ax.plot(x[0],  eV_rel[0],  "*", ms=20, color="#2e8b57",
+                markeredgecolor="white", markeredgewidth=1.1,
+                label="Initial", zorder=4)
+        ax.plot(x[-1], eV_rel[-1], "*", ms=20, color="#c0392b",
+                markeredgecolor="white", markeredgewidth=1.1,
+                label="Final", zorder=4)
+        ax.plot(x[bi], eV_rel[bi], "D", ms=13, color="#e67e22",
+                markeredgecolor="white", markeredgewidth=1.1,
+                label="Transition state", zorder=4)
+        ax.axhline(0.0, ls="--", color="#7f7f7f", lw=1.0, alpha=0.6)
+
+        # Forward-barrier annotation (vertical double arrow).
+        ax.annotate(
+            "", xy=(x[bi], eV_rel[bi]), xytext=(x[bi], 0.0),
+            arrowprops=dict(arrowstyle="<->", color="#e67e22", lw=1.6),
+        )
+        ax.text(
+            x[bi] + 0.02 * (x[-1] - x[0]),
+            eV_rel[bi] * 0.55,
+            f"$E_a$ = {{result['forward_barrier_eV']:.3f}} eV\\n"
+            f"      = {{result['forward_barrier_kJ']:.1f}} kJ/mol",
+            color="#a04000", fontsize=12, va="center",
+        )
+
+        ax.set_xlim(x.min() - 0.02 * (x[-1] - x[0]),
+                    x.max() + 0.02 * (x[-1] - x[0]))
+        ax.set_xlabel(r"Distance along path ($\\AA$)", fontsize=16)
+        ax.set_ylabel("Relative energy (eV)", fontsize=16)
+        ax.minorticks_on()
+        ax.tick_params(which="both", top=True, right=True, labelsize=13)
+        ax.legend(loc="best", fontsize=12)
+
+        fig.tight_layout()
+        png_path = out_path_no_ext + ".png"
+        pdf_path = out_path_no_ext + ".pdf"
+        fig.savefig(png_path, dpi=600, bbox_inches="tight")
+        fig.savefig(pdf_path, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Publication plot -> {{png_path}} (+ .pdf)")
+    except ImportError as exc:
+        print(f"  Publication plot skipped (missing dependency: {{exc.name}}). "
+              "`pip install matplotlib scipy` to enable.")
+    except Exception as err:
+        print(f"  Publication plot failed: {{err}}")
+
+
 def plot_profile(energies, distances, bi, result, out_path):
     try:
         import matplotlib.pyplot as plt
@@ -963,6 +1048,10 @@ def main():
     write("neb_results/initial_optimised.vasp", images[0],  format="vasp", direct=True, sort=False)
     write("neb_results/final_optimised.vasp",   images[-1], format="vasp", direct=True, sort=False)
     plot_profile(e_arr, dists, bi, result, "neb_results/neb_profile.png")
+    plot_profile_publication(
+        e_arr, dists, bi, result,
+        "neb_results/neb_profile_publication",
+    )
 
     print(f"\\nTotal time: {{(time.time()-t0)/60:.1f}} min  |  Done! -> neb_results/")
 
