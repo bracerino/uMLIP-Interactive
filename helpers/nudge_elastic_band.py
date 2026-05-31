@@ -71,8 +71,12 @@ def setup_neb_parameters_ui():
     col9, col10, col11, col12 = st.columns(4)
     with col9:
         neb_params['fmax'] = st.number_input(
-            "Force Convergence (eV/Å)",
-            min_value=0.001, max_value=0.5, value=0.05, step=0.005, format="%.3f")
+            "NEB Force Convergence (eV/Å)",
+            min_value=0.001, max_value=0.5, value=0.05, step=0.005, format="%.3f",
+            help="Convergence target for the NEB-projected force on the band "
+                 "(the spring-projected gradient on inner images — not the bare "
+                 "atomic max-force). The optimizer stops once max‖F_NEB‖ on any "
+                 "inner image drops below this value.")
     with col10:
         neb_params['max_steps'] = st.number_input(
             "Maximum Steps", min_value=10, max_value=10000, value=500, step=50)
@@ -130,6 +134,28 @@ def _mic_distance(pos1, pos2, cell):
     frac = np.linalg.solve(cell.T, diff.T).T
     frac -= np.round(frac)
     return float(np.linalg.norm(frac @ cell))
+
+
+def _neb_force_norms(neb_obj, n_inner, natoms):
+    """Per-inner-image max-norm of the NEB-projected force (the very vector
+    the optimizer checks against `fmax`). Returns
+        (overall_max, per_inner_image_list)
+    or (nan, []) on any failure. Endpoint images are *not* included --
+    they are fixed and their NEB force is undefined."""
+    try:
+        f = np.asarray(neb_obj.get_forces())
+        norms = np.sqrt((f ** 2).sum(axis=1))
+        if n_inner > 0 and natoms > 0:
+            per_inner = [
+                float(norms[i * natoms:(i + 1) * natoms].max())
+                for i in range(n_inner)
+            ]
+        else:
+            per_inner = []
+        overall = float(norms.max()) if norms.size else float("nan")
+        return overall, per_inner
+    except Exception:
+        return float("nan"), []
 
 
 def _calc_block(selected_model, model_size, device, dtype,
@@ -321,43 +347,54 @@ def run_neb_calculation(initial_structure, final_structure, calculator,
             if stop_event.is_set():
                 raise RuntimeError("Calculation stopped by user")
 
-            cur_e, cur_f = [], []
+            cur_e = []
             for img in images:
                 try:
                     cur_e.append(float(img.get_potential_energy()))
-                    cur_f.append(float(np.max(np.linalg.norm(img.get_forces(), axis=1))))
                 except Exception:
                     cur_e.append(float('nan'))
-                    cur_f.append(float('nan'))
             energies_history.append(cur_e)
 
-            valid_f = [v for v in cur_f if not np.isnan(v)]
-            mf = max(valid_f) if valid_f else float('nan')
+            # NEB-projected per-image fmax — this is the force the optimizer
+            # checks against the `fmax` convergence target. Per-image atomic
+            # max-force can disagree with it (especially when the spring is
+            # taut), so log the NEB version instead.
+            n_inner = max(len(images) - 2, 0)
+            natoms = len(images[0]) if images else 0
+            neb_fmax, per_inner_fmax = _neb_force_norms(neb, n_inner, natoms)
+            # Per-image table: endpoints are fixed (no NEB force), shown as "—".
+            cur_f = [None] + list(per_inner_fmax) + [None] if n_inner > 0 \
+                else [None] * len(images)
+            mf = neb_fmax
 
-
-            if use_climb and not climb_activated[0] and mf < switch_fmax:
+            if use_climb and not climb_activated[0] and not np.isnan(mf) \
+                    and mf < switch_fmax:
                 neb.climb = True
                 climb_activated[0] = True
                 log_queue.put(
-                    f"    Step {step_count[0]}: fmax={mf:.4f} eV/A — CI-NEB activated")
+                    f"    Step {step_count[0]}: NEB fmax={mf:.4f} eV/A — CI-NEB activated")
 
             if step_count[0] % log_interval == 0 or step_count[0] == 1:
                 ci_tag = " [CI]" if climb_activated[0] else ""
                 log_queue.put(
-                    f"  -- Step {step_count[0]:4d}{ci_tag}  |  fmax = {mf:.4f} eV/A --")
+                    f"  -- Step {step_count[0]:4d}{ci_tag}  |  "
+                    f"NEB fmax = {mf:.4f} eV/A (convergence criterion) --")
                 log_queue.put(
-                    f"    {'Img':>4}  {'E (eV)':>14}  {'dE (meV)':>10}  {'fmax (eV/A)':>12}")
+                    f"    {'Img':>4}  {'E (eV)':>14}  {'dE (meV)':>10}  "
+                    f"{'NEB fmax':>12}")
                 e0_row = cur_e[0] if not np.isnan(cur_e[0]) else 0.0
                 valid_inner = [v for ii, v in enumerate(cur_e)
                                if not np.isnan(v) and ii not in (0, len(cur_e)-1)]
                 max_inner = max(valid_inner) if valid_inner else None
-                for ii, (ee, ff) in enumerate(zip(cur_e, cur_f)):
+                for ii, ee in enumerate(cur_e):
                     de = (ee - e0_row) * 1000 if not np.isnan(ee) else float('nan')
                     tag = " <- TS?" if (max_inner is not None and not np.isnan(ee)
                                         and ee == max_inner
                                         and ii not in (0, len(cur_e)-1)) else ""
+                    ff = cur_f[ii]
+                    f_str = f"{ff:>12.4f}" if ff is not None else f"{'—':>12}"
                     log_queue.put(
-                        f"    {ii:>4}  {ee:>14.6f}  {de:>10.2f}  {ff:>12.4f}{tag}")
+                        f"    {ii:>4}  {ee:>14.6f}  {de:>10.2f}  {f_str}{tag}")
 
             log_queue.put({
                 'type': 'neb_step', 'structure': structure_name,
@@ -960,35 +997,58 @@ def main():
 
     def callback():
         step_count[0] += 1
-        cur_e, cur_f = [], []
+        # Energies per image.
+        cur_e = []
         for img in images:
             try:
                 cur_e.append(float(img.get_potential_energy()))
-                cur_f.append(float(np.max(np.linalg.norm(img.get_forces(), axis=1))))
             except Exception:
-                cur_e.append(float("nan")); cur_f.append(float("nan"))
-        valid = [v for v in cur_f if not np.isnan(v)]
-        mf = max(valid) if valid else float("nan")
+                cur_e.append(float("nan"))
 
-        if CLIMB and not CLIMB_FROM_START and not climb_activated[0] and mf < CLIMB_SWITCH_FMAX:
+        # NEB-projected fmax: this is the very force ASE's optimizer compares
+        # against the `fmax` target. The raw per-atom force on each image is
+        # NOT what determines convergence for a band -- the spring-projected
+        # NEB force is. Endpoint images are fixed (no NEB force).
+        n_inner = max(len(images) - 2, 0)
+        natoms  = len(images[0]) if images else 0
+        try:
+            f_neb = np.asarray(neb.get_forces())
+            f_norms = np.sqrt((f_neb ** 2).sum(axis=1))
+            per_inner = [
+                float(f_norms[i*natoms:(i+1)*natoms].max())
+                for i in range(n_inner)
+            ] if (n_inner > 0 and natoms > 0) else []
+            mf = float(f_norms.max()) if f_norms.size else float("nan")
+        except Exception:
+            per_inner = []
+            mf = float("nan")
+        # Per-image column: endpoints get None (printed as "—").
+        cur_f = [None] + per_inner + [None] if n_inner > 0 else [None] * len(images)
+
+        if (CLIMB and not CLIMB_FROM_START and not climb_activated[0]
+                and not np.isnan(mf) and mf < CLIMB_SWITCH_FMAX):
             neb.climb = True; climb_activated[0] = True
-            print(f"  Step {{step_count[0]}}: CI-NEB activated (fmax={{mf:.4f}})")
+            print(f"  Step {{step_count[0]}}: CI-NEB activated (NEB fmax={{mf:.4f}})")
 
         if step_count[0] % LOG_INTERVAL == 0 or step_count[0] == 1:
             ci = " [CI]" if climb_activated[0] else ""
-            print(f"  -- Step {{step_count[0]:4d}}{{ci}}  fmax = {{mf:.4f}} eV/A --")
-            print(f"    {{'Img':>4}}  {{'E (eV)':>14}}  {{'dE (meV)':>10}}  {{'fmax':>10}}")
+            print(f"  -- Step {{step_count[0]:4d}}{{ci}}  "
+                  f"NEB fmax = {{mf:.4f}} eV/A (convergence criterion) --")
+            print(f"    {{'Img':>4}}  {{'E (eV)':>14}}  {{'dE (meV)':>10}}  "
+                  f"{{'NEB fmax':>10}}")
             e0 = cur_e[0] if not np.isnan(cur_e[0]) else 0.0
             n_last = len(cur_e) - 1
             valid_inner = [v for jj,v in enumerate(cur_e)
                            if not np.isnan(v) and jj not in (0, n_last)]
             max_inner = max(valid_inner) if valid_inner else None
-            for ii, (ee, ff) in enumerate(zip(cur_e, cur_f)):
+            for ii, ee in enumerate(cur_e):
                 de  = (ee - e0) * 1000 if not np.isnan(ee) else float("nan")
                 tag = " <- TS?" if (max_inner is not None and not np.isnan(ee)
                                     and ee == max_inner
                                     and ii not in (0, n_last)) else ""
-                print(f"    {{ii:>4}}  {{ee:>14.6f}}  {{de:>10.2f}}  {{ff:>10.4f}}{{tag}}")
+                ff = cur_f[ii]
+                f_str = f"{{ff:>10.4f}}" if ff is not None else f"{{'—':>10}}"
+                print(f"    {{ii:>4}}  {{ee:>14.6f}}  {{de:>10.2f}}  {{f_str}}{{tag}}")
 
     optimizer.attach(callback, interval=1)
     print(f"\\nRunning {{OPTIMIZER}} (max {{MAX_STEPS}} steps, fmax={{FMAX}}) ...")
@@ -1199,31 +1259,50 @@ def main():
 
     def callback():
         step_count[0] += 1
-        cur_e, cur_f = [], []
+        cur_e = []
         for img in images:
             try:
                 cur_e.append(float(img.get_potential_energy()))
-                cur_f.append(float(np.max(np.linalg.norm(img.get_forces(), axis=1))))
             except Exception:
-                cur_e.append(float("nan")); cur_f.append(float("nan"))
-        valid = [v for v in cur_f if not np.isnan(v)]
-        mf = max(valid) if valid else float("nan")
-        if CLIMB and not CLIMB_FROM_START and not climb_activated[0] and mf < CLIMB_SWITCH_FMAX:
+                cur_e.append(float("nan"))
+
+        # NEB-projected fmax = the force the optimizer compares against FMAX.
+        # Endpoint images are fixed (no NEB force).
+        n_inner = max(len(images) - 2, 0)
+        natoms  = len(images[0]) if images else 0
+        try:
+            f_neb = np.asarray(neb.get_forces())
+            f_norms = np.sqrt((f_neb ** 2).sum(axis=1))
+            per_inner = [
+                float(f_norms[i*natoms:(i+1)*natoms].max())
+                for i in range(n_inner)
+            ] if (n_inner > 0 and natoms > 0) else []
+            mf = float(f_norms.max()) if f_norms.size else float("nan")
+        except Exception:
+            per_inner = []
+            mf = float("nan")
+        cur_f = [None] + per_inner + [None] if n_inner > 0 else [None] * len(images)
+
+        if (CLIMB and not CLIMB_FROM_START and not climb_activated[0]
+                and not np.isnan(mf) and mf < CLIMB_SWITCH_FMAX):
             neb.climb = True; climb_activated[0] = True
-            print(f"  Step {{step_count[0]}}: CI-NEB ON (fmax={{mf:.4f}})")
+            print(f"  Step {{step_count[0]}}: CI-NEB ON (NEB fmax={{mf:.4f}})")
         if step_count[0] % LOG_INTERVAL == 0 or step_count[0] == 1:
             ci = " [CI]" if climb_activated[0] else ""
-            print(f"  Step {{step_count[0]:4d}}{{ci}}  fmax={{mf:.4f}} eV/A")
+            print(f"  Step {{step_count[0]:4d}}{{ci}}  NEB fmax={{mf:.4f}} eV/A "
+                  f"(convergence criterion)")
             e0 = cur_e[0] if not np.isnan(cur_e[0]) else 0.0
             n_last = len(cur_e) - 1
             valid_inner = [v for jj,v in enumerate(cur_e)
                            if not np.isnan(v) and jj not in (0, n_last)]
             max_inner = max(valid_inner) if valid_inner else None
-            for ii, (ee, ff) in enumerate(zip(cur_e, cur_f)):
+            for ii, ee in enumerate(cur_e):
                 de  = (ee - e0) * 1000 if not np.isnan(ee) else float("nan")
                 tag = " <- TS?" if (max_inner and not np.isnan(ee) and ee == max_inner
                                     and ii not in (0, n_last)) else ""
-                print(f"    img{{ii:02d}}  E={{ee:.6f}}  dE={{de:+8.2f}} meV  f={{ff:.4f}}{{tag}}")
+                ff = cur_f[ii]
+                f_str = f"f={{ff:.4f}}" if ff is not None else "f=  —    "
+                print(f"    img{{ii:02d}}  E={{ee:.6f}}  dE={{de:+8.2f}} meV  {{f_str}}{{tag}}")
 
     optimizer.attach(callback, interval=1)
     print(f"Running {{OPTIMIZER}} ...")
