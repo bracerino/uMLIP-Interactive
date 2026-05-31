@@ -4381,7 +4381,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.5 · 5/30/2026
+            v0.9.5.1 · 5/31/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6621,9 +6621,33 @@ with tab_st:
                     """,
                     unsafe_allow_html=True
                 )
-    external_only = calc_type in ["Molecular Dynamics", "NEB Calculation"]
+    external_only = calc_type in [
+        "Molecular Dynamics",
+        "NEB Calculation",
+        "Virtual Tensile Test",
+        "Energy Grid Scan",
+        "Selected postprocessing scripts",
+    ]
 
     if external_only:
+        # Per-type label for the script-generation button referenced in step 4.
+        _generate_button_label = {
+            "Molecular Dynamics":             "📝 Generate MD Python Script",
+            "NEB Calculation":                "📝 Generate Standalone NEB Script",
+            "Virtual Tensile Test":           "📝 Generate Tensile Test Python Script",
+            "Energy Grid Scan":               "📝 Generate Energy Grid Scan Script",
+            "Selected postprocessing scripts":
+                "📝 Generate XRD Trajectory Script / Generate Average Structure Script",
+        }.get(calc_type, "📝 Generate Python Script")
+
+        # Where in the first tab the user finds this calc type's panel.
+        _section_hint = (
+            "the **📝 Generate standalone script** tab inside the "
+            f"**{calc_type}** panel"
+            if calc_type in ("Energy Grid Scan", "Selected postprocessing scripts")
+            else f"the **{calc_type}** section"
+        )
+
         st.warning(
             f"⚠️ **{calc_type} cannot run inside this web interface.** "
             f"It must be executed as a standalone Python script in your terminal."
@@ -6631,11 +6655,9 @@ with tab_st:
         st.info(
             f"**How to run a {calc_type} calculation:**\n\n"
             f"1. Go to **📁 Structure Upload & Setup** (first tab)\n"
-            f"2. Scroll down to the **{calc_type}** section\n"
+            f"2. Scroll down to {_section_hint}\n"
             f"3. Configure your parameters\n"
-            f"4. Click **📝 Generate "
-            f"{'MD' if calc_type == 'Molecular Dynamics' else 'NEB'} "
-            f"Python Script**\n"
+            f"4. Click **{_generate_button_label}**\n"
             f"5. Download the `.py` file, place your structures next to it, then run "
             f"`python your_script.py` in your terminal\n\n"
             f"💡 You can still use **👁️ Preview Core Code** below to inspect the calculation logic before generating."
