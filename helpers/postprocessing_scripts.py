@@ -51,6 +51,7 @@ def generate_xrd_trajectory_script(params):
         fwhm               : float - Gaussian broadening FWHM (deg 2θ)
         n_points           : int   - points on the common 2θ grid
         num_threads        : int
+        compute_corrected  : bool  - also compute the Bragg-corrected |⟨F⟩|² pattern
     """
     traj_dir = params.get("input_dir", ".")
     tt_min = float(params["two_theta_min"])
@@ -62,6 +63,7 @@ def generate_xrd_trajectory_script(params):
     fwhm = float(params.get("fwhm", 0.1))
     n_points = int(params.get("n_points", 2000))
     num_threads = int(params.get("num_threads", 4))
+    compute_corrected = bool(params.get("compute_corrected", False))
 
     # `wavelength` is either a known string radiation (CuKa, ...) or a float in Å.
     if isinstance(wavelength, str):
@@ -71,6 +73,7 @@ def generate_xrd_trajectory_script(params):
 
     scaled = "True" if intensity_mode == "relative" else "False"
     broaden_repr = "True" if broaden else "False"
+    compute_corrected_repr = "True" if compute_corrected else "False"
 
     script = f'''#!/usr/bin/env python3
 """
@@ -126,6 +129,9 @@ from ase import Atoms
 from ase.io import read, write
 from ase.geometry import cellpar_to_cell
 from pymatgen.io.ase import AseAtomsAdaptor
+from pymatgen.analysis.diffraction.xrd import (
+    ATOMIC_SCATTERING_PARAMS, WAVELENGTHS,
+)
 
 try:
     import matplotlib
@@ -161,6 +167,11 @@ N_POINTS        = {n_points}            # points on the common 2-theta grid (use
 NUM_THREADS     = {num_threads}
 
 SCALED          = {scaled}              # passed to get_pattern(scaled=...)
+# Optional: also compute the Bragg-corrected pattern via complex-amplitude
+# averaging of structure factors (|<F(q)>|^2 instead of <|F(q)|^2>). Adds an
+# extra pass over the snapshots and is normalised to peak = 100 regardless of
+# the INTENSITY_MODE above.
+COMPUTE_CORRECTED = {compute_corrected_repr}
 # -------------------------------------------------------------------------- #
 
 
@@ -196,6 +207,136 @@ def circular_mean_frac(fracs):
     mean_sin = np.sin(angles).mean(axis=0)
     mean_angle = np.arctan2(mean_sin, mean_cos)
     return (mean_angle / (2.0 * np.pi)) % 1.0
+
+
+def compute_corrected_pattern(avg_structure, fracs_list):
+    """Average complex structure factors across snapshots and return three
+    powder patterns: Bragg-corrected (|<F>|^2), total elastic (<|F|^2>), and
+    diffuse (total - Bragg).
+
+    The reciprocal-lattice points are taken from ``avg_structure`` (a fixed
+    hkl set shared by every snapshot). Each snapshot's wrapped fractional
+    coordinates are used unchanged -- so cell breathing shows up in the
+    diffuse component, while shifting fractional positions cause the Bragg
+    intensity of would-be superstructure peaks to vanish via phase
+    cancellation, matching what an experimental Bragg pattern shows.
+
+    Returns a dict with keys
+        peak_x, peak_y_bragg, peak_y_total, peak_y_diffuse, n_frames_used
+    (the four pattern arrays are 1-D numpy arrays sorted by 2theta) or
+    None if no reflections fall inside TWO_THETA_RANGE / required atomic
+    data is missing.
+    """
+    wl = WAVELENGTHS[WAVELENGTH] if isinstance(WAVELENGTH, str) else float(WAVELENGTH)
+
+    latt = avg_structure.lattice
+    recip = latt.reciprocal_lattice_crystallographic
+
+    # |g| limits set by the 2-theta range: |g| = 2 sin(theta)/lambda.
+    tt_min, tt_max = TWO_THETA_RANGE
+    min_r = 2.0 * np.sin(np.radians(tt_min / 2.0)) / wl
+    max_r = 2.0 * np.sin(np.radians(tt_max / 2.0)) / wl
+
+    recip_pts = recip.get_points_in_sphere(
+        [[0.0, 0.0, 0.0]], [0.0, 0.0, 0.0], max_r
+    )
+    hkl_list, g_list = [], []
+    for hkl, g_hkl, *_ in recip_pts:
+        if g_hkl == 0.0 or g_hkl < min_r:
+            continue
+        hkl_list.append([int(round(v)) for v in hkl])
+        g_list.append(float(g_hkl))
+    if not hkl_list:
+        return None
+
+    hkl_arr = np.asarray(hkl_list, dtype=float)        # (n_hkl, 3)
+    g_arr = np.asarray(g_list, dtype=float)             # (n_hkl,)
+    s2_arr = (g_arr / 2.0) ** 2                          # (n_hkl,)
+
+    # Cromer-Mann coefficients per site (same source pymatgen uses).
+    zs, coeffs, occus = [], [], []
+    for site in avg_structure:
+        for sp, occu in site.species.items():
+            try:
+                c = ATOMIC_SCATTERING_PARAMS[sp.symbol]
+            except KeyError:
+                print(f"  [warn] no atomic scattering data for {{sp.symbol}};"
+                      " corrected pattern skipped.")
+                return None
+            zs.append(sp.Z)
+            coeffs.append(c)
+            occus.append(occu)
+    zs = np.asarray(zs, dtype=float)                          # (n_sites,)
+    coeffs = np.asarray(coeffs, dtype=float)                  # (n_sites, 4, 2)
+    occus = np.asarray(occus, dtype=float)                    # (n_sites,)
+
+    # f_j(s^2) at each hkl, vectorised over (site, hkl).
+    # f = Z - 41.78214 * s^2 * sum_k a_k exp(-b_k s^2)
+    exp_term = np.exp(-coeffs[:, :, 1][:, :, None] * s2_arr[None, None, :])
+    sum_term = np.sum(coeffs[:, :, 0][:, :, None] * exp_term, axis=1)
+    fs = zs[:, None] - 41.78214 * s2_arr[None, :] * sum_term       # (n_sites, n_hkl)
+    fs_occu = fs * occus[:, None]
+
+    # Accumulate sumF (complex) and sum|F|^2 (real) across snapshots.
+    sum_F = np.zeros(len(hkl_list), dtype=complex)
+    sum_I = np.zeros(len(hkl_list), dtype=float)
+    n_frames_used = 0
+    for fc in fracs_list:
+        if fc.shape[0] != fs_occu.shape[0]:
+            continue  # atom count changed -- skip
+        phase = np.exp(2j * np.pi * (fc @ hkl_arr.T))
+        F_frame = np.sum(fs_occu * phase, axis=0)                  # (n_hkl,)
+        sum_F += F_frame
+        sum_I += np.real(F_frame * np.conj(F_frame))
+        n_frames_used += 1
+    if n_frames_used == 0:
+        return None
+
+    F_avg = sum_F / n_frames_used
+    I_bragg = np.real(F_avg * np.conj(F_avg))
+    I_total = sum_I / n_frames_used
+    I_diffuse = I_total - I_bragg
+
+    # Lorentz-polarisation correction.
+    theta = np.arcsin(wl * g_arr / 2.0)
+    two_theta = np.degrees(2.0 * theta)
+    lp = (1.0 + np.cos(2.0 * theta) ** 2) / (np.sin(theta) ** 2 * np.cos(theta))
+    I_bragg = I_bragg * lp
+    I_total = I_total * lp
+    I_diffuse = I_diffuse * lp
+
+    # Powder-average: bin reflections by 2-theta (within tolerance).
+    order = np.argsort(two_theta)
+    tt_sorted = two_theta[order]
+    b_sorted = I_bragg[order]
+    t_sorted = I_total[order]
+    d_sorted = I_diffuse[order]
+
+    tol = 1e-5
+    peak_x, py_b, py_t, py_d = [], [], [], []
+    i = 0
+    while i < len(tt_sorted):
+        j = i
+        bs, ts, ds = b_sorted[i], t_sorted[i], d_sorted[i]
+        while (j + 1 < len(tt_sorted)
+               and abs(tt_sorted[j + 1] - tt_sorted[i]) < tol):
+            j += 1
+            bs += b_sorted[j]
+            ts += t_sorted[j]
+            ds += d_sorted[j]
+        peak_x.append(float(tt_sorted[i]))
+        py_b.append(float(bs))
+        py_t.append(float(ts))
+        py_d.append(float(ds))
+        i = j + 1
+
+    return {{
+        "peak_x": np.asarray(peak_x),
+        "peak_y_bragg": np.asarray(py_b),
+        "peak_y_total": np.asarray(py_t),
+        "peak_y_diffuse": np.asarray(py_d),
+        "n_frames_used": n_frames_used,
+    }}
 
 
 def save_pattern_plot(grid, profile, out_dir, name, title_prefix,
@@ -429,9 +570,12 @@ def process_trajectory(traj_path, calc, adaptor, grid):
                 fh.write(f"{{lab:>12s}} : {{m:12.5f}} +/- {{s:10.5f}}\\n")
         print(f"  lattice summary -> {{summary_path}}")
 
+        # Pymatgen view of the averaged structure -- shared by both the
+        # avg-structure XRD pattern and the complex-F corrected pattern.
+        avg_structure_pmg = adaptor.get_structure(avg_atoms)
+
         # XRD pattern of the average structure.
         try:
-            avg_structure_pmg = adaptor.get_structure(avg_atoms)
             avg_pattern = calc.get_pattern(
                 avg_structure_pmg, scaled=SCALED, two_theta_range=TWO_THETA_RANGE
             )
@@ -492,6 +636,79 @@ def process_trajectory(traj_path, calc, adaptor, grid):
         print("  [skip] average-structure calculation skipped "
               "(composition changes or no valid frames).")
 
+    # ----- Corrected Bragg pattern via complex-F averaging ------------------ #
+    # Average |<F(q)>|^2 across snapshots instead of <|F(q)|^2>: this
+    # cancels phases of would-be superstructure peaks that flicker between
+    # snapshots (i.e. lack long-range coherence), matching what an
+    # experimental Bragg pattern shows. The diffuse part = <|F|^2> - |<F>|^2
+    # tells where that 'lost' intensity went.
+    corrected_bragg_payload = None
+    diffuse_payload = None
+    total_elastic_payload = None
+    if COMPUTE_CORRECTED and struct_avg_ok and len(fracs_list) >= 1:
+        try:
+            corrected = compute_corrected_pattern(avg_structure_pmg, fracs_list)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [warn] corrected-pattern computation failed: {{exc}}")
+            corrected = None
+        if corrected is not None:
+            peak_x_c = corrected["peak_x"]
+            py_bragg = corrected["peak_y_bragg"]
+            py_total = corrected["peak_y_total"]
+            py_diff = corrected["peak_y_diffuse"]
+
+            # Always normalise the corrected Bragg pattern to peak = 100,
+            # regardless of INTENSITY_MODE: the LP-weighted absolute scale of
+            # |<F>|^2 differs from the per-snapshot |F|^2 normalisation, so
+            # keeping them on a common 0-100 axis makes the overlay
+            # interpretable. Diffuse and total-elastic are scaled by the same
+            # factor so the Bragg/diffuse ratio is preserved.
+            if py_bragg.size and py_bragg.max() > 0:
+                scale = 100.0 / py_bragg.max()
+                py_bragg = py_bragg * scale
+                py_total = py_total * scale
+                py_diff = py_diff * scale
+
+            # CSV (one row per merged hkl group).
+            corr_csv = os.path.join(out_dir, "corrected_bragg_pattern.csv")
+            with open(corr_csv, "w") as fh:
+                fh.write("2theta,I_bragg,I_total_elastic,I_diffuse\\n")
+                for x_, b_, t_, d_ in zip(peak_x_c, py_bragg, py_total, py_diff):
+                    fh.write(f"{{x_}},{{b_}},{{t_}},{{d_}}\\n")
+            print(f"  corrected pattern -> {{corr_csv}} "
+                  f"(used {{corrected['n_frames_used']}} snapshots)")
+
+            if BROADEN:
+                bragg_profile = gaussian_broaden(grid, peak_x_c, py_bragg, FWHM)
+                total_profile = gaussian_broaden(grid, peak_x_c, py_total, FWHM)
+                diff_profile = gaussian_broaden(grid, peak_x_c, py_diff, FWHM)
+                save_pattern_plot(
+                    grid, bragg_profile, out_dir, name,
+                    title_prefix=r"Corrected Bragg powder XRD (|<F>|$^2$)",
+                    filename_base="corrected_bragg_pattern",
+                    is_broadened=True,
+                )
+                corrected_bragg_payload = bragg_profile.tolist()
+                diffuse_payload = diff_profile.tolist()
+                total_elastic_payload = total_profile.tolist()
+            else:
+                save_pattern_plot(
+                    grid, None, out_dir, name,
+                    title_prefix=r"Corrected Bragg powder XRD (|<F>|$^2$)",
+                    filename_base="corrected_bragg_pattern",
+                    is_broadened=False,
+                    use_sticks_data=(peak_x_c, py_bragg),
+                )
+                corrected_bragg_payload = {{
+                    "x": peak_x_c.tolist(), "y": py_bragg.tolist(),
+                }}
+                diffuse_payload = {{
+                    "x": peak_x_c.tolist(), "y": py_diff.tolist(),
+                }}
+                total_elastic_payload = {{
+                    "x": peak_x_c.tolist(), "y": py_total.tolist(),
+                }}
+
     # Animation file consumed by the GUI viewer.
     animation = {{
         "type": "xrd_trajectory_animation",
@@ -508,6 +725,7 @@ def process_trajectory(traj_path, calc, adaptor, grid):
             "n_frames_total": n_frames,
             "n_frames_evaluated": len(evaluated_steps),
             "has_average_structure": avg_struct_payload is not None,
+            "has_corrected_bragg": corrected_bragg_payload is not None,
         }},
         "two_theta": grid.tolist(),
         "steps": evaluated_steps,                 # e.g. [0, 10, 20, 30, ...]
@@ -518,6 +736,12 @@ def process_trajectory(traj_path, calc, adaptor, grid):
         # Pattern from the PBC-aware average structure (matches representation):
         # broadened -> list[float] on `two_theta`; sticks -> {{"x":[...],"y":[...]}}
         "average_structure_pattern": avg_struct_payload,
+        # Bragg-corrected pattern: |<F(q)>|^2 averaged across snapshots, with
+        # the diffuse and total-elastic companions. Same representation
+        # convention as `average_structure_pattern`.
+        "corrected_bragg_pattern": corrected_bragg_payload,
+        "diffuse_pattern": diffuse_payload,
+        "total_elastic_pattern": total_elastic_payload,
     }}
     anim_path = os.path.join(out_dir, "xrd_trajectory_animation.json")
     with open(anim_path, "w") as fh:
@@ -816,8 +1040,10 @@ def render_xrd_animation_viewer():
     st.caption(
         "Upload the `xrd_trajectory_animation.json` produced by the generated "
         "script to scrub through the individual trajectory-step patterns or "
-        "play an animation. Reference patterns (first step, overall average, "
-        "and the pattern from the average structure) can be overlaid."
+        "play an animation. Reference overlays available: any chosen step, "
+        "the overall average ⟨|F|²⟩, the pattern of the average structure, "
+        "the **Bragg-corrected |⟨F⟩|² pattern** (complex-amplitude average) "
+        "and its diffuse companion."
     )
 
     upload = st.file_uploader(
@@ -839,6 +1065,10 @@ def render_xrd_animation_viewer():
     average = np.asarray(data["average"], dtype=float)
     avg_struct_payload = data.get("average_structure_pattern")
     has_avg_struct = avg_struct_payload is not None
+    corrected_bragg_payload = data.get("corrected_bragg_pattern")
+    has_corrected = corrected_bragg_payload is not None
+    diffuse_payload = data.get("diffuse_pattern")
+    has_diffuse = diffuse_payload is not None
 
     intensity_label = (
         "Relative intensity (max = 100)"
@@ -861,9 +1091,9 @@ def render_xrd_animation_viewer():
     )
 
     st.markdown("**Reference overlays to always show on the plot:**")
-    overlay_cols = st.columns(3)
+    row1 = st.columns(3)
     _STEP_OVERLAY_OFF = "(off)"
-    with overlay_cols[0]:
+    with row1[0]:
         overlay_step_choice = st.selectbox(
             "Overlay trajectory step",
             options=[_STEP_OVERLAY_OFF] + [str(s) for s in steps],
@@ -873,12 +1103,14 @@ def render_xrd_animation_viewer():
                  "overlaid on the plot (in addition to whatever the slider / "
                  "animation is currently showing). Select '(off)' to disable.",
         )
-    with overlay_cols[1]:
+    with row1[1]:
         overlay_avg = st.checkbox(
             "Overall average", value=True, key="xrd_overlay_avg",
-            help="Overlay the average pattern over all evaluated steps.",
+            help="Overlay the average pattern over all evaluated steps. "
+                 "This is <|F|²> — total elastic scattering including any "
+                 "transient local order, not the experimental Bragg pattern.",
         )
-    with overlay_cols[2]:
+    with row1[2]:
         overlay_avg_struct = st.checkbox(
             "Pattern of average structure",
             value=has_avg_struct,
@@ -889,6 +1121,35 @@ def render_xrd_animation_viewer():
             if has_avg_struct else
             "This animation file was produced without an average-structure pattern.",
         )
+
+    row2 = st.columns(3)
+    with row2[0]:
+        overlay_corrected = st.checkbox(
+            "Bragg-corrected (|⟨F⟩|²)",
+            value=has_corrected,
+            key="xrd_overlay_corrected",
+            disabled=not has_corrected,
+            help=("Overlay the Bragg-corrected pattern: complex structure "
+                  "factors are averaged first, then squared, so superstructure "
+                  "peaks that flicker between snapshots cancel out — matching "
+                  "the experimental Bragg signal.")
+            if has_corrected else
+            "This animation file was produced without a corrected-Bragg pattern.",
+        )
+    with row2[1]:
+        overlay_diffuse = st.checkbox(
+            "Diffuse (⟨|F|²⟩ − |⟨F⟩|²)",
+            value=False,
+            key="xrd_overlay_diffuse",
+            disabled=not has_diffuse,
+            help=("Overlay the diffuse component — where intensity 'lost' from "
+                  "the corrected Bragg pattern reappears. Local order without "
+                  "long-range coherence shows up here.")
+            if has_diffuse else
+            "This animation file was produced without a diffuse pattern.",
+        )
+    with row2[2]:
+        st.empty()
 
     # Resolve the chosen step (if any) to its index inside `steps`.
     overlay_step_idx = None
@@ -919,6 +1180,18 @@ def render_xrd_animation_viewer():
                 key="xrd_overlay_struct_width",
                 disabled=not has_avg_struct,
             )
+            overlay_corrected_width = st.slider(
+                "Bragg-corrected line width",
+                min_value=0.5, max_value=6.0, value=2.0, step=0.1,
+                key="xrd_overlay_corrected_width",
+                disabled=not has_corrected,
+            )
+            overlay_diffuse_width = st.slider(
+                "Diffuse line width",
+                min_value=0.5, max_value=6.0, value=1.5, step=0.1,
+                key="xrd_overlay_diffuse_width",
+                disabled=not has_diffuse,
+            )
         with sc2:
             overlay_step_dash = st.selectbox(
                 "Selected-step line style",
@@ -935,6 +1208,18 @@ def render_xrd_animation_viewer():
                 options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("dashdot"),
                 key="xrd_overlay_struct_dash",
                 disabled=not has_avg_struct,
+            )
+            overlay_corrected_dash = st.selectbox(
+                "Bragg-corrected line style",
+                options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("solid"),
+                key="xrd_overlay_corrected_dash",
+                disabled=not has_corrected,
+            )
+            overlay_diffuse_dash = st.selectbox(
+                "Diffuse line style",
+                options=_DASH_OPTIONS, index=_DASH_OPTIONS.index("longdash"),
+                key="xrd_overlay_diffuse_dash",
+                disabled=not has_diffuse,
             )
 
     mode = st.radio(
@@ -970,6 +1255,8 @@ def render_xrd_animation_viewer():
         average.max() if average.size else 0.0,
         _payload_y_max(avg_struct_payload),
         _payload_y_max(overlay_step_payload),
+        _payload_y_max(corrected_bragg_payload),
+        _payload_y_max(diffuse_payload),
     )) * 1.05 or 1.0
 
     # Bigger fonts everywhere on the pattern plots.
@@ -1050,6 +1337,19 @@ def render_xrd_animation_viewer():
                        width=overlay_struct_width)
         if has_avg_struct else None
     )
+    corrected_bragg_trace = (
+        _payload_trace(corrected_bragg_payload,
+                       "Bragg-corrected (|⟨F⟩|²)",
+                       "#ea580c", dash=overlay_corrected_dash,
+                       width=overlay_corrected_width)
+        if has_corrected else None
+    )
+    diffuse_trace = (
+        _payload_trace(diffuse_payload, "Diffuse (⟨|F|²⟩ − |⟨F⟩|²)",
+                       "#0891b2", dash=overlay_diffuse_dash,
+                       width=overlay_diffuse_width)
+        if has_diffuse else None
+    )
 
     def _add_overlays(fig, current_idx=None):
         """Append the user-selected reference overlays. ``current_idx`` lets us
@@ -1062,6 +1362,10 @@ def render_xrd_animation_viewer():
             fig.add_trace(avg_trace)
         if overlay_avg_struct and avg_struct_trace is not None:
             fig.add_trace(avg_struct_trace)
+        if overlay_corrected and corrected_bragg_trace is not None:
+            fig.add_trace(corrected_bragg_trace)
+        if overlay_diffuse and diffuse_trace is not None:
+            fig.add_trace(diffuse_trace)
 
     def _single_step_fig(idx):
         fig = go.Figure()
@@ -1224,6 +1528,10 @@ def render_xrd_animation_viewer():
         )
         if has_avg_struct and avg_struct_trace is not None:
             avg_fig.add_trace(avg_struct_trace)
+        if has_corrected and corrected_bragg_trace is not None:
+            avg_fig.add_trace(corrected_bragg_trace)
+        if has_diffuse and diffuse_trace is not None:
+            avg_fig.add_trace(diffuse_trace)
         avg_fig.update_layout(
             font=base_font,
             title=dict(text="Average powder XRD pattern", font=title_font,
@@ -1389,6 +1697,19 @@ def _xrd_script_generation_ui():
             key="xrd_threads",
         )
 
+    compute_corrected = st.checkbox(
+        "Compute Bragg-corrected pattern (|⟨F⟩|²)",
+        value=False,
+        key="xrd_compute_corrected",
+        help="Optional: average complex structure factors across snapshots "
+             "and report |⟨F⟩|² instead of ⟨|F|²⟩, so transient "
+             "superstructure peaks cancel by phase and only long-range "
+             "coherent reflections survive — closer to an experimental Bragg "
+             "pattern. The diffuse companion ⟨|F|²⟩ − |⟨F⟩|² is also "
+             "produced. Adds an extra pass over the snapshots; result is "
+             "normalised to peak = 100 regardless of the intensity mode above.",
+    )
+
     if tt_max <= tt_min:
         st.error("2θ max must be greater than 2θ min.")
 
@@ -1403,6 +1724,7 @@ def _xrd_script_generation_ui():
         "fwhm": fwhm,
         "n_points": int(n_points),
         "num_threads": int(num_threads),
+        "compute_corrected": bool(compute_corrected),
     }
 
     st.divider()
@@ -1450,12 +1772,16 @@ def _xrd_script_generation_ui():
             "`xrd_trajectory_results/<trajectory-name>/`: per-step CSVs, "
             "`average_pattern.csv` (+ `.png`/`.pdf`), the PBC-averaged "
             "structure (`average_structure.cif`, `.vasp`, `.xyz`) with its own "
-            "`average_structure_pattern.csv` (+ `.png`/`.pdf`), and "
+            "`average_structure_pattern.csv` (+ `.png`/`.pdf`), the "
+            "Bragg-corrected pattern `corrected_bragg_pattern.csv` "
+            "(+ `.png`/`.pdf`) — which averages **complex** structure factors "
+            "across snapshots so transient superstructure peaks cancel by "
+            "phase, plus its diffuse companion — and "
             "`xrd_trajectory_animation.json`.\n"
             "6. Open the **📈 Output analysis** tab and upload a trajectory's "
             "`xrd_trajectory_animation.json` to scrub through the steps, play "
-            "the animation, and overlay the first-step / overall-average / "
-            "average-structure reference patterns."
+            "the animation, and overlay the chosen step / overall average / "
+            "average-structure / Bragg-corrected / diffuse reference patterns."
         )
 
 
