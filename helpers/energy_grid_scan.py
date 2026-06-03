@@ -977,6 +977,19 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
                  "physically-equivalent symmetry-related basins do too.",
         )
 
+    col9, _col10 = st.columns(2)
+    with col9:
+        print_every = st.number_input(
+            "Console print frequency (every N grid points)",
+            min_value=1, max_value=1000000,
+            value=int(defaults.get("print_every", 1)),
+            step=1,
+            help="Print a progress line to the console only once every N grid "
+                 "points. 1 = print every point (most verbose); larger values "
+                 "cut console spam on big grids. The first point, the final "
+                 "point, and any FAILED point are always printed regardless.",
+        )
+
     st.markdown("---")
     region_enabled = st.checkbox(
         "Restrict scan to a sub-region (cube)",
@@ -1118,7 +1131,7 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
         relax_fmax = st.number_input(
             "Force convergence fmax (eV/Å)",
             min_value=0.001, max_value=2.0,
-            value=float(defaults.get("relax_fmax", 0.05)),
+            value=float(defaults.get("relax_fmax", 0.01)),
             step=0.01, format="%.3f",
             disabled=not relax_each_point,
             help="Optimization stops once the maximum force on any free atom "
@@ -1140,6 +1153,7 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
         "grid_spacing_A": float(grid_spacing),
         "min_distance_A": float(min_distance),
         "blocked_energy": float(blocked_energy),
+        "print_every": int(print_every),
         "compute_baseline": bool(compute_baseline),
         "save_xsf": bool(save_xsf),
         "save_min_structure": bool(save_min_structure),
@@ -1204,8 +1218,9 @@ def generate_energy_grid_scan_script(
     degen_tol_e = float(scan_params.get("degen_tol_eV", 1e-3))
     relax_each  = bool(scan_params.get("relax_each_point", False))
     relax_opt   = str(scan_params.get("relax_optimizer", "LBFGS"))
-    relax_fmax  = float(scan_params.get("relax_fmax", 0.05))
+    relax_fmax  = float(scan_params.get("relax_fmax", 0.01))
     relax_steps = int(scan_params.get("relax_max_steps", 500))
+    print_every = max(1, int(scan_params.get("print_every", 1)))
     region_on   = bool(scan_params.get("region_enabled", False))
     _rc         = scan_params.get("region_center", [0.5, 0.5, 0.5]) or [0.5, 0.5, 0.5]
     region_ctr  = (float(_rc[0]), float(_rc[1]), float(_rc[2]))
@@ -1308,6 +1323,7 @@ INSERT_ELEMENT   = "{elem}"
 GRID_SPACING_A   = {spacing}      # target real-space spacing (Å)
 MIN_DISTANCE_A   = {min_dist}      # blocking radius around host atoms (Å)
 BLOCKED_ENERGY   = {blocked_e}    # sentinel written at blocked points (eV)
+PRINT_EVERY      = {print_every}        # print a progress line every N grid points
 COMPUTE_BASELINE = {do_base}
 SAVE_XSF         = {save_xsf}
 SAVE_MIN_STRUCT  = {save_min}       # dump host + probe at the global E_min site
@@ -1425,6 +1441,11 @@ def main():
         )
     else:
         print("🧲 Relaxation: OFF  (single-point energies)")
+    if PRINT_EVERY > 1:
+        print(f"🖨️  Console output: every {{PRINT_EVERY}} grid points "
+              f"(plus first / last / failed)")
+    else:
+        print("🖨️  Console output: every grid point")
     print(f"🧵 OMP threads: {{os.environ.get('OMP_NUM_THREADS')}}")
 
     # ── Calculator setup (model-agnostic — generated from GUI selection) ──
@@ -1690,17 +1711,28 @@ def main():
                     else:
                         eta_str = "ETA --"
 
-                    print(
-                        f"  {{step_idx:>6d}}/{{n_total}} "
-                        f"({{i:>3d}},{{j:>3d}},{{k:>3d}})  "
-                        f"frac=({{frac[0]:.3f}},{{frac[1]:.3f}},{{frac[2]:.3f}})  "
-                        f"cart=({{cart[0]:6.2f}},{{cart[1]:6.2f}},{{cart[2]:6.2f}}) Å  "
-                        f"{{status_str}}  {{energy_str:<28s}}  "
-                        f"step {{_fmt_duration(step_dt)}}  "
-                        f"{{eta_str}}  "
-                        f"({{n_done}} ok / {{n_skip}} skip / {{remaining}} left)",
-                        flush=True,
+                    # Throttle console output to every PRINT_EVERY-th grid
+                    # point. The first and last points are always shown, and
+                    # FAILED points are never suppressed so errors stay visible.
+                    _do_print = (
+                        PRINT_EVERY <= 1
+                        or step_idx == 1
+                        or step_idx == n_total
+                        or step_idx % PRINT_EVERY == 0
+                        or status_str.startswith("FAILED")
                     )
+                    if _do_print:
+                        print(
+                            f"  {{step_idx:>6d}}/{{n_total}} "
+                            f"({{i:>3d}},{{j:>3d}},{{k:>3d}})  "
+                            f"frac=({{frac[0]:.3f}},{{frac[1]:.3f}},{{frac[2]:.3f}})  "
+                            f"cart=({{cart[0]:6.2f}},{{cart[1]:6.2f}},{{cart[2]:6.2f}}) Å  "
+                            f"{{status_str}}  {{energy_str:<28s}}  "
+                            f"step {{_fmt_duration(step_dt)}}  "
+                            f"{{eta_str}}  "
+                            f"({{n_done}} ok / {{n_skip}} skip / {{remaining}} left)",
+                            flush=True,
+                        )
 
         elapsed = time.time() - t0
         base_name = Path(fname).stem
