@@ -979,50 +979,111 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
 
     st.markdown("---")
     region_enabled = st.checkbox(
-        "Restrict scan to a sub-region (cube in relative coordinates)",
+        "Restrict scan to a sub-region (cube)",
         value=bool(defaults.get("region_enabled", False)),
-        help="When on, the grid only covers a cube defined in fractional "
-             "(relative) coordinates instead of the whole unit cell. You set "
-             "the cube's centre (fractional a, b, c) and its edge length as a "
-             "fraction of the cell. The span is the same fraction along each "
-             "lattice vector, so it's a true cube only for a cubic cell; the "
-             "number of grid points per axis is still `ceil(length·|aᵢ| / "
-             "spacing)`, keeping the real-space spacing roughly uniform. The "
-             "cube is clamped to stay inside the cell.",
+        help="When on, the grid only covers a cube instead of the whole unit "
+             "cell. You set the cube's centre and its edge length; each can be "
+             "given independently in fractional (relative) coordinates or in "
+             "Cartesian Ångström (see the unit toggles below). The number of "
+             "grid points per axis is still `ceil(span·|aᵢ| / spacing)`, "
+             "keeping the real-space spacing roughly uniform. The cube is "
+             "clamped to stay inside the cell.",
     )
+
+    # Independent unit toggles for the cube centre and the edge length, so the
+    # user can mix-and-match (e.g. centre in fractional, length in Å).
+    mcol1, mcol2 = st.columns(2)
+    with mcol1:
+        center_mode_label = st.radio(
+            "Cube centre units",
+            options=["Fractional", "Cartesian (Å)"],
+            index=0 if defaults.get("region_center_mode", "fractional") ==
+                  "fractional" else 1,
+            key="energy_grid_region_center_mode",
+            horizontal=True,
+            disabled=not region_enabled,
+            help="Fractional → centre given as (a, b, c) ∈ [0, 1]. "
+                 "Cartesian → centre given in Å; converted to fractional per "
+                 "structure via that structure's cell matrix.",
+        )
+    with mcol2:
+        length_mode_label = st.radio(
+            "Edge length units",
+            options=["Fractional", "Cartesian (Å)"],
+            index=0 if defaults.get("region_length_mode", "fractional") ==
+                  "fractional" else 1,
+            key="energy_grid_region_length_mode",
+            horizontal=True,
+            disabled=not region_enabled,
+            help="Fractional → edge length as a fraction of each lattice "
+                 "vector (a true cube only for a cubic cell). Cartesian → "
+                 "edge length in Å, giving a real-space cube (the fractional "
+                 "span on axis i becomes length / |aᵢ|).",
+        )
+    center_mode = ("cartesian" if center_mode_label.startswith("Cartesian")
+                   else "fractional")
+    length_mode = ("cartesian" if length_mode_label.startswith("Cartesian")
+                   else "fractional")
+
+    def _clamp(v, lo, hi):
+        return float(min(hi, max(lo, v)))
+
+    # Bounds / labels follow the selected units. Cartesian has no fixed upper
+    # bound (cells vary), so we allow a generous range. The widgets carry no
+    # explicit `key`, so changing the unit changes the label and thus the
+    # widget identity — Streamlit re-seeds them from the (clamped) defaults
+    # rather than reusing a now-out-of-range value from the other unit.
+    if center_mode == "cartesian":
+        c_min, c_max, c_step, c_unit = 0.0, 1.0e4, 0.1, "Å"
+    else:
+        c_min, c_max, c_step, c_unit = 0.0, 1.0, 0.05, "frac"
 
     ccol1, ccol2, ccol3, ccol4 = st.columns(4)
     _ctr = defaults.get("region_center", [0.5, 0.5, 0.5]) or [0.5, 0.5, 0.5]
     with ccol1:
         region_center_a = st.number_input(
-            "Centre a (frac)", min_value=0.0, max_value=1.0,
-            value=float(_ctr[0]), step=0.05, format="%.3f",
+            f"Centre a ({c_unit})", min_value=c_min, max_value=c_max,
+            value=_clamp(float(_ctr[0]), c_min, c_max),
+            step=c_step, format="%.3f",
             disabled=not region_enabled,
-            help="Fractional a-coordinate of the cube centre.",
+            help=f"{'Cartesian x' if center_mode == 'cartesian' else 'Fractional a'}"
+                 "-coordinate of the cube centre.",
         )
     with ccol2:
         region_center_b = st.number_input(
-            "Centre b (frac)", min_value=0.0, max_value=1.0,
-            value=float(_ctr[1]), step=0.05, format="%.3f",
+            f"Centre b ({c_unit})", min_value=c_min, max_value=c_max,
+            value=_clamp(float(_ctr[1]), c_min, c_max),
+            step=c_step, format="%.3f",
             disabled=not region_enabled,
-            help="Fractional b-coordinate of the cube centre.",
+            help=f"{'Cartesian y' if center_mode == 'cartesian' else 'Fractional b'}"
+                 "-coordinate of the cube centre.",
         )
     with ccol3:
         region_center_c = st.number_input(
-            "Centre c (frac)", min_value=0.0, max_value=1.0,
-            value=float(_ctr[2]), step=0.05, format="%.3f",
+            f"Centre c ({c_unit})", min_value=c_min, max_value=c_max,
+            value=_clamp(float(_ctr[2]), c_min, c_max),
+            step=c_step, format="%.3f",
             disabled=not region_enabled,
-            help="Fractional c-coordinate of the cube centre.",
+            help=f"{'Cartesian z' if center_mode == 'cartesian' else 'Fractional c'}"
+                 "-coordinate of the cube centre.",
         )
     with ccol4:
+        if length_mode == "cartesian":
+            l_min, l_max, l_step, l_unit = 0.01, 1.0e4, 0.1, "Å"
+        else:
+            l_min, l_max, l_step, l_unit = 0.01, 1.0, 0.05, "frac"
         region_length = st.number_input(
-            "Edge length (frac)", min_value=0.01, max_value=1.0,
-            value=float(defaults.get("region_length", 0.5)),
-            step=0.05, format="%.3f",
+            f"Edge length ({l_unit})", min_value=l_min, max_value=l_max,
+            value=_clamp(float(defaults.get("region_length", 0.5)),
+                         l_min, l_max),
+            step=l_step, format="%.3f",
             disabled=not region_enabled,
-            help="Cube edge length as a fraction of each lattice vector. "
-                 "The scan spans [centre − length/2, centre + length/2] along "
-                 "each axis (clamped to the cell).",
+            help="Cube edge length. The scan spans "
+                 "[centre − length/2, centre + length/2] along each axis "
+                 "(clamped to the cell). " +
+                 ("Given in Å → a real-space cube."
+                  if length_mode == "cartesian"
+                  else "Given as a fraction of each lattice vector."),
         )
 
     st.markdown("---")
@@ -1045,13 +1106,13 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
             "Optimizer",
             ["BFGS", "LBFGS", "FIRE", "LBFGSLineSearch", "MDMin"],
             index=["BFGS", "LBFGS", "FIRE", "LBFGSLineSearch", "MDMin"].index(
-                defaults.get("relax_optimizer", "BFGS")
-            ) if defaults.get("relax_optimizer", "BFGS") in
-                ["BFGS", "LBFGS", "FIRE", "LBFGSLineSearch", "MDMin"] else 0,
+                defaults.get("relax_optimizer", "LBFGS")
+            ) if defaults.get("relax_optimizer", "LBFGS") in
+                ["BFGS", "LBFGS", "FIRE", "LBFGSLineSearch", "MDMin"] else 1,
             disabled=not relax_each_point,
             help="ASE optimizer used for the per-grid-point relaxation. "
-                 "BFGS / LBFGS are good defaults; FIRE is robust for "
-                 "difficult, highly non-linear cases.",
+                 "LBFGS (default) / BFGS are good general choices; FIRE is "
+                 "robust for difficult, highly non-linear cases.",
         )
     with rcol2:
         relax_fmax = st.number_input(
@@ -1067,7 +1128,7 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
         relax_max_steps = st.number_input(
             "Max optimization steps",
             min_value=1, max_value=10000,
-            value=int(defaults.get("relax_max_steps", 200)),
+            value=int(defaults.get("relax_max_steps", 500)),
             step=10,
             disabled=not relax_each_point,
             help="Hard cap on optimizer iterations per grid point. The last "
@@ -1093,7 +1154,9 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
             float(region_center_b),
             float(region_center_c),
         ],
+        "region_center_mode": center_mode,
         "region_length": float(region_length),
+        "region_length_mode": length_mode,
     }
 
     if save_settings_function is not None and default_settings is not None:
@@ -1140,13 +1203,15 @@ def generate_energy_grid_scan_script(
     save_min    = bool(scan_params.get("save_min_structure", True))
     degen_tol_e = float(scan_params.get("degen_tol_eV", 1e-3))
     relax_each  = bool(scan_params.get("relax_each_point", False))
-    relax_opt   = str(scan_params.get("relax_optimizer", "BFGS"))
+    relax_opt   = str(scan_params.get("relax_optimizer", "LBFGS"))
     relax_fmax  = float(scan_params.get("relax_fmax", 0.05))
-    relax_steps = int(scan_params.get("relax_max_steps", 200))
+    relax_steps = int(scan_params.get("relax_max_steps", 500))
     region_on   = bool(scan_params.get("region_enabled", False))
     _rc         = scan_params.get("region_center", [0.5, 0.5, 0.5]) or [0.5, 0.5, 0.5]
     region_ctr  = (float(_rc[0]), float(_rc[1]), float(_rc[2]))
+    region_ctr_mode = str(scan_params.get("region_center_mode", "fractional"))
     region_len  = float(scan_params.get("region_length", 0.5))
+    region_len_mode = str(scan_params.get("region_length_mode", "fractional"))
 
     is_mace_polar = (
         selected_model_key is not None and "POLAR" in selected_model_key.upper()
@@ -1251,9 +1316,11 @@ RELAX_EACH_POINT = {relax_each}       # relax structure at each grid point, reco
 RELAX_OPTIMIZER  = "{relax_opt}"      # ASE optimizer used for per-point relaxation
 RELAX_FMAX       = {relax_fmax}       # force-convergence threshold (eV/Å)
 RELAX_MAX_STEPS  = {relax_steps}      # max optimizer steps per grid point
-REGION_ENABLED   = {region_on}        # restrict the scan to a fractional cube
-REGION_CENTER    = {region_ctr}    # cube centre in fractional coords (a, b, c)
-REGION_LENGTH    = {region_len}       # cube edge length as a fraction of the cell
+REGION_ENABLED   = {region_on}        # restrict the scan to a sub-region cube
+REGION_CENTER    = {region_ctr}    # cube centre (units set by REGION_CENTER_MODE)
+REGION_CENTER_MODE = "{region_ctr_mode}"  # "fractional" or "cartesian" (Å)
+REGION_LENGTH    = {region_len}       # cube edge length (units set by REGION_LENGTH_MODE)
+REGION_LENGTH_MODE = "{region_len_mode}"  # "fractional" or "cartesian" (Å)
 IS_MACE_POLAR    = {is_mace_polar}
 OUTPUT_ROOT      = Path("energy_grid_results")
 
@@ -1344,8 +1411,8 @@ def main():
     print(f"🛑 Min. distance: {{MIN_DISTANCE_A}} Å")
     if REGION_ENABLED:
         print(
-            f"📦 Sub-region: centre={{REGION_CENTER}} (frac), "
-            f"edge length={{REGION_LENGTH}} (frac of cell)"
+            f"📦 Sub-region: centre={{REGION_CENTER}} ({{REGION_CENTER_MODE}}), "
+            f"edge length={{REGION_LENGTH}} ({{REGION_LENGTH_MODE}})"
         )
     else:
         print("📦 Scan region: full unit cell")
@@ -1364,10 +1431,17 @@ def main():
     print("\\n🔧 Setting up MLIP calculator...")
 {calculator_setup_code}
 
+    # Holds convergence info from the most recent relaxation so the main loop
+    # can report it without changing _evaluate_energy's return signature.
+    # Keys: "converged" (bool/None) and "steps" (int). Empty when the last
+    # call ran no relaxation (e.g. the baseline or a single-point scan).
+    relax_status = {{}}
+
     # Nested closure so `calculator` (defined in this scope by the setup
     # block above) is captured directly — no global / sys.modules tricks.
     def _evaluate_energy(atoms, fixed_indices=None):
         atoms.calc = calculator
+        relax_status.clear()
         # Optional constrained geometry optimization. The probe atom and the
         # host atom farthest from it (PBC minimum-image) are held fixed; all
         # other atoms relax. The relaxed energy is then returned.
@@ -1375,6 +1449,13 @@ def main():
             atoms.set_constraint(FixAtoms(indices=sorted(set(fixed_indices))))
             opt = _make_optimizer(RELAX_OPTIMIZER, atoms)
             opt.run(fmax=RELAX_FMAX, steps=RELAX_MAX_STEPS)
+            # `opt.converged()` re-checks the max force against fmax (reliable
+            # across ASE versions); `opt.nsteps` is the iterations taken.
+            try:
+                relax_status["converged"] = bool(opt.converged())
+            except Exception:
+                relax_status["converged"] = None
+            relax_status["steps"] = int(getattr(opt, "nsteps", 0))
         if IS_MACE_POLAR:
             try:
                 return float(
@@ -1414,13 +1495,35 @@ def main():
 
         # Fractional lower bound (lo_*) and span per lattice direction. For a
         # full-cell scan these are 0 and 1, reproducing the original grid
-        # (frac = i/n over [0, 1)). For a restricted cube, the span is the same
-        # fraction along each axis and the box is clamped to stay inside [0, 1].
+        # (frac = i/n over [0, 1)). For a restricted cube the centre and the
+        # edge length are each resolved to fractional coordinates according to
+        # their own units toggle, then the box is clamped to stay inside [0, 1].
         if REGION_ENABLED:
-            span = float(min(1.0, max(1e-6, REGION_LENGTH)))
-            half = span / 2.0
-            lo_xyz = []
-            for c_frac in REGION_CENTER:
+            # Cube centre → fractional. A Cartesian (Å) centre is mapped through
+            # the cell matrix (cart = frac @ cell  ⇒  frac solves cellᵀ·frac = cart).
+            if REGION_CENTER_MODE == "cartesian":
+                frac_ctr = np.linalg.solve(
+                    cell.T, np.array(REGION_CENTER, dtype=float)
+                )
+            else:
+                frac_ctr = np.array(REGION_CENTER, dtype=float)
+
+            # Cube edge length → fractional span per lattice axis. A Cartesian
+            # length in Å maps to span_i = length / |a_i| (a real-space cube);
+            # a fractional length is the same span on every axis.
+            if REGION_LENGTH_MODE == "cartesian":
+                raw_span = [
+                    REGION_LENGTH / a_len,
+                    REGION_LENGTH / b_len,
+                    REGION_LENGTH / c_len,
+                ]
+            else:
+                raw_span = [REGION_LENGTH, REGION_LENGTH, REGION_LENGTH]
+
+            lo_xyz, span_xyz = [], []
+            for c_frac, span in zip(frac_ctr, raw_span):
+                span = float(min(1.0, max(1e-6, span)))
+                half = span / 2.0
                 lo_i = float(c_frac) - half
                 hi_i = float(c_frac) + half
                 if lo_i < 0.0:
@@ -1428,11 +1531,13 @@ def main():
                 if hi_i > 1.0:
                     hi_i, lo_i = 1.0, 1.0 - span
                 lo_xyz.append(max(0.0, lo_i))
+                span_xyz.append(span)
             lo_a, lo_b, lo_c = lo_xyz
-            sa = sb = sc = span
+            sa, sb, sc = span_xyz
             print(
-                f"  Sub-region cube: centre={{tuple(round(x,3) for x in REGION_CENTER)}}, "
-                f"length={{span:.3f}} (frac)  →  "
+                f"  Sub-region cube: centre="
+                f"{{tuple(round(float(x), 3) for x in frac_ctr)}} (frac), "
+                f"span=({{sa:.3f}},{{sb:.3f}},{{sc:.3f}}) (frac)  →  "
                 f"a∈[{{lo_a:.3f}},{{lo_a+sa:.3f}}] "
                 f"b∈[{{lo_b:.3f}},{{lo_b+sb:.3f}}] "
                 f"c∈[{{lo_c:.3f}},{{lo_c+sc:.3f}}]"
@@ -1478,6 +1583,8 @@ def main():
         rows = []
         n_done = 0
         n_skip = 0
+        n_relax_conv = 0   # relaxations that reached fmax
+        n_relax_unconv = 0  # relaxations that hit RELAX_MAX_STEPS first
         probe_index = len(host)
         # Rolling window of recent COMPUTED-step durations for ETA.
         # Blocked points take milliseconds, so estimating from energy-eval
@@ -1547,6 +1654,22 @@ def main():
                             ))
                             status_str = "OK     "
                             energy_str = f"E={{e:.4f}} eV"
+                            # Append relaxation outcome (converged + step count)
+                            # when geometry optimization was performed here.
+                            if RELAX_EACH_POINT and "steps" in relax_status:
+                                _nstep = relax_status["steps"]
+                                _conv  = relax_status.get("converged")
+                                if _conv is True:
+                                    n_relax_conv += 1
+                                    energy_str += f"  [conv @ step {{_nstep}}]"
+                                elif _conv is False:
+                                    n_relax_unconv += 1
+                                    energy_str += (
+                                        f"  [NOT conv, {{_nstep}}/"
+                                        f"{{RELAX_MAX_STEPS}} steps]"
+                                    )
+                                else:
+                                    energy_str += f"  [relaxed {{_nstep}} steps]"
                             compute_times.append(time.time() - step_t0)
                         except Exception as exc:
                             n_skip += 1
@@ -1602,7 +1725,9 @@ def main():
             relax_max_steps=RELAX_MAX_STEPS,
             region_enabled=REGION_ENABLED,
             region_center=np.array(REGION_CENTER, dtype=float),
+            region_center_mode=REGION_CENTER_MODE,
             region_length=REGION_LENGTH,
+            region_length_mode=REGION_LENGTH_MODE,
             grid_origin=grid_origin,
             grid_cell=grid_cell,
             frac_lo=np.array([lo_a, lo_b, lo_c], dtype=float),
@@ -1721,6 +1846,13 @@ def main():
             except Exception as _min_exc:
                 print(f"  ⚠ Could not save min-energy structure: "
                       f"{{_min_exc}}")
+
+        if RELAX_EACH_POINT and (n_relax_conv + n_relax_unconv) > 0:
+            print(
+                f"  🧲 Relaxation summary: {{n_relax_conv}} converged, "
+                f"{{n_relax_unconv}} hit the {{RELAX_MAX_STEPS}}-step cap "
+                f"(fmax={{RELAX_FMAX}} eV/Å)"
+            )
 
         valid = energies[~blocked]
         if valid.size > 0:
