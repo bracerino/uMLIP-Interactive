@@ -1498,11 +1498,29 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
             cumul_dist = []
 
+            # Each contiguous sub-path is (start_idx, end_idx) in all_kpts.
+            # A new chunk starts wherever a segment's start_coords differ from
+            # the previous segment's end_coords (i.e. the user inserted a `|`).
+            contiguous_chunks = []
+            chunk_start_idx = 0
+
             for seg_idx, seg in enumerate(manual_kpath):
                 start = np.array(seg["start_coords"], dtype=float)
                 end = np.array(seg["end_coords"], dtype=float)
                 s_lbl = seg.get("start_label", f"P{seg_idx}")
                 e_lbl = seg.get("end_label", f"P{seg_idx + 1}")
+
+                is_discontinuity = False
+                if seg_idx > 0:
+                    prev_end = np.array(
+                        manual_kpath[seg_idx - 1]["end_coords"], dtype=float
+                    )
+                    if not np.allclose(start, prev_end, atol=1e-8):
+                        is_discontinuity = True
+
+                if is_discontinuity:
+                    contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+                    chunk_start_idx = len(all_kpts)
 
                 if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
                     if unique_labels[-1] != s_lbl:
@@ -1514,7 +1532,9 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                 for j in range(npoints_per_segment):
                     t = j / (npoints_per_segment - 1)
                     kpt = start + t * (end - start)
-                    if all_kpts:
+                    # Skip distance accumulation across a discontinuity (j=0 of
+                    # a new chunk) so the band-plot x-axis has no phantom gap.
+                    if all_kpts and not (is_discontinuity and j == 0):
                         dk = (kpt - all_kpts[-1]) @ rec_mat
                         dist += float(np.linalg.norm(dk))
                     all_kpts.append(kpt)
@@ -1527,8 +1547,13 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     unique_labels.append(e_lbl)
                     unique_pos.append(dist)
 
+            contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+
             path_str = " → ".join(unique_labels)
-            log_queue.put(f"  Manual k-path: {path_str}  ({len(all_kpts)} k-points)")
+            log_queue.put(
+                f"  Manual k-path: {path_str}  ({len(all_kpts)} k-points, "
+                f"{len(contiguous_chunks)} contiguous chunk(s))"
+            )
 
         # Automatic k-path
         else:
@@ -1640,13 +1665,14 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                               dist]
 
 
-        n_per  = int(phonon_params.get('npoints_per_segment',
-                                       phonon_params.get('npoints', 101)))
-        bands  = []
-        for start_idx in range(0, len(all_kpts), n_per):
-            seg = all_kpts[start_idx: start_idx + n_per]
-            if len(seg) >= 2:
-                bands.append(seg)
+        # Build the band paths from the contiguous chunks so that
+        # is_band_connection=True connects bands *within* a continuous stretch
+        # but breaks them at every `|` discontinuity. The manual k-path branch
+        # fills `contiguous_chunks`; the automatic / fallback branches are a
+        # single continuous path.
+        if not (manual_kpath and not use_auto_kpath):
+            contiguous_chunks = [(0, len(all_kpts))]
+        bands = [all_kpts[s:e] for (s, e) in contiguous_chunks if e - s >= 2]
         if not bands:
             bands = [all_kpts]
 
@@ -1670,27 +1696,36 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         band_dict = phonon.get_band_structure_dict()
 
         raw_freq = band_dict['frequencies']
-        if isinstance(raw_freq, np.ndarray):
-            frequencies = raw_freq
+        # phonopy returns a list of per-path arrays (one per element of `bands`,
+        # i.e. one per contiguous chunk) or a single 3-D ndarray when there is
+        # only one path. Normalize to a list of 2-D parts so we can break the
+        # plot at every discontinuity.
+        if isinstance(raw_freq, np.ndarray) and raw_freq.ndim == 3:
+            _freq_parts = [raw_freq[i] for i in range(raw_freq.shape[0])]
+        elif isinstance(raw_freq, (list, tuple)):
+            _freq_parts = [np.atleast_2d(np.array(p)) for p in raw_freq]
         else:
-            frequencies = np.concatenate(
-                [np.atleast_2d(np.array(s)) for s in raw_freq], axis=0
-            )
+            _freq_parts = [np.atleast_2d(np.array(raw_freq))]
+
+        # Flat (no-NaN) view, used for stability analysis and data export.
+        frequencies = np.concatenate(_freq_parts, axis=0)
         if frequencies.ndim == 1:
             frequencies = frequencies[:, np.newaxis]
 
         frequencies = frequencies * units_phonopy.THzToEv * 1000
-
-
         frequencies = np.where(np.abs(frequencies) < 0.5, 0.0, frequencies)
 
         raw_kpts = band_dict['qpoints']
-        if isinstance(raw_kpts, np.ndarray):
-            kpoints_band = raw_kpts
-        else:
+        if isinstance(raw_kpts, np.ndarray) and raw_kpts.ndim == 3:
+            kpoints_band = np.concatenate(
+                [raw_kpts[i] for i in range(raw_kpts.shape[0])], axis=0
+            )
+        elif isinstance(raw_kpts, (list, tuple)):
             kpoints_band = np.concatenate(
                 [np.atleast_2d(np.array(s)) for s in raw_kpts], axis=0
             )
+        else:
+            kpoints_band = np.atleast_2d(np.array(raw_kpts))
 
 
         min_len = min(len(kpoints_band), len(frequencies))
@@ -1703,6 +1738,32 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             frequencies  = frequencies[:min_len]
 
         dist_array = np.array(cumul_dist[:min_len])
+
+        # Plot view: insert a NaN row between contiguous chunks so the band
+        # plot draws a clean break at every `|` discontinuity instead of a
+        # straight line connecting the two sides of the gap.
+        if len(_freq_parts) > 1:
+            _n_bands_plot = frequencies.shape[1]
+            _nan_row      = np.full((1, _n_bands_plot), np.nan)
+            _pieces_freq  = []
+            _pieces_dist  = []
+            _cursor       = 0
+            for _idx, _part in enumerate(_freq_parts):
+                _seg_len = _part.shape[0]
+                _seg_end = min(_cursor + _seg_len, min_len)
+                if _seg_end <= _cursor:
+                    break
+                if _idx > 0:
+                    _pieces_freq.append(_nan_row)
+                    _pieces_dist.append(np.array([dist_array[_cursor]]))
+                _pieces_freq.append(frequencies[_cursor:_seg_end])
+                _pieces_dist.append(dist_array[_cursor:_seg_end])
+                _cursor = _seg_end
+            frequencies_plot = np.concatenate(_pieces_freq, axis=0)
+            dist_array_plot  = np.concatenate(_pieces_dist)
+        else:
+            frequencies_plot = frequencies
+            dist_array_plot  = dist_array
         log_queue.put(
             f"  ✅ Band structure: {frequencies.shape[0]} k-points, "
             f"{frequencies.shape[1]} bands"
@@ -1871,6 +1932,8 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
             'frequencies':          frequencies,
             'kpoints':              kpoints_band,
             'kpoint_distances':     dist_array,
+            'frequencies_plot':     frequencies_plot,
+            'kpoint_distances_plot': dist_array_plot,
             'kpoint_labels':        unique_labels,
             'kpoint_label_positions': unique_pos,
 
