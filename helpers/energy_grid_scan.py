@@ -1265,6 +1265,39 @@ def generate_energy_grid_scan_script(
             f"external_fields=[{_ps.get('external_field', [0.0, 0.0, 0.0])}]"
         )
 
+    # Human-readable summary of every setting chosen in the GUI, written into
+    # the script header so a saved script is self-documenting.
+    if region_on:
+        region_desc = (
+            f"sub-region cube (centre={region_ctr} [{region_ctr_mode}], "
+            f"edge length={region_len} [{region_len_mode}])"
+        )
+    else:
+        region_desc = "full unit cell"
+    if relax_each:
+        relax_desc = (
+            f"ON (optimizer={relax_opt}, fmax={relax_fmax} eV/Å, "
+            f"max_steps={relax_steps})"
+        )
+    else:
+        relax_desc = "OFF (single-point energies)"
+    settings_info = f"""
+
+Scan settings
+-------------
+  Probe element     : {elem}
+  Grid spacing      : {spacing} Å
+  Min. distance     : {min_dist} Å (blocking radius around host atoms)
+  Blocked sentinel  : {blocked_e:g} eV
+  Scan region       : {region_desc}
+  Relaxation        : {relax_desc}
+  Compute baseline  : {do_base}
+  Degeneracy tol.   : {degen_tol_e} eV
+  Save XSF          : {save_xsf}
+  Save min. struct. : {save_min}
+  Console output    : every {print_every} grid point(s)
+  Threads (OMP)     : {thread_count}"""
+
     return f'''#!/usr/bin/env python3
 """Standalone Energy Grid Scan.
 
@@ -1272,6 +1305,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Model: {selected_model_key or model_size}
 Device: {device}
 Precision: {dtype}{config_info}
+{settings_info}
 
 Places an *{elem}* probe atom at every point of an `na × nb × nc`
 fractional grid spanning each host unit cell, computes the single-point
