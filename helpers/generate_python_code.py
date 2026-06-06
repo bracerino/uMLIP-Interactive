@@ -5554,6 +5554,52 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     pre_opt = FIRE(relax_target, logfile=None)
                 else:
                     pre_opt = LBFGS(relax_target, logfile=None)
+
+                # Per-step console logging, mirroring the Geometry Optimization
+                # mode so the pre-phonon relaxation is no longer a silent step.
+                _pre_state = {{"step": 0, "prev_E": None, "t0": time.time(),
+                              "times": []}}
+
+                def _log_pre_relax_step():
+                    _now = time.time()
+                    if _pre_state["step"] > 0:
+                        _pre_state["times"].append(_now - _pre_state["t0"])
+                    _pre_state["t0"] = _now
+                    _pre_state["step"] += 1
+                    _st = _pre_state["step"]
+
+                    _E   = pre_atoms.get_potential_energy()
+                    _F   = pre_atoms.get_forces()
+                    _fmx = float(np.max(np.linalg.norm(_F, axis=1)))
+                    _epa = _E / len(pre_atoms)
+                    if _pre_state["prev_E"] is None:
+                        _dE = float("inf")
+                    else:
+                        _dE = abs(_E - _pre_state["prev_E"])
+                    _pre_state["prev_E"] = _E
+                    try:
+                        _maxstress = float(np.max(np.abs(pre_atoms.get_stress(voigt=True))))
+                    except Exception:
+                        _maxstress = 0.0
+
+                    _eta = ""
+                    if _pre_state["times"]:
+                        _avg = float(np.mean(_pre_state["times"]))
+                        _rem = max(0, pre_relax_steps - _st)
+                        _rem_t = _avg * _rem
+                        if _rem_t < 60:
+                            _rem_str = f"{{_rem_t:.1f}}s"
+                        elif _rem_t < 3600:
+                            _rem_str = f"{{_rem_t/60:.1f}}m"
+                        else:
+                            _rem_str = f"{{_rem_t/3600:.1f}}h"
+                        _eta = f" | Max. time: {{_rem_str}} ({{_rem}} steps)"
+
+                    log(f"    Step {{_st}}: E={{_E:.6f}} eV ({{_epa:.6f}} eV/atom), "
+                        f"F_max={{_fmx:.4f}} eV/Å, Max_Stress={{_maxstress:.4f}} GPa, "
+                        f"ΔE={{_dE:.2e}} eV{{_eta}}")
+
+                pre_opt.attach(_log_pre_relax_step, interval=1)
                 pre_opt.run(fmax=pre_relax_fmax, steps=pre_relax_steps)
                 atoms = pre_atoms
                 log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
