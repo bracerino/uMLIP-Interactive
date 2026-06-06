@@ -38,6 +38,11 @@ import os
 import sys
 
 
+# NumPy 2.0 removed `np.trapz` in favour of `np.trapezoid`; older NumPy only
+# has `np.trapz`. Pick whichever exists so we work on both.
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
+
 @contextlib.contextmanager
 def _suppress_stderr_containing(substring: str):
 
@@ -1108,12 +1113,20 @@ def render_phonon_results_tab(
     with col_ph1:
         st.write("**Phonon Dispersion**")
 
-        frequencies_mev = np.array(phonon_data["frequencies"])
+        # Prefer the plot arrays carrying NaN-row separators at every k-path
+        # discontinuity (`|`) so the dispersion line breaks cleanly instead of
+        # drawing a straight segment across the gap. Fall back to the flat
+        # arrays for older results that lack the `_plot` keys.
+        _freq_key = "frequencies_plot" if "frequencies_plot" in phonon_data else "frequencies"
+        _dist_key = ("kpoint_distances_plot"
+                     if "kpoint_distances_plot" in phonon_data
+                     else "kpoint_distances")
+        frequencies_mev = np.array(phonon_data[_freq_key], dtype=float)
         frequencies     = frequencies_mev * freq_scale
         nkpts, nbands   = frequencies.shape
 
-        if phonon_data.get("enhanced_kpoints") and "kpoint_distances" in phonon_data:
-            x_axis     = phonon_data["kpoint_distances"]
+        if phonon_data.get("enhanced_kpoints") and _dist_key in phonon_data:
+            x_axis     = list(np.asarray(phonon_data[_dist_key], dtype=float))
             x_title    = "Distance along k-path"
             use_labels = True
         else:
@@ -1233,7 +1246,7 @@ def render_phonon_results_tab(
             g    = dos_v[mask]
             e    = dos_e_mev[mask]     # meV
 
-            norm = np.trapz(g, e)
+            norm = _trapz(g, e)
             if norm <= 0:
                 raise ValueError("DOS norm is zero – cannot integrate")
             g = g / norm
@@ -1276,7 +1289,7 @@ def render_phonon_results_tab(
                 integrand[safe] = (
                     x[safe] * ex / (ex - 1.0) - np.log(ex - 1.0)
                 )
-                S_mode = _R * np.trapz(integrand * g, e) / np.trapz(g, e)
+                S_mode = _R * _trapz(integrand * g, e) / _trapz(g, e)
                 S_JKmol.append(S_mode)
 
             S_JKmol = np.array(S_JKmol)
