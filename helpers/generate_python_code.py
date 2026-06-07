@@ -5555,10 +5555,13 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 else:
                     pre_opt = LBFGS(relax_target, logfile=None)
 
-                # Per-step console logging, mirroring the Geometry Optimization
-                # mode so the pre-phonon relaxation is no longer a silent step.
+                # Per-step console logging + trajectory capture, mirroring the
+                # Geometry Optimization mode so the pre-phonon relaxation is no
+                # longer a silent step and its trajectory / optimized structure
+                # are saved to optimized_structures/.
                 _pre_state = {{"step": 0, "prev_E": None, "t0": time.time(),
                               "times": []}}
+                _pre_traj = []
 
                 def _log_pre_relax_step():
                     _now = time.time()
@@ -5582,6 +5585,16 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     except Exception:
                         _maxstress = 0.0
 
+                    _pre_traj.append({{
+                        "step": _st,
+                        "energy": _E,
+                        "max_force": _fmx,
+                        "positions": pre_atoms.positions.copy(),
+                        "cell": pre_atoms.cell.array.copy(),
+                        "lattice": get_lattice_parameters(pre_atoms),
+                        "forces": _F.copy(),
+                    }})
+
                     _eta = ""
                     if _pre_state["times"]:
                         _avg = float(np.mean(_pre_state["times"]))
@@ -5604,6 +5617,52 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 atoms = pre_atoms
                 log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
                     f"F_max={{np.max(np.linalg.norm(atoms.get_forces(), axis=1)):.4f}} eV/Å")
+
+                # Save the pre-relaxed structure (POSCAR + CIF) and the
+                # optimisation trajectory into optimized_structures/, exactly
+                # like the standalone Geometry Optimization script does.
+                Path("optimized_structures").mkdir(exist_ok=True)
+                _base_name = os.path.splitext(filename)[0]
+                _base_name = _base_name.replace("POSCAR_", "").replace("POSCAR", "")
+                if not _base_name:
+                    _base_name = f"structure_{{struct_idx+1}}"
+
+                _opt_vasp = f"optimized_structures/optimized-{{_base_name}}.vasp"
+                log(f"  💾 Saving pre-relaxed structure to {{_opt_vasp}}")
+                write_poscar_with_selective_dynamics(
+                    pre_atoms, _opt_vasp, None, "Pre-phonon relaxed")
+                _opt_cif = f"optimized_structures/optimized-{{_base_name}}.cif"
+                if save_structure_as_cif(pre_atoms, _opt_cif):
+                    log(f"  💾 Saved CIF to {{_opt_cif}} (P1, all atoms explicit)")
+
+                if _pre_traj:
+                    _traj_file = f"optimized_structures/trajectory_{{_base_name}}.xyz"
+                    log(f"  📈 Saving pre-relax trajectory to {{_traj_file}}")
+                    _symbols = pre_atoms.get_chemical_symbols()
+                    with open(_traj_file, "w") as _tf:
+                        for _fr in _pre_traj:
+                            _na = len(_fr["positions"])
+                            _lat = _fr["lattice"]
+                            _latstr = " ".join(
+                                f"{{x:.6f}}" for _row in _fr["cell"] for x in _row)
+                            _tf.write(f"{{_na}}\\n")
+                            _tf.write(
+                                f'Step={{_fr["step"]}} Energy={{_fr["energy"]:.6f}} '
+                                f'Max_Force={{_fr["max_force"]:.6f}} '
+                                f'a={{_lat["a"]:.6f}} b={{_lat["b"]:.6f}} c={{_lat["c"]:.6f}} '
+                                f'alpha={{_lat["alpha"]:.3f}} beta={{_lat["beta"]:.3f}} '
+                                f'gamma={{_lat["gamma"]:.3f}} Volume={{_lat["volume"]:.6f}} '
+                                f'Lattice="{{_latstr}}" '
+                                f'Properties=species:S:1:pos:R:3:forces:R:3:total_force:R:1\\n')
+                            _frc = _fr.get("forces", np.zeros_like(_fr["positions"]))
+                            for _j, (_p, _f) in enumerate(zip(_fr["positions"], _frc)):
+                                _sym = _symbols[_j] if _j < len(_symbols) else "X"
+                                _tot = np.linalg.norm(_f)
+                                _tf.write(
+                                    f"{{_sym}} {{_p[0]:12.6f}} {{_p[1]:12.6f}} {{_p[2]:12.6f}} "
+                                    f"{{_f[0]:12.6f}} {{_f[1]:12.6f}} {{_f[2]:12.6f}} "
+                                    f"{{_tot:12.6f}}\\n")
+                    log(f"  💾 Trajectory saved: {{_traj_file}}")
             else:
                 log("  Skipping pre-optimisation (disabled by user)")
 
