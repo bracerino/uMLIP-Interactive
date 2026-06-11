@@ -109,6 +109,7 @@ from helpers.tensile_test import (
 )
 
 from helpers.generate_md_script import generate_md_python_script
+from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
 from helpers.postprocessing_scripts import render_postprocessing_panel
 
@@ -5282,59 +5283,193 @@ with tab1:
 
             if 'generated_md_script' not in st.session_state:
                 st.session_state.generated_md_script = None
+            if 'generated_sweep_bash' not in st.session_state:
+                st.session_state.generated_sweep_bash = None
 
-            if st.button("📝 Generate MD Python Script (using current settings)", key="generate_md_script_button",
-                         type="secondary"):
-                try:
-                    current_selected_model = selected_model
-                    current_model_size = model_size
-                    current_device = device
-                    current_dtype = dtype
-                    current_thread_count = st.session_state.thread_count
-                    mace_config = st.session_state.get('mace_config', {})
-                    mace_head_for_script = mace_config.get('head')
-                    mace_dispersion_for_script = mace_config.get('dispersion', False)
-                    mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
-                    generated_script = generate_md_python_script(
-                        md_params,
-                        current_selected_model,
-                        current_model_size,
-                        current_device,
-                        current_dtype,
-                        current_thread_count,
-                        mace_head=mace_head_for_script,
-                        mace_dispersion=mace_dispersion_for_script,
-                        mace_dispersion_xc=mace_dispersion_xc_for_script,
-                        custom_mace_path=custom_mace_path,
-                        custom_upet_path=custom_upet_path if is_custom_upet else None,
-                        polar_settings=st.session_state.get('polar_settings', {}),
+            md_tab_script, md_tab_sweep = st.tabs(
+                ["📝 Standalone MD Script", "🔁 Temperature / Pressure Sweep"]
+            )
+
+            with md_tab_script:
+                if st.button("📝 Generate MD Python Script (using current settings)", key="generate_md_script_button",
+                             type="secondary"):
+                    try:
+                        current_selected_model = selected_model
+                        current_model_size = model_size
+                        current_device = device
+                        current_dtype = dtype
+                        current_thread_count = st.session_state.thread_count
+                        mace_config = st.session_state.get('mace_config', {})
+                        mace_head_for_script = mace_config.get('head')
+                        mace_dispersion_for_script = mace_config.get('dispersion', False)
+                        mace_dispersion_xc_for_script = mace_config.get('dispersion_xc', 'pbe')
+                        generated_script = generate_md_python_script(
+                            md_params,
+                            current_selected_model,
+                            current_model_size,
+                            current_device,
+                            current_dtype,
+                            current_thread_count,
+                            mace_head=mace_head_for_script,
+                            mace_dispersion=mace_dispersion_for_script,
+                            mace_dispersion_xc=mace_dispersion_xc_for_script,
+                            custom_mace_path=custom_mace_path,
+                            custom_upet_path=custom_upet_path if is_custom_upet else None,
+                            polar_settings=st.session_state.get('polar_settings', {}),
+                        )
+                        st.session_state.generated_md_script = generated_script
+                        st.success("✅ MD script generated successfully!")
+                    except Exception as e:
+                        st.error(f"❌ Failed to generate script: {str(e)}")
+                        st.session_state.generated_md_script = None
+
+                if st.session_state.generated_md_script:
+                    with st.expander("🐍 View Generated MD Script", expanded=True):
+                        st.code(st.session_state.generated_md_script, language='python')
+
+                        st.download_button(
+                            label="💾 Download MD Script (.py)",
+                            data=st.session_state.generated_md_script,
+                            file_name="run_md_simulation.py",
+                            mime="text/x-python",
+                            key="download_generated_md_script",
+                            type='primary'
+                        )
+                    st.info("""
+                            **Instructions:**
+                            1. Save the script (e.g., `run_md_simulation.py`).
+                            2. Place your structure files (`.cif`, `.vasp`, `POSCAR`) in the same directory.
+                            3. Create a subdirectory named `md_results`.
+                            4. Ensure necessary libraries are installed (`pip install ase mace-torch ...`).
+                            5. Run the script from your terminal: `python run_md_simulation.py`
+                            """)
+
+            with md_tab_sweep:
+                st.caption(
+                    "Generate a bash script that re-uses the standalone MD script and runs it "
+                    "once per value over a temperature or pressure range. Each value gets its "
+                    "own folder; after a folder finishes, its averaged structure and aggregate "
+                    "plots (volume, lattice, energy vs. the swept variable) are updated. "
+                    "The run is resumable — finished folders are skipped automatically. "
+                    "You can generate this driver independently — you just need to also download "
+                    "the **Standalone MD Script** (first tab) and place it next to it before running."
+                )
+
+                sweep_c1, sweep_c2, sweep_c3, sweep_c4 = st.columns(4)
+                with sweep_c1:
+                    sweep_var_label = st.selectbox(
+                        "Sweep variable",
+                        ["Temperature (K)", "Pressure (GPa)"],
+                        key="md_sweep_var",
                     )
-                    st.session_state.generated_md_script = generated_script
-                    st.success("✅ MD script generated successfully!")
-                except Exception as e:
-                    st.error(f"❌ Failed to generate script: {str(e)}")
-                    st.session_state.generated_md_script = None
+                sweep_var = "temperature" if sweep_var_label.startswith("Temperature") else "pressure"
+                with sweep_c2:
+                    sweep_start = st.number_input(
+                        "Start", value=300.0 if sweep_var == "temperature" else 0.0,
+                        step=10.0, key="md_sweep_start",
+                    )
+                with sweep_c3:
+                    sweep_end = st.number_input(
+                        "End", value=1000.0 if sweep_var == "temperature" else 10.0,
+                        step=10.0, key="md_sweep_end",
+                    )
+                with sweep_c4:
+                    sweep_step = st.number_input(
+                        "Step", value=100.0 if sweep_var == "temperature" else 1.0,
+                        min_value=0.0001, step=1.0, key="md_sweep_step",
+                    )
 
-            if st.session_state.generated_md_script:
-                with st.expander("🐍 View Generated MD Script", expanded=True):
-                    st.code(st.session_state.generated_md_script, language='python')
+                sweep_o1, sweep_o2 = st.columns(2)
+                with sweep_o1:
+                    sweep_use_last = st.checkbox(
+                        "Chain runs: use the last MD-step structure as the next initial",
+                        value=True, key="md_sweep_use_last",
+                        help="If unchecked, every value starts from the original input structure(s).",
+                    )
+                with sweep_o2:
+                    sweep_avg_pct = st.slider(
+                        "Use last % of MD steps for averaging", min_value=5, max_value=100,
+                        value=50, step=5, key="md_sweep_avg_pct",
+                        help="The average structure and statistics are computed only from the final "
+                             "part of each trajectory (the equilibrated part). For example, 50 % means "
+                             "the last half of the saved MD frames are averaged and the earlier frames "
+                             "are ignored; 100 % averages the whole trajectory.",
+                    )
+                sweep_avg_frac = sweep_avg_pct / 100.0
+                st.caption(
+                    f"➡️ Averaging will use the **last {sweep_avg_pct}%** of the saved trajectory "
+                    f"frames of each run (the earlier {100 - sweep_avg_pct}% is discarded as equilibration)."
+                )
+
+                _errbar_options = {
+                    "Standard deviation (±1σ)": "std",
+                    "Standard error of the mean (±SEM)": "sem",
+                    "None (no error bars)": "none",
+                }
+                sweep_errbar_label = st.selectbox(
+                    "Error bars on plots",
+                    list(_errbar_options.keys()),
+                    index=0, key="md_sweep_errbar",
+                    help="Standard deviation shows the spread of the quantity over the averaged "
+                         "MD frames. SEM = std / √N (smaller; reflects uncertainty of the mean). "
+                         "Choose None to plot just the mean curve with no error bars.",
+                )
+                sweep_errbar_mode = _errbar_options[sweep_errbar_label]
+
+                if st.button("📝 Generate Sweep Driver (run_sweep.sh)", key="generate_sweep_button",
+                             type="secondary"):
+                    try:
+                        st.session_state.generated_sweep_bash = generate_md_sweep_bash_script(
+                            sweep_var=sweep_var,
+                            start=sweep_start,
+                            end=sweep_end,
+                            step=sweep_step,
+                            use_last_structure=sweep_use_last,
+                            avg_fraction=sweep_avg_frac,
+                            errorbar_mode=sweep_errbar_mode,
+                            main_script_name="run_md_simulation.py",
+                        )
+                        st.success("✅ Self-contained sweep driver generated!")
+                        if st.session_state.get('generated_md_script') is None:
+                            st.warning(
+                                "Don't forget to also generate and download the **Standalone MD Script** "
+                                "(first tab) — the sweep driver runs it for each value."
+                            )
+                    except Exception as e:
+                        st.error(f"❌ Failed to generate sweep script: {str(e)}")
+                        st.session_state.generated_sweep_bash = None
+
+                if st.session_state.generated_sweep_bash:
+                    st.caption(
+                        "ℹ️ The averaging + plotting step is embedded directly inside "
+                        "`run_sweep.sh` (as a Python heredoc), so this single file is all you need "
+                        "besides the MD script and your structures."
+                    )
+                    with st.expander("📜 View Sweep Driver (run_sweep.sh)", expanded=True):
+                        st.code(st.session_state.generated_sweep_bash, language='bash')
 
                     st.download_button(
-                        label="💾 Download MD Script (.py)",
-                        data=st.session_state.generated_md_script,
-                        file_name="run_md_simulation.py",
-                        mime="text/x-python",
-                        key="download_generated_md_script",
-                        type='primary'
+                        label="💾 Download run_sweep.sh",
+                        data=st.session_state.generated_sweep_bash,
+                        file_name="run_sweep.sh",
+                        mime="text/x-shellscript",
+                        key="download_sweep_bash",
+                        type='primary',
                     )
-                st.info("""
-                        **Instructions:**
-                        1. Save the script (e.g., `run_md_simulation.py`).
-                        2. Place your structure files (`.cif`, `.vasp`, `POSCAR`) in the same directory.
-                        3. Create a subdirectory named `md_results`.
-                        4. Ensure necessary libraries are installed (`pip install ase mace-torch ...`).
-                        5. Run the script from your terminal: `python run_md_simulation.py`
-                        """)
+
+                    st.info("""
+                            **How to run the sweep:**
+                            1. Put `run_md_simulation.py`, `run_sweep.sh`
+                               and your structure files (`.cif` / `.vasp` / `POSCAR*`) in the **same** folder.
+                            2. (Optional) Open `run_sweep.sh` and adjust the *USER SETTINGS* block
+                               (range, `PYTHON_BIN`, chaining, averaging fraction).
+                            3. Run it: `bash run_sweep.sh`
+                            4. Each value runs in its own `temperature_<val>` / `pressure_<val>` folder.
+                               Aggregated averages, the averaged-structure trajectory, `sweep_summary.csv`
+                               and plots appear under `sweep_averages/`.
+                            5. To resume after an interruption, just run `bash run_sweep.sh` again —
+                               finished folders (those with a `.sweep_done` marker) are skipped.
+                            """)
         if calc_type == "PET-MAD-DOS":
             render_petmad_dos_panel(st.session_state.structures)
         if calc_type == "Virtual Tensile Test":
