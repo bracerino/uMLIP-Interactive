@@ -4538,7 +4538,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.5.2 · 6/6/2026
+            v0.9.6 · 6/11/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
