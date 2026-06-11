@@ -53,6 +53,20 @@ from helpers.core_code_preview import generate_core_preview
 
 from helpers.petmad_dos import render_petmad_dos_panel
 
+# ---------------------------------------------------------------------------
+# Online / demo mode.
+#
+# When the environment variable MLIP_ONLINE_MODE is set to "1" (this is done by
+# the thin launcher app_online.py), the app runs as a public online demo:
+#   * structure upload is disabled,
+#   * running simulations inside the interface is disabled,
+#   * generating the standalone Python script stays fully available.
+#
+# It defaults to OFF, so running `streamlit run app.py` behaves exactly as
+# before (no behavioural change for the local app).
+# ---------------------------------------------------------------------------
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
+
 from helpers.nudge_elastic_band import (
     setup_neb_parameters_ui,
     run_neb_calculation,
@@ -2393,6 +2407,85 @@ MODEL_FAMILIES = {
 
 # Flat dict kept for backward compatibility (script generation, etc.)
 MACE_MODELS = {k: v for family in MODEL_FAMILIES.values() for k, v in family.items()}
+
+# ---------------------------------------------------------------------------
+# Per-model-family environment setup instructions.
+#
+# Used in online mode to tell the user which packages they need to install in a
+# fresh virtual environment before running the standalone script they generated.
+# The keys match the family names used in MODEL_FAMILIES.
+# ---------------------------------------------------------------------------
+FAMILY_ENV_SETUP = {
+    "MACE": {
+        "requirements": "requirements.txt",
+        "pip": "pip install -r requirements.txt",
+        "note": "Covers MACE (and also CHGNet, SevenNet, ORB, Nequix) on torch 2.8.",
+    },
+    "UPET / PET-MAD": {
+        "requirements": "requirements-upet.txt",
+        "pip": "pip install -r requirements-upet.txt",
+        "note": "UPET / PET-MAD needs its own environment (ASE 3.27, upet).",
+    },
+    "CHGNet": {
+        "requirements": "requirements.txt",
+        "pip": "pip install -r requirements.txt",
+        "note": "Covered by the core environment (torch 2.8).",
+    },
+    "SevenNet": {
+        "requirements": "requirements.txt",
+        "pip": "pip install -r requirements.txt",
+        "note": "Covered by the core environment (torch 2.8).",
+    },
+    "ORB": {
+        "requirements": "requirements.txt",
+        "pip": "pip install -r requirements.txt",
+        "note": "Covered by the core environment (includes pynanoflann for ORB).",
+    },
+    "Nequix": {
+        "requirements": "requirements.txt",
+        "pip": "pip install -r requirements.txt",
+        "note": "Covered by the core environment (torch 2.8).",
+    },
+    "MatterSim": {
+        "requirements": "requirements-mattersim.txt",
+        "pip": "pip install -r requirements-mattersim.txt",
+        "note": "MatterSim needs its own environment (mattersim package).",
+    },
+    "GRACE": {
+        "requirements": "requirements-grace.txt",
+        "pip": "pip install -r requirements-grace.txt && pip install torch==2.8.0",
+        "note": "GRACE needs its own environment (tensorpotential + torch 2.8).",
+    },
+}
+
+
+def render_online_script_setup_info(selected_family, selected_model):
+    """In online mode, explain how to run the generated standalone script:
+    create a virtual environment, install the right packages for the selected
+    MLIP, drop the structures next to the script, and run it."""
+    setup = FAMILY_ENV_SETUP.get(selected_family, FAMILY_ENV_SETUP["MACE"])
+    st.info(
+        f"📦 **Before running the generated script for `{selected_model}` "
+        f"({selected_family}):**\n\n"
+        f"1. **Create & activate a virtual environment** (so packages don't clash):\n"
+        f"   ```bash\n"
+        f"   python3 -m venv mlip_env\n"
+        f"   source mlip_env/bin/activate      # Windows: mlip_env\\Scripts\\activate\n"
+        f"   ```\n"
+        f"2. **Install the packages** for the selected MLIP — {setup['note']}\n"
+        f"   ```bash\n"
+        f"   {setup['pip']}\n"
+        f"   ```\n"
+        f"   (the `{setup['requirements']}` file is in the project repository)\n"
+        f"3. **Put every structure you want to compute** (`.cif`, `POSCAR`/`.vasp`, "
+        f"extended `.xyz`, `.lmp`, …) **into the same folder as the downloaded script.**\n"
+        f"4. **Run the script** from that folder:\n"
+        f"   ```bash\n"
+        f"   python <downloaded_script>.py\n"
+        f"   ```\n\n"
+        f"💡 Use the **📂 Generate Python Script (Will use POSCAR/CIF files in the same "
+        f"folder ...)** button below — it reads the structures sitting next to it."
+    )
 
 
 def is_url_model(model_size):
@@ -4918,8 +5011,28 @@ tab1, tab_st, tab2, tab3, tab4 = st.tabs(
      "📈 Optimization Trajectories and Convergence"])
 
 with tab1:
+    if ONLINE_MODE:
+        st.sidebar.header("🌐 Online Demo Mode")
+        st.sidebar.info(
+            "🌐 **This is the online version.**\n\n"
+            "Uploading structures and running simulations in the interface are "
+            "**disabled** here.\n\n"
+            "✅ You can still configure any calculation and **generate the "
+            "standalone Python script**.\n\n"
+            "💻 To upload structures and run simulations directly inside the "
+            "interface, please **install and run the app locally**:\n"
+            "[github.com/bracerino/uMLIP-Interactive](https://github.com/bracerino/uMLIP-Interactive)"
+        )
     st.sidebar.header("Upload Structure Files")
-    if not st.session_state.structures_locked:
+    if ONLINE_MODE:
+        uploaded_files = None
+        st.sidebar.warning(
+            "⬆️ Structure upload is disabled in the online version. "
+            "Configure your calculation below and generate the standalone "
+            "Python script — your structures go next to that script when you "
+            "run it locally."
+        )
+    elif not st.session_state.structures_locked:
         uploaded_files = st.sidebar.file_uploader(
             "Upload structure files (CIF, POSCAR, LMP, XSF, PW, CFG, etc.)",
             accept_multiple_files=True,
@@ -5038,6 +5151,33 @@ with tab1:
           <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
           and the publications corresponding to the employed uMLIPs:
           <strong><span style="color:#0b63c4;">(see 'Show Model Citations' in the right corner)</span></strong>
+          </div>
+        </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if ONLINE_MODE:
+        st.markdown(
+            """
+        <div style="
+          background-color: #fff4e5;
+          border-left: 6px solid #ff9800;
+          padding: 15px;
+          border-radius: 8px;
+          font-family: Arial, sans-serif;
+          color: #663c00;
+          max-width: 1100px;
+          margin: 10px 0;
+        ">
+          <strong>🌐 Online version.</strong> Running simulations in the interface
+          and uploading structures are <strong>disabled</strong> here. You can
+          configure any calculation below and <strong>generate the standalone
+          Python script</strong>, then run it on your own machine.
+          <div style="margin-top: 8px;">
+          ▶️ To run simulations directly in the interface (with structure upload),
+          please <strong>install and compile the app locally</strong>:
+          <a style="color:#0b63c4;" href="https://github.com/bracerino/uMLIP-Interactive" target="_blank">github.com/bracerino/uMLIP-Interactive</a>.
           </div>
         </div>
             """,
@@ -6728,9 +6868,12 @@ with tab_st:
     if True:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
-        st.info(
-            f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`."
-            "..")
+        if ONLINE_MODE:
+            render_online_script_setup_info(selected_family, selected_model)
+        else:
+            st.info(
+                f"💾 **Auto-backup**: Results (energies, lattice parameters, optimized structures) will be automatically saved to: `{backup_folder}`."
+                "..")
         st.markdown("""
             <style>
             div.stButton > button[kind="primary"] {
@@ -6765,9 +6908,11 @@ with tab_st:
         col1, col2, col3 = st.columns(3)
         with col1:
             start_calc = st.button(
-                "🚀 Start Batch Calculation",
+                "🚀 Start Batch Calculation"
+                + (" (disabled in online version — compile locally)" if ONLINE_MODE else ""),
                 type="primary",
-                disabled=external_only or
+                disabled=ONLINE_MODE or
+                         external_only or
                          not all_compatible or
                          st.session_state.calculation_running or
                          (calc_type != "NEB Calculation" and (
@@ -6779,9 +6924,10 @@ with tab_st:
 
         with col2:
             but_script = st.button(
-                "📝 Generate Python Script (automatically creates structures from the uploaded ones)",
+                "📝 Generate Python Script (automatically creates structures from the uploaded ones)"
+                + (" — disabled online (no upload)" if ONLINE_MODE else ""),
                 type="tertiary",
-                disabled=external_only or len(st.session_state.structures) == 0,
+                disabled=ONLINE_MODE or external_only or len(st.session_state.structures) == 0,
             )
 
         with col3:
