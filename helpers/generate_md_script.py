@@ -1287,6 +1287,22 @@ MD Parameters:
 
 md_params = {md_params_script_str}
 
+# ============================================================
+#  SWEEP ANCHOR — used by run_sweep.sh to inject a swept value.
+#  Do NOT change the format of the two lines that end with
+#  "# SWEEP_TEMPERATURE" / "# SWEEP_PRESSURE_GPA": the sweep
+#  driver rewrites them with `sed`. They are harmless (None)
+#  when the script is run on its own.
+# ============================================================
+SWEEP_TEMPERATURE = None   # SWEEP_TEMPERATURE
+SWEEP_PRESSURE_GPA = None   # SWEEP_PRESSURE_GPA
+if SWEEP_TEMPERATURE is not None:
+    md_params['temperature'] = SWEEP_TEMPERATURE
+    print(f"[sweep] Overriding temperature -> {{SWEEP_TEMPERATURE}} K")
+if SWEEP_PRESSURE_GPA is not None:
+    md_params['target_pressure_gpa'] = SWEEP_PRESSURE_GPA
+    print(f"[sweep] Overriding target pressure -> {{SWEEP_PRESSURE_GPA}} GPa")
+
 is_mace_polar = {is_mace_polar}
 is_orbmol = {is_orbmol}
 polar_settings = {{"charge": {_polar_charge}, "spin": {_polar_spin}, "external_field": {list(_polar_efield)}}}
