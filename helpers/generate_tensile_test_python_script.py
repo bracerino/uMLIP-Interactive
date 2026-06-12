@@ -346,6 +346,17 @@ class ConsoleMDLogger:
         self.start_time = time.perf_counter()
         self.last_log_time = time.perf_counter()
         self.step_start_time = time.perf_counter()
+        # Whole-run progress (for total remaining-time estimate). When total_run_steps
+        # is None the logger falls back to a per-run estimate.
+        self.global_offset = 0
+        self.total_run_steps = None
+
+    def set_global_progress(self, global_offset, total_run_steps):
+        \"\"\"Tell the logger how many steps are already done (global_offset) and how
+        many steps the whole tensile loop will run (total_run_steps), so it can show
+        the total estimated time remaining instead of just this increment's.\"\"\"
+        self.global_offset = global_offset
+        self.total_run_steps = total_run_steps
 
     def __call__(self):
         self.step_count_this_run += 1
@@ -362,9 +373,15 @@ class ConsoleMDLogger:
             elapsed_time_run = current_time - self.start_time
             avg_step_time = 0
             estimated_remaining_time = None
+            est_label = "Est. time (this run)"
             if self.averaging_started and len(self.step_times) > 0:
                 avg_step_time = np.mean(list(self.step_times))
-                remaining_steps_run = self.total_steps_in_run - self.step_count_this_run
+                if self.total_run_steps is not None:
+                    # Total remaining over ALL remaining increments and their MD steps.
+                    remaining_steps_run = self.total_run_steps - (self.global_offset + self.step_count_this_run)
+                    est_label = "Est. total remaining"
+                else:
+                    remaining_steps_run = self.total_steps_in_run - self.step_count_this_run
                 if remaining_steps_run > 0:
                     estimated_remaining_time = remaining_steps_run * avg_step_time
             try:
@@ -394,7 +411,7 @@ class ConsoleMDLogger:
             log_str += cell_str
             if estimated_remaining_time is not None:
                 log_str += f" | Avg/step: {avg_step_time:.3f}s"
-                log_str += f" | Est. time (this run): {self._format_time(estimated_remaining_time)}"
+                log_str += f" | {est_label}: {self._format_time(estimated_remaining_time)}"
             elif self.step_count_this_run <= self.log_interval:
                 log_str += " | (Calculating time estimates...)"
             print(log_str)
@@ -1166,10 +1183,14 @@ def apply_strain(atoms, direction_index, strain_value):
     atoms.set_cell(new_cell, scale_atoms=True)
 
 
-def build_nvt_dynamics(atoms, timestep_ase):
-    \"\"\"NVT thermostat for the straining dynamics (Langevin / Berendsen / Nose-Hoover).\"\"\"
+def build_nvt_dynamics(atoms, timestep_ase, grip_indices=None):
+    \"\"\"Dynamics for straining: NVE (no thermostat) / Langevin / Berendsen / Nose-Hoover.
+    Fixed grip atoms (grip_indices) are excluded from the thermostat: the Langevin
+    thermostat uses a per-atom friction of 0 on those atoms so they are not heated.\"\"\"
     thermostat = tensile_params.get('nvt_thermostat', 'Langevin')
     temperature_K = tensile_params['temperature']
+    if str(thermostat).startswith('NVE'):
+        return VelocityVerlet(atoms, timestep=timestep_ase)
     if thermostat == 'Berendsen':
         taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
         return NVTBerendsen(atoms, timestep=timestep_ase, temperature_K=temperature_K, taut=taut)
@@ -1177,14 +1198,18 @@ def build_nvt_dynamics(atoms, timestep_ase):
         tdamp = tensile_params.get('thermostat_taut', 100.0) * units.fs
         return NoseHooverChainNVT(atoms, timestep=timestep_ase, temperature_K=temperature_K, tdamp=tdamp)
     friction = tensile_params['friction'] / units.fs
+    if grip_indices is not None and len(grip_indices) > 0:
+        friction_arr = np.full((len(atoms), 1), friction, dtype=float)
+        friction_arr[np.asarray(grip_indices)] = 0.0
+        friction = friction_arr
     return Langevin(atoms, timestep=timestep_ase, temperature_K=temperature_K, friction=friction)
 
 
-def build_strain_dynamics(atoms, timestep_ase, direction_index):
-    \"\"\"Dynamics for a strain increment: transverse-masked NPT if enabled, else NVT.\"\"\"
-    # Boundary grips fix end atoms, which conflicts with barostat cell scaling -> NVT.
+def build_strain_dynamics(atoms, timestep_ase, direction_index, grip_indices=None):
+    \"\"\"Dynamics for a strain increment: transverse-masked NPT if enabled, else NVT/NVE.\"\"\"
+    # Boundary grips fix end atoms, which conflicts with barostat cell scaling -> NVT/NVE.
     if not tensile_params['use_npt_transverse'] or tensile_params.get('use_boundary_grips', False):
-        return build_nvt_dynamics(atoms, timestep_ase)
+        return build_nvt_dynamics(atoms, timestep_ase, grip_indices=grip_indices)
 
     temperature_K = tensile_params['temperature']
     transverse_mask = [1, 1, 1]; transverse_mask[direction_index] = 0
@@ -1208,7 +1233,7 @@ def build_strain_dynamics(atoms, timestep_ase, direction_index):
                                           compressibility_au=compressibility, mask=tuple(transverse_mask))
 
     # No barostat available -> NVT fallback
-    return build_nvt_dynamics(atoms, timestep_ase)
+    return build_nvt_dynamics(atoms, timestep_ase, grip_indices=grip_indices)
 
 
 def run_tensile_test_simulation(atoms, basename, calculator):
@@ -1356,11 +1381,15 @@ def run_tensile_test_simulation(atoms, basename, calculator):
     # --- Optional boundary grips: hold two end slabs rigid, free interior under MD ---
     use_boundary_grips = tensile_params.get('use_boundary_grips', False)
     bg_all_grip = None
+    bg_left = bg_right = None
+    bg_center0 = None
     bg_symmetric = tensile_params.get('boundary_grip_symmetric', True)
     if use_boundary_grips:
         grip_frac = tensile_params.get('boundary_grip_fraction', 0.08)
         bg_left, bg_right, bg_free, _ = identify_grip_atoms(atoms, direction_index, grip_frac)
         bg_all_grip = np.concatenate([bg_left, bg_right])
+        _p0 = atoms.get_positions()
+        bg_center0 = 0.5 * (_p0[bg_left, direction_index].mean() + _p0[bg_right, direction_index].mean())
         atoms.set_constraint(FixAtoms(indices=bg_all_grip))
         _vel = atoms.get_velocities(); _vel[bg_all_grip] = 0.0; atoms.set_velocities(_vel)
         print(f"  Boundary grips ON: {{len(bg_left)}} + {{len(bg_right)}} grip atoms fixed, {{len(bg_free)}} interior free")
@@ -1402,15 +1431,18 @@ def run_tensile_test_simulation(atoms, basename, calculator):
                  strain_step = 0.0
 
             if strain_step > 1e-9:
-                _old_len = np.linalg.norm(atoms.get_cell()[direction_index])
+                if use_boundary_grips:
+                    atoms.set_constraint()  # release so the strain/shift also moves the grips
                 apply_strain(atoms, direction_index, strain_step )
                 if use_boundary_grips:
-                    # Re-center for a symmetric pull (cosmetic in a periodic cell), then keep
-                    # grip velocities zero; FixAtoms holds the grips while the interior relaxes.
+                    # Symmetric pull: translate so the midpoint between the two grips stays
+                    # fixed, so both grip slabs move apart equally about a fixed centre.
                     if bg_symmetric:
-                        _new_len = np.linalg.norm(atoms.get_cell()[direction_index])
-                        _shift = -(_new_len - _old_len) / 2.0
-                        _pos = atoms.get_positions(); _pos[:, direction_index] += _shift; atoms.set_positions(_pos)
+                        _pos = atoms.get_positions()
+                        _c = 0.5 * (_pos[bg_left, direction_index].mean() + _pos[bg_right, direction_index].mean())
+                        _pos[:, direction_index] += (bg_center0 - _c); atoms.set_positions(_pos)
+                    # Re-fix grips and zero their velocities for the MD that follows.
+                    atoms.set_constraint(FixAtoms(indices=bg_all_grip))
                     _vel = atoms.get_velocities(); _vel[bg_all_grip] = 0.0; atoms.set_velocities(_vel)
                 applied_strain_percent = target_strain_value * 100.0
                 print(f"\\nIncrement {{i+1}}/{{n_increments}}: Applied strain up to ~{{applied_strain_percent:.4f}}%")
@@ -1422,12 +1454,13 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             if relax_steps > 0:
                 print(f"  Running {{relax_steps}} relaxation steps...")
 
-                dyn_strain_relax = build_strain_dynamics(atoms, timestep_ase, direction_index)
+                dyn_strain_relax = build_strain_dynamics(atoms, timestep_ase, direction_index, grip_indices=bg_all_grip)
 
-                if console_logger_relax: 
+                if console_logger_relax:
                      console_logger_relax.reset()
+                     console_logger_relax.set_global_progress(global_step_counter - equilibration_steps, total_md_steps_strain)
                      dyn_strain_relax.attach(console_logger_relax, interval=1)
-                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter) 
+                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
                 traj_writer.reset_increment_step_count(current_global_step=global_step_counter) 
                 dyn_strain_relax.attach(tensile_logger, interval=1)
                 dyn_strain_relax.attach(traj_writer, interval=1)    
@@ -1440,16 +1473,17 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             if steps_per_increment > 0:
                 print(f"  Running {{steps_per_increment}} MD steps...")
 
-                dyn_strain_main = build_strain_dynamics(atoms, timestep_ase, direction_index)
+                dyn_strain_main = build_strain_dynamics(atoms, timestep_ase, direction_index, grip_indices=bg_all_grip)
 
                 console_logger_strain.reset()
+                console_logger_strain.set_global_progress(global_step_counter - equilibration_steps, total_md_steps_strain)
                 dyn_strain_main.attach(console_logger_strain, interval=1)
-                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter) 
-                traj_writer.reset_increment_step_count(current_global_step=global_step_counter) 
+                tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
+                traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
                 dyn_strain_main.attach(tensile_logger, interval=1)
                 dyn_strain_main.attach(traj_writer, interval=1)
 
-                dyn_strain_main.run(steps_per_increment) 
+                dyn_strain_main.run(steps_per_increment)
                 global_step_counter += steps_per_increment 
                 print(f"  MD steps finished for increment {{i+1}}.")
 
@@ -1535,21 +1569,16 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
     try:
         MaxwellBoltzmannDistribution(atoms, temperature_K=tensile_params['temperature'])
         Stationary(atoms)
-        velocities = atoms.get_velocities()
-        velocities[all_grip] = 0.0
-        atoms.set_velocities(velocities)
-        print(f"  Set initial velocities (free atoms only).")
+        print(f"  Set initial velocities (all atoms; grips NOT fixed during equilibration).")
     except Exception as e:
         print(f"  Warning: Could not set initial velocities: {{e}}")
 
-    atoms.set_constraint(FixAtoms(indices=all_grip))
-
     equilibration_steps = tensile_params['equilibration_steps']
     if equilibration_steps > 0:
-        print(f"\\n--- Running Initial Equilibration ({{equilibration_steps}} steps, NVT-{{tensile_params.get('nvt_thermostat', 'Langevin')}}) ---")
+        print(f"\\n--- Running Initial Equilibration ({{equilibration_steps}} steps, {{tensile_params.get('nvt_thermostat', 'Langevin')}}); grips NOT fixed yet ---")
         timestep_ase = tensile_params['timestep'] * units.fs
         friction_ase = tensile_params['friction'] / units.fs
-        dyn_eq = build_nvt_dynamics(atoms, timestep_ase)
+        dyn_eq = build_nvt_dynamics(atoms, timestep_ase)  # whole structure free, all atoms thermostatted
         console_logger_eq = ConsoleMDLogger(atoms, equilibration_steps,
                                             log_interval=tensile_params['log_frequency'],
                                             prefix="Equil: ")
@@ -1559,11 +1588,13 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             dyn_eq.run(equilibration_steps)
             global_step_counter += equilibration_steps
             print(f"  Equilibration finished. T = {{atoms.get_temperature():.1f}} K")
+            # Re-measure the grip-to-grip reference length on the equilibrated structure.
+            _coords = atoms.get_positions()[:, direction_index]
+            initial_length = float(_coords.max() - _coords.min())
+            print(f"  Reference length after equilibration: {{initial_length:.4f}} Å")
             try:
                 eq_poscar = f"md_results/{{basename}}_equilibrated.poscar"
-                atoms_eq = atoms.copy()
-                atoms_eq.set_constraint()  # drop grip constraints before writing
-                write(eq_poscar, atoms_eq, format="vasp", sort=True, vasp5=True)
+                write(eq_poscar, atoms, format="vasp", sort=True, vasp5=True)
                 print(f"  💾 Saved equilibrated structure to {{eq_poscar}} (use it as a restart point)")
             except Exception as we:
                 print(f"  Warning: could not save equilibrated POSCAR: {{we}}")
@@ -1571,6 +1602,10 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             print(f"❌ Equilibration FAILED: {{e}}")
             import traceback
             traceback.print_exc()
+
+    # Now fix the grips for the straining phase (after equilibration; zero their velocities first).
+    _vel = atoms.get_velocities(); _vel[all_grip] = 0.0; atoms.set_velocities(_vel)
+    atoms.set_constraint(FixAtoms(indices=all_grip))
 
     print(f"\\n--- Preparing Grip-Based Straining ---")
     timestep_ase = tensile_params['timestep'] * units.fs
@@ -1606,6 +1641,7 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
     strain_per_increment = strain_rate_ps * md_time_per_increment_ps
     displacement_per_increment = strain_per_increment * initial_length
     n_increments = int(np.ceil(max_strain_frac / strain_per_increment)) if strain_per_increment > 0 else 0
+    total_md_steps_strain = n_increments * (steps_per_increment + relax_steps)
 
     print(f"  Displacement per increment: {{displacement_per_increment:.6f}} Å")
     print(f"  Strain per increment: {{strain_per_increment*100:.6f}} %")
@@ -1676,7 +1712,7 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             # 5. Relaxation (optional)
             if relax_steps > 0:
                 print(f"  Running {{relax_steps}} relaxation steps...")
-                dyn_relax = build_nvt_dynamics(atoms, timestep_ase)
+                dyn_relax = build_nvt_dynamics(atoms, timestep_ase, grip_indices=all_grip)
                 tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
                 traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
                 dyn_relax.attach(tensile_logger, interval=1)
@@ -1687,8 +1723,9 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             # 6. Main MD steps
             if steps_per_increment > 0:
                 print(f"  Running {{steps_per_increment}} MD steps...")
-                dyn_main = build_nvt_dynamics(atoms, timestep_ase)
+                dyn_main = build_nvt_dynamics(atoms, timestep_ase, grip_indices=all_grip)
                 console_logger_strain.reset()
+                console_logger_strain.set_global_progress(global_step_counter - equilibration_steps, total_md_steps_strain)
                 dyn_main.attach(console_logger_strain, interval=1)
                 tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
                 traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
