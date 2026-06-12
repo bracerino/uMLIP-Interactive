@@ -2,9 +2,10 @@ import numpy as np
 import streamlit as st
 from ase import Atoms
 from ase.constraints import FixAtoms
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.langevin import Langevin
 from ase.md.nvtberendsen import NVTBerendsen
+from ase.md.verlet import VelocityVerlet
 from ase import units
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -35,8 +36,12 @@ except ImportError:
 
 
 def _available_nvt_thermostats():
-    """NVT thermostat options offered for the straining dynamics."""
-    options = ["Langevin", "Berendsen"]
+    """Thermostat / ensemble options offered for the straining dynamics.
+
+    'NVE (no thermostat)' runs constant-energy dynamics (temperature only sets the
+    initial velocities); the others are NVT thermostats.
+    """
+    options = ["NVE (no thermostat)", "Langevin", "Berendsen"]
     if NVT_NOSE_HOOVER_AVAILABLE:
         options.append("Nose-Hoover")
     return options
@@ -55,15 +60,24 @@ def _available_transverse_barostats():
     return options
 
 
-def build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase):
-    """Build an NVT thermostat for the straining/equilibration dynamics.
+def build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase, grip_indices=None):
+    """Build the thermostatted (or NVE) dynamics for straining/equilibration.
 
-    Mirrors the thermostat choices available in the Molecular Dynamics panel
-    (Langevin / Berendsen / Nose-Hoover). Falls back to Langevin if a requested
-    thermostat is unavailable.
+    Mirrors the choices available in the Molecular Dynamics panel:
+    NVE (no thermostat) / Langevin / Berendsen / Nose-Hoover. Falls back to
+    Langevin if a requested thermostat is unavailable.
+
+    If ``grip_indices`` is given (rigid/fixed regions), those atoms are excluded
+    from the thermostat: the Langevin thermostat uses a per-atom friction of 0 on
+    the grip atoms so they are not stochastically heated. (The other thermostats
+    act through the velocities, which the FixAtoms constraint already holds at 0
+    for grip atoms.)
     """
     thermostat = tensile_params.get('nvt_thermostat', 'Langevin')
     temperature_K = tensile_params['temperature']
+
+    if thermostat.startswith('NVE'):
+        return VelocityVerlet(atoms, timestep_ase)
 
     if thermostat == 'Berendsen':
         taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
@@ -74,7 +88,12 @@ def build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase):
         return NoseHooverChainNVT(atoms, timestep=timestep_ase,
                                   temperature_K=temperature_K, tdamp=tdamp)
 
+    # Langevin (default). Use a per-atom friction so fixed grip atoms are not thermostatted.
     friction = tensile_params['friction'] / units.fs
+    if grip_indices is not None and len(grip_indices) > 0:
+        friction_arr = np.full((len(atoms), 1), friction, dtype=float)
+        friction_arr[np.asarray(grip_indices)] = 0.0
+        friction = friction_arr
     return Langevin(atoms, timestep_ase, temperature_K=temperature_K, friction=friction)
 
 
@@ -152,9 +171,9 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             'transverse_barostat': 'Inhomogeneous Berendsen',
             'barostat_taup': 1000.0,
             'bulk_modulus': 110.0,
-            'use_boundary_grips': False,
+            'use_boundary_grips': True,   # native default: boundary grips
             'boundary_grip_fraction': 0.08,
-            'boundary_grip_symmetric': True,
+            'boundary_grip_symmetric': True,  # native default: symmetric (both ends move)
             'use_grip_mode': False,
             'grip_fraction': 0.1,
             'symmetric_pull': True,
@@ -222,20 +241,26 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
         nvt_options = _available_nvt_thermostats()
         nvt_default = defaults.get('nvt_thermostat', 'Langevin')
         nvt_thermostat = st.selectbox(
-            "NVT Thermostat",
+            "Thermostat / Ensemble",
             nvt_options,
             index=nvt_options.index(nvt_default) if nvt_default in nvt_options else 0,
             help=(
-                "Thermostat used for the straining (and equilibration in grip mode) "
-                "dynamics, mirroring the Molecular Dynamics ensembles.\n"
-                "• Langevin: stochastic friction (robust for ML potentials)\n"
-                "• Berendsen: weak-coupling rescaling\n"
-                "• Nose-Hoover: deterministic chain (canonical sampling)"
+                "Dynamics used for the straining (and equilibration in grip mode), "
+                "mirroring the Molecular Dynamics ensembles.\n"
+                "• NVE: no thermostat — constant energy; temperature only sets the initial velocities\n"
+                "• Langevin: stochastic friction NVT (robust for ML potentials)\n"
+                "• Berendsen: weak-coupling NVT rescaling\n"
+                "• Nose-Hoover: deterministic-chain NVT (canonical sampling)\n"
+                "Note: fixed grip atoms (rigid regions) are excluded from the thermostat."
             )
         )
 
         # Thermostat-specific coupling parameter
-        if nvt_thermostat == 'Langevin':
+        if nvt_thermostat.startswith('NVE'):
+            st.caption("🌡️ NVE: no thermostat (constant energy). Temperature sets only the initial velocities.")
+            friction = defaults['friction']  # kept for the transverse Berendsen barostat
+            thermostat_taut = defaults.get('thermostat_taut', 100.0)
+        elif nvt_thermostat == 'Langevin':
             friction = st.number_input(
                 "Friction (1/fs)",
                 min_value=0.001,
@@ -301,24 +326,10 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
         # --- END NEW ---
 
 
-    relax_between_strain = st.checkbox(
-        "Relax Between Strain Steps",
-        value=defaults['relax_between_strain'],
-        help="Run additional MD steps *after* applying strain but *before* logging stress (uses same dynamics as main MD)."
-    )
-
-    if relax_between_strain:
-        relax_steps = st.number_input(
-            "Relaxation Steps",
-            min_value=1, # Allow at least 1 step
-            max_value=5000,
-            value=defaults.get('relax_steps', 100),
-            step=10,
-            help="Number of extra MD steps for relaxation if enabled."
-        )
-    else:
-        relax_steps = 0
-
+    # "Relax Between Strain Steps" removed — it was redundant with the MD steps already
+    # run between increments. Kept as fixed off values for the runners/saved settings.
+    relax_between_strain = False
+    relax_steps = 0
 
     st.write("**Transverse Pressure Control (Optional)**")
     baro_options = _available_transverse_barostats()
@@ -377,21 +388,44 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
         bulk_modulus = defaults['bulk_modulus'] # Keep value even if unused
 
     # =========================================================================
-    # Boundary Grips (optional, for the periodic cell-scaling mode)
+    # Straining mode: standard cell-scaling, boundary grips, or finite/grip mode.
+    # A single selector (mutually exclusive) reveals only the relevant parameters.
     # =========================================================================
     st.write("---")
-    st.write("**Boundary Grips (periodic cell-scaling, optional)**")
-    use_boundary_grips = st.checkbox(
-        "Fix boundary slabs (grip) instead of pure affine straining",
-        value=defaults['use_boundary_grips'],
+    st.write("**Straining Mode**")
+
+    STRAIN_MODE_STANDARD = "Standard cell-scaling (periodic, affine — no fixed atoms)"
+    STRAIN_MODE_BOUNDARY = "Boundary grips (periodic — fix rigid end slabs, strain the interior)"
+    STRAIN_MODE_FINITE = "Finite structure / grip-based pulling (molecules & nanowires in vacuum)"
+    strain_mode_options = [STRAIN_MODE_STANDARD, STRAIN_MODE_BOUNDARY, STRAIN_MODE_FINITE]
+
+    if defaults.get('use_grip_mode', False):
+        _default_mode_idx = 2
+    elif defaults.get('use_boundary_grips', False):
+        _default_mode_idx = 1
+    else:
+        _default_mode_idx = 0
+
+    strain_mode = st.selectbox(
+        "Straining Mode",
+        strain_mode_options,
+        index=_default_mode_idx,
         help=(
-            "Periodic cell-scaling mode only. When OFF (default), the whole cell is "
-            "strained affinely and no atoms are fixed. When ON, atoms within a set "
-            "fraction from each end along the strain axis are held rigid as grips while "
-            "the interior atoms evolve freely under MD; the cell still grows along the "
-            "strain axis so periodic images stay consistent."
+            "• Standard: scale the periodic cell affinely; all atoms move, none are fixed.\n"
+            "• Boundary grips: hold a rigid slab at each end of the (periodic) cell and let the "
+            "interior respond; the cell still grows along the strain axis.\n"
+            "• Finite structure: for molecules/nanowires in a vacuum box — grip the two ends and "
+            "pull them apart (no cell scaling). Output is axial force vs strain."
         )
     )
+    use_boundary_grips = (strain_mode == STRAIN_MODE_BOUNDARY)
+    use_grip_mode = (strain_mode == STRAIN_MODE_FINITE)
+
+    # Defaults kept even when the corresponding mode isn't selected.
+    boundary_grip_fraction = defaults.get('boundary_grip_fraction', 0.08)
+    boundary_grip_symmetric = defaults.get('boundary_grip_symmetric', True)
+    grip_fraction = defaults.get('grip_fraction', 0.1)
+    symmetric_pull = defaults.get('symmetric_pull', True)
 
     if use_boundary_grips:
         bg_col1, bg_col2 = st.columns(2)
@@ -411,6 +445,7 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
                 "Grip Pull Mode",
                 bg_pull_options,
                 index=0 if defaults.get('boundary_grip_symmetric', True) else 1,
+                key="boundary_grip_pull_mode",
                 help=(
                     "Symmetric: both grips move apart by half the increment each so the "
                     "center stays put (strain rate = total separation rate). "
@@ -424,69 +459,50 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
                 "⚠️ Transverse NPT is ignored when boundary grips are enabled "
                 "(fixed grip atoms conflict with barostat cell scaling); NVT will be used."
             )
-    else:
-        boundary_grip_fraction = defaults.get('boundary_grip_fraction', 0.08)
-        boundary_grip_symmetric = defaults.get('boundary_grip_symmetric', True)
 
-    # =========================================================================
-    # Grip-Based Pulling Mode (for finite structures in vacuum)
-    # =========================================================================
-    st.write("---")
-    st.write("**Finite Structure Mode (Nanotubes / Molecules in Vacuum)**")
-
-    use_grip_mode = st.checkbox(
-        "Use Grip-Based Pulling (for finite structures in vacuum)",
-        value=defaults['use_grip_mode'],
-        help=(
-            "Instead of scaling the periodic cell, this mode identifies atoms at "
-            "the two ends of the structure, fixes one end (left grip), and "
-            "incrementally displaces the other end (right grip). "
-            "The middle atoms move freely during MD/relaxation. "
-            "Use this for nanotubes, nanowires, or molecules in a vacuum box."
-        )
-    )
-
-    grip_fraction = defaults['grip_fraction']
-    symmetric_pull = defaults['symmetric_pull']
-
-    if use_grip_mode:
+    elif use_grip_mode:
         st.info(
-            "**Grip mode active.** The code automatically identifies atoms at both ends "
-            "of your structure along the chosen strain direction. Both grips are fixed "
-            "during MD; each increment displaces the grips and lets the middle atoms respond. "
-            "Output: axial force (eV/Å) vs engineering strain."
+            "**Finite-structure mode active.** Atoms at both ends along the strain direction are "
+            "gripped (fixed) and displaced each increment while the middle atoms respond. "
+            "Output: axial force (eV/Å) vs engineering strain. Use for nanotubes, nanowires, "
+            "or molecules in a vacuum box."
         )
 
         if use_npt_transverse:
             st.warning(
-                "⚠️ Transverse NPT is not meaningful in grip mode "
+                "⚠️ Transverse NPT is not meaningful in finite-structure mode "
                 "(the cell is not being strained). It will be ignored."
             )
 
-        grip_fraction = st.number_input(
-            "Grip Fraction (per end)",
-            min_value=0.01,
-            max_value=0.4,
-            value=defaults.get('grip_fraction', 0.1),
-            step=0.01,
-            format="%.2f",
-            help=(
-                "Fraction of the structure length at each end to treat as "
-                "grip atoms. E.g., 0.1 means the bottom 10% and top 10% "
-                "of atoms (by position along strain axis) are gripped."
+        gm_col1, gm_col2 = st.columns(2)
+        with gm_col1:
+            grip_fraction = st.number_input(
+                "Grip Fraction (per end)",
+                min_value=0.01,
+                max_value=0.4,
+                value=defaults.get('grip_fraction', 0.1),
+                step=0.01,
+                format="%.2f",
+                help=(
+                    "Fraction of the structure length at each end to treat as "
+                    "grip atoms. E.g., 0.1 means the bottom 10% and top 10% "
+                    "of atoms (by position along strain axis) are gripped."
+                )
             )
-        )
-
-        symmetric_pull = st.checkbox(
-            "Symmetric Pull (both grips move)",
-            value=defaults.get('symmetric_pull', True),
-            help=(
-                "If checked, both grips move in opposite directions each increment "
-                "(each by half the displacement). This keeps the center of mass "
-                "stationary and reduces artifacts. "
-                "If unchecked, only the right grip moves while the left grip stays fixed."
+        with gm_col2:
+            gm_pull_options = ["Symmetric (both ends move)", "One-sided (one end fixed)"]
+            gm_pull = st.selectbox(
+                "Grip Pull Mode",
+                gm_pull_options,
+                index=0 if defaults.get('symmetric_pull', True) else 1,
+                key="finite_grip_pull_mode",
+                help=(
+                    "Symmetric: both grips move in opposite directions each increment "
+                    "(each by half the displacement), keeping the center of mass stationary "
+                    "and reducing artifacts. One-sided: only the right grip moves."
+                )
             )
-        )
+            symmetric_pull = gm_pull.startswith("Symmetric")
 
     # --- Save Button Logic ---
     if st.button("💾 Save as Default Tensile Parameters", key="save_tensile_defaults"):
@@ -530,7 +546,12 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
     total_md_steps = equilibration_steps + num_increments * (md_steps_per_increment + relax_steps)
     total_sim_time_ps = total_md_steps * timestep / 1000.0
 
-    mode_str = "GRIP-BASED (finite structure)" if use_grip_mode else "CELL-SCALING (periodic)"
+    if use_grip_mode:
+        mode_str = "FINITE STRUCTURE / GRIP-BASED PULLING (vacuum)"
+    elif use_boundary_grips:
+        mode_str = "BOUNDARY GRIPS (periodic, rigid end slabs)"
+    else:
+        mode_str = "STANDARD CELL-SCALING (periodic, affine)"
     st.info(f"Mode: {mode_str}\n"
             f"Strain increment: {strain_increment*100:.4f}% per {md_steps_per_increment} MD steps.\n"
             f"~{num_increments} increments needed for max strain.\n"
@@ -771,6 +792,20 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
 
         use_boundary_grips = tensile_params.get('use_boundary_grips', False)
 
+        # --- Identify boundary grips first (on the equilibrated structure) so the
+        #     thermostat can be told to skip the fixed grip atoms. ---
+        bg_all_grip = None
+        bg_left = bg_right = None
+        bg_center0 = None
+        bg_symmetric = tensile_params.get('boundary_grip_symmetric', True)
+        if use_boundary_grips:
+            grip_frac = tensile_params.get('boundary_grip_fraction', 0.08)
+            bg_left, bg_right, bg_free, _ = identify_grip_atoms(atoms, direction, grip_frac)
+            bg_all_grip = np.concatenate([bg_left, bg_right])
+            # Initial midpoint between the two grips; kept fixed for a symmetric pull.
+            _p0 = atoms.get_positions()
+            bg_center0 = 0.5 * (_p0[bg_left, direction].mean() + _p0[bg_right, direction].mean())
+
         if tensile_params['use_npt_transverse'] and not use_boundary_grips:
             log_queue.put(f"  Transverse barostat: {tensile_params.get('transverse_barostat', 'Inhomogeneous Berendsen')}")
             dyn = build_tensile_transverse_dynamics(
@@ -780,23 +815,21 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
         else:
             if tensile_params['use_npt_transverse'] and use_boundary_grips:
                 log_queue.put(f"  Boundary grips enabled: transverse NPT ignored, using NVT.")
-            log_queue.put(f"  NVT thermostat: {tensile_params.get('nvt_thermostat', 'Langevin')}")
-            dyn = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase_units)
+            log_queue.put(f"  Dynamics: {tensile_params.get('nvt_thermostat', 'Langevin')}")
+            # Pass grip indices so the thermostat does not act on the fixed grip atoms.
+            dyn = build_tensile_nvt_dynamics(
+                atoms, tensile_params, timestep_ase_units, grip_indices=bg_all_grip
+            )
 
-        # --- Optional boundary grips: hold two end slabs rigid, free interior under MD ---
-        bg_all_grip = None
-        bg_symmetric = tensile_params.get('boundary_grip_symmetric', True)
+        # --- Apply the boundary-grip constraint (hold the end slabs rigid). ---
         if use_boundary_grips:
-            grip_frac = tensile_params.get('boundary_grip_fraction', 0.08)
-            bg_left, bg_right, bg_free, _ = identify_grip_atoms(atoms, direction, grip_frac)
-            bg_all_grip = np.concatenate([bg_left, bg_right])
             atoms.set_constraint(FixAtoms(indices=bg_all_grip))
             vel = atoms.get_velocities()
             vel[bg_all_grip] = 0.0
             atoms.set_velocities(vel)
             log_queue.put(
-                f"  Boundary grips ON: {len(bg_left)} + {len(bg_right)} grip atoms fixed, "
-                f"{len(bg_free)} interior atoms free"
+                f"  Boundary grips ON: {len(bg_left)} + {len(bg_right)} grip atoms fixed "
+                f"(excluded from thermostat), {len(bg_free)} interior atoms free"
             )
             log_queue.put(
                 f"    Grip thickness per end: {grip_frac * 100:.1f}%  |  "
@@ -838,21 +871,28 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
 
             if step % tensile_params['sample_interval'] == 0:
                 inc = strain_increment_per_step * tensile_params['sample_interval']
-                old_len = np.linalg.norm(atoms.get_cell()[direction])
+
+                if use_boundary_grips:
+                    # Release the grips first: apply_strain_increment uses set_positions(),
+                    # which otherwise honours FixAtoms and would leave the grip atoms in
+                    # place (so the ends never move). With the constraint cleared the affine
+                    # strain displaces the grips too; we re-fix them below for the MD.
+                    atoms.set_constraint()
+
                 apply_strain_increment(atoms, direction, inc)
 
                 if use_boundary_grips:
-                    # apply_strain_increment anchors the affine map at the fractional
-                    # origin (the f=0 end stays put). For a symmetric pull, re-center so
-                    # both grip slabs move apart equally (cosmetic in a periodic cell, but
-                    # matches "both ends pulled out of each other"). Grip atoms are then
-                    # held fixed during MD while the interior relaxes.
+                    # apply_strain_increment anchors the affine map at the fractional origin
+                    # (the f=0 end barely moves). For a symmetric pull, translate so the
+                    # midpoint between the two grips returns to its initial position -> both
+                    # grip slabs move apart equally about a fixed centre.
                     if bg_symmetric:
-                        new_len = np.linalg.norm(atoms.get_cell()[direction])
-                        shift = -(new_len - old_len) / 2.0
                         pos = atoms.get_positions()
-                        pos[:, direction] += shift
+                        center_now = 0.5 * (pos[bg_left, direction].mean() + pos[bg_right, direction].mean())
+                        pos[:, direction] += (bg_center0 - center_now)
                         atoms.set_positions(pos)
+                    # Re-fix grips and zero their velocities for the MD that follows.
+                    atoms.set_constraint(FixAtoms(indices=bg_all_grip))
                     vel = atoms.get_velocities()
                     vel[bg_all_grip] = 0.0
                     atoms.set_velocities(vel)
@@ -1048,34 +1088,41 @@ def _run_tensile_test_grip(atoms, calculator, tensile_params, log_queue, structu
         else:
             log_queue.put(f"  Pull mode: One-sided (only right grip moves)")
 
-        # Set initial velocities for free atoms only
+        # Set initial velocities for ALL atoms — the structure equilibrates freely first;
+        # the grip atoms are NOT fixed during equilibration, only afterwards.
         MaxwellBoltzmannDistribution(atoms, temperature_K=tensile_params['temperature'])
-        velocities = atoms.get_velocities()
-        velocities[all_grip] = 0.0
-        atoms.set_velocities(velocities)
-
-        # Fix both grips initially
-        atoms.set_constraint(FixAtoms(indices=all_grip))
+        Stationary(atoms)  # remove net COM motion so the free structure doesn't drift
 
         timestep_ase = tensile_params['timestep'] * units.fs
         friction_ase = tensile_params['friction'] / units.fs
 
         nvt_name = tensile_params.get('nvt_thermostat', 'Langevin')
 
-        # --- Equilibration (NVT only — NPT doesn't make sense for vacuum) ---
+        # --- Equilibration: whole structure free, NO atoms fixed (NVT/NVE; NPT doesn't
+        #     make sense for vacuum). All atoms are thermostatted during this phase. ---
         if tensile_params['equilibration_steps'] > 0:
             log_queue.put(
-                f"  Equilibrating free atoms at {tensile_params['temperature']} K "
-                f"for {tensile_params['equilibration_steps']} steps (NVT-{nvt_name})..."
+                f"  Equilibrating the whole structure at {tensile_params['temperature']} K "
+                f"for {tensile_params['equilibration_steps']} steps ({nvt_name}); grips not fixed yet..."
             )
             dyn_eq = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase)
             dyn_eq.run(tensile_params['equilibration_steps'])
             eq_temp = atoms.get_temperature()
             log_queue.put(f"  Equilibration done: T={eq_temp:.1f} K")
+            # Re-measure the grip-to-grip reference length on the equilibrated structure.
+            _coords = atoms.get_positions()[:, direction]
+            initial_length = float(_coords.max() - _coords.min())
+            log_queue.put(f"  Reference length after equilibration: {initial_length:.4f} Å")
 
-        # --- Dynamics for straining (always NVT in grip mode) ---
-        log_queue.put(f"  NVT thermostat: {nvt_name}")
-        dyn = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase)
+        # --- Now fix the grips for the straining phase (zero their velocities first). ---
+        velocities = atoms.get_velocities()
+        velocities[all_grip] = 0.0
+        atoms.set_velocities(velocities)
+        atoms.set_constraint(FixAtoms(indices=all_grip))
+
+        # --- Dynamics for straining (grips fixed and excluded from the thermostat). ---
+        log_queue.put(f"  Dynamics: {nvt_name} (grip atoms fixed, excluded from thermostat)")
+        dyn = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase, grip_indices=all_grip)
 
         # --- Strain loop ---
         strain_data = []
