@@ -18,7 +18,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from ase import units
-from ase.io import read
+from ase.io import read, write
 from ase.build import make_supercell
 from ase.md import VelocityVerlet, Langevin
 from ase.md.nvtberendsen import NVTBerendsen
@@ -34,6 +34,16 @@ try:
 except ImportError:
     INHOMO_NPT_AVAILABLE = False
     print("Warning: Inhomogeneous_NPTBerendsen not found. Transverse NPT option will fallback to NVT.")
+try:
+    from ase.md.nose_hoover_chain import NoseHooverChainNVT
+    NVT_NOSE_HOOVER_AVAILABLE = True
+except ImportError:
+    NVT_NOSE_HOOVER_AVAILABLE = False
+try:
+    from ase.md.nose_hoover_chain import MaskedMTKNPT
+    MASKED_MTK_AVAILABLE = True
+except ImportError:
+    MASKED_MTK_AVAILABLE = False
 
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary
 from ase.md.logger import MDLogger 
@@ -53,11 +63,11 @@ import io
 try:
     from nequix.ase_calculator import NequixCalculator
 except ImportError:
-    print("Warning: Nequix (from atomicarchitects) not found. Will fail if Nequix model is selected.")
+    pass
 try:
     from deepmd.calculator import DP
 except ImportError:
-    print("Warning: DeePMD-kit not found. Will fail if DeePMD model is selected.")
+    pass
 
 os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 torch.set_num_threads({thread_count})
@@ -530,14 +540,31 @@ def generate_tensile_plots(basename):
     print(f"  Generating tensile plots for: {basename}")
 
     plt.rcParams.update({
-        'font.size': 22,
-        'axes.titlesize': 26,
-        'axes.labelsize': 24,
-        'xtick.labelsize': 20,
-        'ytick.labelsize': 20,
+        'font.size': 24,
+        'font.family': 'sans-serif',
+        'axes.titlesize': 28,
+        'axes.labelsize': 26,
+        'axes.titleweight': 'bold',
+        'xtick.labelsize': 22,
+        'ytick.labelsize': 22,
         'legend.fontsize': 22,
-        'figure.titlesize': 28,
-        'figure.figsize': (15, 10)
+        'figure.titlesize': 30,
+        'figure.figsize': (15, 10),
+        'lines.linewidth': 3.0,
+        'lines.markersize': 8,
+        'axes.linewidth': 2.0,
+        'xtick.major.width': 2.0,
+        'ytick.major.width': 2.0,
+        'xtick.major.size': 8,
+        'ytick.major.size': 8,
+        'xtick.direction': 'out',
+        'ytick.direction': 'out',
+        'axes.titlepad': 18.0,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.3,
+        'legend.frameon': True,
+        'legend.edgecolor': 'black',
     })
 
     csv_file = f"md_results/{basename}_tensile_data.csv"
@@ -860,9 +887,19 @@ class GripTensileXYZWriter:
 def generate_grip_tensile_plots(basename):
     print(f"  Generating grip tensile plots for: {basename}")
     plt.rcParams.update({
-        'font.size': 22, 'axes.titlesize': 26, 'axes.labelsize': 24,
-        'xtick.labelsize': 20, 'ytick.labelsize': 20, 'legend.fontsize': 18,
-        'figure.titlesize': 28, 'figure.figsize': (15, 10)
+        'font.size': 24, 'font.family': 'sans-serif',
+        'axes.titlesize': 28, 'axes.labelsize': 26,
+        'axes.titleweight': 'bold',
+        'xtick.labelsize': 22, 'ytick.labelsize': 22, 'legend.fontsize': 22,
+        'figure.titlesize': 30, 'figure.figsize': (15, 10),
+        'lines.linewidth': 3.0, 'lines.markersize': 8,
+        'axes.linewidth': 2.0,
+        'xtick.major.width': 2.0, 'ytick.major.width': 2.0,
+        'xtick.major.size': 8, 'ytick.major.size': 8,
+        'xtick.direction': 'out', 'ytick.direction': 'out',
+        'axes.titlepad': 18.0,
+        'savefig.dpi': 300, 'savefig.bbox': 'tight', 'savefig.pad_inches': 0.3,
+        'legend.frameon': True, 'legend.edgecolor': 'black',
     })
     csv_file = f"md_results/{basename}_tensile_data.csv"
     plot_prefix = f"md_results/{basename}"
@@ -1128,6 +1165,52 @@ def apply_strain(atoms, direction_index, strain_value):
     new_cell[direction_index, :] = new_vec
     atoms.set_cell(new_cell, scale_atoms=True)
 
+
+def build_nvt_dynamics(atoms, timestep_ase):
+    \"\"\"NVT thermostat for the straining dynamics (Langevin / Berendsen / Nose-Hoover).\"\"\"
+    thermostat = tensile_params.get('nvt_thermostat', 'Langevin')
+    temperature_K = tensile_params['temperature']
+    if thermostat == 'Berendsen':
+        taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        return NVTBerendsen(atoms, timestep=timestep_ase, temperature_K=temperature_K, taut=taut)
+    if thermostat == 'Nose-Hoover' and NVT_NOSE_HOOVER_AVAILABLE:
+        tdamp = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        return NoseHooverChainNVT(atoms, timestep=timestep_ase, temperature_K=temperature_K, tdamp=tdamp)
+    friction = tensile_params['friction'] / units.fs
+    return Langevin(atoms, timestep=timestep_ase, temperature_K=temperature_K, friction=friction)
+
+
+def build_strain_dynamics(atoms, timestep_ase, direction_index):
+    \"\"\"Dynamics for a strain increment: transverse-masked NPT if enabled, else NVT.\"\"\"
+    # Boundary grips fix end atoms, which conflicts with barostat cell scaling -> NVT.
+    if not tensile_params['use_npt_transverse'] or tensile_params.get('use_boundary_grips', False):
+        return build_nvt_dynamics(atoms, timestep_ase)
+
+    temperature_K = tensile_params['temperature']
+    transverse_mask = [1, 1, 1]; transverse_mask[direction_index] = 0
+    barostat = tensile_params.get('transverse_barostat', 'Inhomogeneous Berendsen')
+
+    if barostat == 'Masked MTK' and MASKED_MTK_AVAILABLE:
+        tdamp = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        pdamp = tensile_params.get('barostat_taup', 1000.0) * units.fs
+        return MaskedMTKNPT(atoms, timestep=timestep_ase, temperature_K=temperature_K,
+                            pressure_au=0.0, tdamp=tdamp, pdamp=pdamp,
+                            mask=tuple(bool(m) for m in transverse_mask))
+
+    if INHOMO_NPT_AVAILABLE:
+        bulk_mod = tensile_params['bulk_modulus']
+        if bulk_mod <= 0: bulk_mod = 140.0
+        compressibility = 1.0 / (bulk_mod * units.GPa)
+        taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        taup = tensile_params.get('barostat_taup', 1000.0) * units.fs
+        return Inhomogeneous_NPTBerendsen(atoms, timestep=timestep_ase, temperature_K=temperature_K,
+                                          pressure_au=0.0, taut=taut, taup=taup,
+                                          compressibility_au=compressibility, mask=tuple(transverse_mask))
+
+    # No barostat available -> NVT fallback
+    return build_nvt_dynamics(atoms, timestep_ase)
+
+
 def run_tensile_test_simulation(atoms, basename, calculator):
     print(f"--- Starting Tensile Test for {{basename}} ---")
     direction_index = tensile_params['strain_direction']
@@ -1145,11 +1228,13 @@ def run_tensile_test_simulation(atoms, basename, calculator):
     else:
         print(f"  Relaxation between increments: No")
     if tensile_params['use_npt_transverse']:
-        print(f"  Transverse Pressure Control: NPT (Berendsen)")
-        if not INHOMO_NPT_AVAILABLE:
+        print(f"  Transverse Pressure Control: NPT ({{tensile_params.get('transverse_barostat', 'Inhomogeneous Berendsen')}})")
+        if tensile_params.get('transverse_barostat') == 'Masked MTK' and not MASKED_MTK_AVAILABLE:
+            print("  WARNING: MaskedMTKNPT not found, will fall back to Inhomogeneous Berendsen / NVT!")
+        elif not INHOMO_NPT_AVAILABLE:
             print("  WARNING: Inhomogeneous_NPTBerendsen not found, will use NVT instead!")
     else:
-        print(f"  Transverse Pressure Control: NVT (Langevin)")
+        print(f"  Thermostat: NVT ({{tensile_params.get('nvt_thermostat', 'Langevin')}})")
 
     atoms.calc = calculator
     global_step_counter = 0
@@ -1196,6 +1281,12 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             dyn_eq.run(equilibration_steps)
             global_step_counter += equilibration_steps
             print(f"  Equilibration finished. Final T = {{atoms.get_temperature():.1f}} K")
+            try:
+                eq_poscar = f"md_results/{{basename}}_equilibrated.poscar"
+                write(eq_poscar, atoms, format="vasp", sort=True, vasp5=True)
+                print(f"  💾 Saved equilibrated structure to {{eq_poscar}} (use it as a restart point)")
+            except Exception as we:
+                print(f"  Warning: could not save equilibrated POSCAR: {{we}}")
         except Exception as e:
             print(f"❌ Equilibration FAILED: {{e}}")
             import traceback
@@ -1262,10 +1353,30 @@ def run_tensile_test_simulation(atoms, basename, calculator):
     print(f"  Approximate number of increments: {{n_increments}}")
     print(f"  Estimated total MD steps (equilibration + strain loop): {{total_md_steps_all:,}} (approx. {{total_sim_time_ps:.1f}} ps)")
 
+    # --- Optional boundary grips: hold two end slabs rigid, free interior under MD ---
+    use_boundary_grips = tensile_params.get('use_boundary_grips', False)
+    bg_all_grip = None
+    bg_symmetric = tensile_params.get('boundary_grip_symmetric', True)
+    if use_boundary_grips:
+        grip_frac = tensile_params.get('boundary_grip_fraction', 0.08)
+        bg_left, bg_right, bg_free, _ = identify_grip_atoms(atoms, direction_index, grip_frac)
+        bg_all_grip = np.concatenate([bg_left, bg_right])
+        atoms.set_constraint(FixAtoms(indices=bg_all_grip))
+        _vel = atoms.get_velocities(); _vel[bg_all_grip] = 0.0; atoms.set_velocities(_vel)
+        print(f"  Boundary grips ON: {{len(bg_left)}} + {{len(bg_right)}} grip atoms fixed, {{len(bg_free)}} interior free")
+        print(f"    Grip thickness per end: {{grip_frac * 100:.1f}}%  |  Pull: {{'symmetric' if bg_symmetric else 'one-sided'}}")
+
     strain_start_time = time.perf_counter()
 
+    # Periodically refresh the saved plots so they can be monitored while the run is
+    # ongoing. Throttled by both an increment count and a minimum wall-time interval so
+    # the plotting overhead stays negligible relative to the MD cost.
+    plot_refresh_every = 20
+    plot_min_interval_s = 10.0
+    last_plot_time = 0.0
+
     print(f"\\n--- Starting Strain Application Loop ---")
-    traj_file_closed = False 
+    traj_file_closed = False
     tensile_log_file_closed = False
     try:
         tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
@@ -1290,9 +1401,18 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             else:
                  strain_step = 0.0
 
-            if strain_step > 1e-9: 
-                apply_strain(atoms, direction_index, strain_step ) 
-                applied_strain_percent = target_strain_value * 100.0 
+            if strain_step > 1e-9:
+                _old_len = np.linalg.norm(atoms.get_cell()[direction_index])
+                apply_strain(atoms, direction_index, strain_step )
+                if use_boundary_grips:
+                    # Re-center for a symmetric pull (cosmetic in a periodic cell), then keep
+                    # grip velocities zero; FixAtoms holds the grips while the interior relaxes.
+                    if bg_symmetric:
+                        _new_len = np.linalg.norm(atoms.get_cell()[direction_index])
+                        _shift = -(_new_len - _old_len) / 2.0
+                        _pos = atoms.get_positions(); _pos[:, direction_index] += _shift; atoms.set_positions(_pos)
+                    _vel = atoms.get_velocities(); _vel[bg_all_grip] = 0.0; atoms.set_velocities(_vel)
+                applied_strain_percent = target_strain_value * 100.0
                 print(f"\\nIncrement {{i+1}}/{{n_increments}}: Applied strain up to ~{{applied_strain_percent:.4f}}%")
             else:
                  print(f"\\nIncrement {{i+1}}/{{n_increments}}: Target strain reached or step too small, running MD steps.")
@@ -1302,17 +1422,7 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             if relax_steps > 0:
                 print(f"  Running {{relax_steps}} relaxation steps...")
 
-                dyn_strain_relax = None
-                if tensile_params['use_npt_transverse'] and INHOMO_NPT_AVAILABLE:
-                    transverse_mask = [1, 1, 1]; transverse_mask[direction_index] = 0
-                    bulk_mod = tensile_params['bulk_modulus']; 
-                    if bulk_mod <= 0: bulk_mod = 140.0
-                    compressibility = 1.0 / (bulk_mod * units.GPa)
-                    dyn_strain_relax = Inhomogeneous_NPTBerendsen(atoms, timestep=timestep_ase, temperature_K=temperature_K,
-                                                            pressure_au=0.0, taut=100.0 * units.fs, taup=1000.0 * units.fs,
-                                                            compressibility_au=compressibility, mask=tuple(transverse_mask))
-                else:
-                    dyn_strain_relax = Langevin(atoms, timestep=timestep_ase, temperature_K=temperature_K, friction=friction_ase)
+                dyn_strain_relax = build_strain_dynamics(atoms, timestep_ase, direction_index)
 
                 if console_logger_relax: 
                      console_logger_relax.reset()
@@ -1330,17 +1440,7 @@ def run_tensile_test_simulation(atoms, basename, calculator):
             if steps_per_increment > 0:
                 print(f"  Running {{steps_per_increment}} MD steps...")
 
-                dyn_strain_main = None
-                if tensile_params['use_npt_transverse'] and INHOMO_NPT_AVAILABLE:
-                    transverse_mask = [1, 1, 1]; transverse_mask[direction_index] = 0
-                    bulk_mod = tensile_params['bulk_modulus']; 
-                    if bulk_mod <= 0: bulk_mod = 140.0
-                    compressibility = 1.0 / (bulk_mod * units.GPa)
-                    dyn_strain_main = Inhomogeneous_NPTBerendsen(atoms, timestep=timestep_ase, temperature_K=temperature_K,
-                                                            pressure_au=0.0, taut=100.0 * units.fs, taup=1000.0 * units.fs,
-                                                            compressibility_au=compressibility, mask=tuple(transverse_mask))
-                else:
-                    dyn_strain_main = Langevin(atoms, timestep=timestep_ase, temperature_K=temperature_K, friction=friction_ase)
+                dyn_strain_main = build_strain_dynamics(atoms, timestep_ase, direction_index)
 
                 console_logger_strain.reset()
                 dyn_strain_main.attach(console_logger_strain, interval=1)
@@ -1352,6 +1452,14 @@ def run_tensile_test_simulation(atoms, basename, calculator):
                 dyn_strain_main.run(steps_per_increment) 
                 global_step_counter += steps_per_increment 
                 print(f"  MD steps finished for increment {{i+1}}.")
+
+            if ((i + 1) % plot_refresh_every == 0
+                    and (time.perf_counter() - last_plot_time) > plot_min_interval_s):
+                try:
+                    generate_tensile_plots(basename)
+                except Exception:
+                    pass
+                last_plot_time = time.perf_counter()
 
             final_length_increment = np.linalg.norm(atoms.get_cell()[direction_index])
             final_strain_increment = (final_length_increment - initial_length) / initial_length if initial_length > 0 else 0.0
@@ -1438,12 +1546,10 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
 
     equilibration_steps = tensile_params['equilibration_steps']
     if equilibration_steps > 0:
-        print(f"\\n--- Running Initial Equilibration ({{equilibration_steps}} steps, NVT) ---")
+        print(f"\\n--- Running Initial Equilibration ({{equilibration_steps}} steps, NVT-{{tensile_params.get('nvt_thermostat', 'Langevin')}}) ---")
         timestep_ase = tensile_params['timestep'] * units.fs
         friction_ase = tensile_params['friction'] / units.fs
-        dyn_eq = Langevin(atoms, timestep_ase,
-                          temperature_K=tensile_params['temperature'],
-                          friction=friction_ase)
+        dyn_eq = build_nvt_dynamics(atoms, timestep_ase)
         console_logger_eq = ConsoleMDLogger(atoms, equilibration_steps,
                                             log_interval=tensile_params['log_frequency'],
                                             prefix="Equil: ")
@@ -1453,6 +1559,14 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             dyn_eq.run(equilibration_steps)
             global_step_counter += equilibration_steps
             print(f"  Equilibration finished. T = {{atoms.get_temperature():.1f}} K")
+            try:
+                eq_poscar = f"md_results/{{basename}}_equilibrated.poscar"
+                atoms_eq = atoms.copy()
+                atoms_eq.set_constraint()  # drop grip constraints before writing
+                write(eq_poscar, atoms_eq, format="vasp", sort=True, vasp5=True)
+                print(f"  💾 Saved equilibrated structure to {{eq_poscar}} (use it as a restart point)")
+            except Exception as we:
+                print(f"  Warning: could not save equilibrated POSCAR: {{we}}")
         except Exception as e:
             print(f"❌ Equilibration FAILED: {{e}}")
             import traceback
@@ -1510,6 +1624,11 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
     tensile_log_closed = False
     traj_closed = False
 
+    # Throttled periodic plot refresh (see cell-scaling loop for rationale).
+    plot_refresh_every = 20
+    plot_min_interval_s = 10.0
+    last_plot_time = 0.0
+
     try:
         tensile_logger.set_displacement(0.0)
         tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
@@ -1557,9 +1676,7 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             # 5. Relaxation (optional)
             if relax_steps > 0:
                 print(f"  Running {{relax_steps}} relaxation steps...")
-                dyn_relax = Langevin(atoms, timestep_ase,
-                                     temperature_K=tensile_params['temperature'],
-                                     friction=friction_ase)
+                dyn_relax = build_nvt_dynamics(atoms, timestep_ase)
                 tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
                 traj_writer.reset_increment_step_count(current_global_step=global_step_counter)
                 dyn_relax.attach(tensile_logger, interval=1)
@@ -1570,9 +1687,7 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
             # 6. Main MD steps
             if steps_per_increment > 0:
                 print(f"  Running {{steps_per_increment}} MD steps...")
-                dyn_main = Langevin(atoms, timestep_ase,
-                                    temperature_K=tensile_params['temperature'],
-                                    friction=friction_ase)
+                dyn_main = build_nvt_dynamics(atoms, timestep_ase)
                 console_logger_strain.reset()
                 dyn_main.attach(console_logger_strain, interval=1)
                 tensile_logger.reset_increment_step_count(current_global_step=global_step_counter)
@@ -1581,6 +1696,14 @@ def run_grip_tensile_test_simulation(atoms, basename, calculator):
                 dyn_main.attach(traj_writer, interval=1)
                 dyn_main.run(steps_per_increment)
                 global_step_counter += steps_per_increment
+
+            if ((i + 1) % plot_refresh_every == 0
+                    and (time.perf_counter() - last_plot_time) > plot_min_interval_s):
+                try:
+                    generate_grip_tensile_plots(basename)
+                except Exception:
+                    pass
+                last_plot_time = time.perf_counter()
 
             if total_displacement / initial_length >= max_strain_frac:
                 print(f"\\nMaximum strain target reached.")
@@ -1617,11 +1740,15 @@ def main():
         print("Calculator could not be initialized. Exiting.")
         exit()
 
-    print("\\nSearching for structure files (*.cif, *.vasp, POSCAR*)...")
-    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*")
+    print("\\nSearching for structure files (*.cif, *.vasp, *.poscar, POSCAR*)...")
+    structure_files = (glob.glob("*.cif") + glob.glob("*.vasp")
+                       + glob.glob("*.poscar") + glob.glob("*.POSCAR")
+                       + glob.glob("POSCAR*"))
+    # Drop duplicates (e.g. a file matched by both *.POSCAR and POSCAR*) while keeping order
+    structure_files = list(dict.fromkeys(structure_files))
 
     if not structure_files:
-        print("No structure files found. Please place .cif or .vasp/POSCAR files in this directory.")
+        print("No structure files found. Please place .cif, .vasp/.poscar or POSCAR files in this directory.")
         exit()
 
     if len(structure_files) > 1:
@@ -1635,7 +1762,21 @@ def main():
     basenames_to_plot = [basename]
     try:
         print(f"\\n--- Reading structure from {{f}} ---")
-        atoms_initial = read(f)
+        # ASE cannot guess the VASP format from a ".poscar" extension, so set it explicitly.
+        try:
+            if f.lower().endswith(".poscar"):
+                atoms_initial = read(f, format="vasp")
+            else:
+                atoms_initial = read(f)
+        except Exception as read_err:
+            if (f.lower().endswith((".poscar", ".vasp"))
+                    or os.path.basename(f).upper().startswith("POSCAR")):
+                print(f"  ⚠️ Could not read '{{f}}' as a VASP/POSCAR file: {{read_err}}")
+                print(f"  ⚠️ The file may have an unsupported VASP format. A common cause is")
+                print(f"     placeholder species names like 'Type_1 Type_2' (written by tools")
+                print(f"     such as OVITO) instead of real element symbols. Edit the POSCAR")
+                print(f"     species line to use real elements (e.g. 'Fe Ni') and try again.")
+            raise
         print(f"Read {{basename}}: {{atoms_initial.get_chemical_formula()}} ({{len(atoms_initial)}} atoms)")
 
         atoms_initial.set_pbc(True) 
