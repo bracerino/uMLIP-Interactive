@@ -5478,7 +5478,6 @@ with tab1:
                 default_settings=st.session_state.default_settings,
                 save_settings_function=save_default_settings
             )
-            st.subheader("Generate Standalone MD Script")
 
             st.markdown("---")
             st.subheader("Generate Standalone Tensile Test Script")
