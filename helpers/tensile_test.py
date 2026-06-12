@@ -4,6 +4,7 @@ from ase import Atoms
 from ase.constraints import FixAtoms
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.langevin import Langevin
+from ase.md.nvtberendsen import NVTBerendsen
 from ase import units
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -12,25 +13,148 @@ from datetime import datetime
 import time
 from collections import deque
 
+# Optional ensembles shared with the Molecular Dynamics panel. These are guarded
+# so the tensile UI only offers ensembles that the installed ASE version provides.
+try:
+    from ase.md.nose_hoover_chain import NoseHooverChainNVT
+    NVT_NOSE_HOOVER_AVAILABLE = True
+except ImportError:
+    NVT_NOSE_HOOVER_AVAILABLE = False
+
+try:
+    from ase.md.nose_hoover_chain import MaskedMTKNPT
+    MASKED_MTK_AVAILABLE = True
+except ImportError:
+    MASKED_MTK_AVAILABLE = False
+
+try:
+    from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen
+    INHOMO_BERENDSEN_AVAILABLE = True
+except ImportError:
+    INHOMO_BERENDSEN_AVAILABLE = False
+
+
+def _available_nvt_thermostats():
+    """NVT thermostat options offered for the straining dynamics."""
+    options = ["Langevin", "Berendsen"]
+    if NVT_NOSE_HOOVER_AVAILABLE:
+        options.append("Nose-Hoover")
+    return options
+
+
+def _available_transverse_barostats():
+    """Transverse (axis-masked) NPT barostat options for uniaxial tension.
+
+    Only barostats actually importable in the installed ASE are offered.
+    """
+    options = []
+    if INHOMO_BERENDSEN_AVAILABLE:
+        options.append("Inhomogeneous Berendsen")
+    if MASKED_MTK_AVAILABLE:
+        options.append("Masked MTK")
+    return options
+
+
+def build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase):
+    """Build an NVT thermostat for the straining/equilibration dynamics.
+
+    Mirrors the thermostat choices available in the Molecular Dynamics panel
+    (Langevin / Berendsen / Nose-Hoover). Falls back to Langevin if a requested
+    thermostat is unavailable.
+    """
+    thermostat = tensile_params.get('nvt_thermostat', 'Langevin')
+    temperature_K = tensile_params['temperature']
+
+    if thermostat == 'Berendsen':
+        taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        return NVTBerendsen(atoms, timestep_ase, temperature_K=temperature_K, taut=taut)
+
+    if thermostat == 'Nose-Hoover' and NVT_NOSE_HOOVER_AVAILABLE:
+        tdamp = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        return NoseHooverChainNVT(atoms, timestep=timestep_ase,
+                                  temperature_K=temperature_K, tdamp=tdamp)
+
+    friction = tensile_params['friction'] / units.fs
+    return Langevin(atoms, timestep_ase, temperature_K=temperature_K, friction=friction)
+
+
+def build_tensile_transverse_dynamics(atoms, tensile_params, timestep_ase, direction, log_queue=None):
+    """Build a transverse-masked NPT barostat (zero transverse pressure).
+
+    The strain axis is excluded from the barostat mask (it is driven by cell
+    scaling); the perpendicular axes are coupled to P=0 to approximate true
+    uniaxial tension. Falls back to NVT if no barostat is available.
+    """
+    def _log(msg):
+        if log_queue is not None:
+            log_queue.put(msg)
+
+    transverse_dirs = [i for i in range(3) if i != direction]
+    mask = [0, 0, 0]
+    for i in transverse_dirs:
+        mask[i] = 1
+    mask = tuple(mask)
+
+    temperature_K = tensile_params['temperature']
+    barostat = tensile_params.get('transverse_barostat', 'Inhomogeneous Berendsen')
+
+    if barostat == 'Masked MTK' and MASKED_MTK_AVAILABLE:
+        try:
+            tdamp = tensile_params.get('thermostat_taut', 100.0) * units.fs
+            pdamp = tensile_params.get('barostat_taup', 1000.0) * units.fs
+            dyn = MaskedMTKNPT(
+                atoms, timestep=timestep_ase, temperature_K=temperature_K,
+                pressure_au=0.0, tdamp=tdamp, pdamp=pdamp,
+                mask=tuple(bool(m) for m in mask),
+            )
+            _log(f"  Masked MTK NPT initialized with mask {mask} (P=0 transverse)")
+            return dyn
+        except Exception as e:
+            _log(f"  Masked MTK NPT unavailable ({e}); falling back to Inhomogeneous Berendsen")
+
+    try:
+        from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen
+
+        bulk_modulus_ase = tensile_params['bulk_modulus'] * units.GPa
+        taut = tensile_params.get('thermostat_taut', 100.0) * units.fs
+        taup = tensile_params.get('barostat_taup', 1000.0) * units.fs
+        dyn = Inhomogeneous_NPTBerendsen(
+            atoms, timestep_ase, temperature_K=temperature_K,
+            pressure_au=0.0, taut=taut, taup=taup,
+            compressibility_au=1.0 / bulk_modulus_ase, mask=mask,
+        )
+        _log(f"  Inhomogeneous NPT (Berendsen) initialized with mask {mask} (P=0 transverse)")
+        return dyn
+    except ImportError:
+        _log("  Inhomogeneous_NPTBerendsen not available, falling back to NVT")
+        return build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase)
+
 def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
     st.subheader("Virtual Tensile Test Parameters")
 
 
     defaults = {
             'strain_direction_index': 0,
-            'strain_rate': 0.1,
-            'max_strain': 10.0,
-            'temperature': 300,
-            'timestep': 1.0,
-            'friction': 0.01,
-            'equilibration_steps': 1000,
+            'strain_rate': 0.1,        # %/ps = 1e9 s^-1, a standard MD tensile rate
+            'max_strain': 20.0,        # % — enough to pass yield/UTS for most materials
+            'temperature': 300,        # K (room temperature)
+            'timestep': 1.0,           # fs — standard for metals/ceramics
+            'friction': 0.02,          # 1/fs — Langevin coupling (matches MD panel)
+            'nvt_thermostat': 'Langevin',
+            'thermostat_taut': 100.0,  # fs — Berendsen/Nose-Hoover coupling time
+            'equilibration_steps': 5000,  # 5 ps equilibration before straining
             'md_steps_per_increment': 100,
             'log_frequency': 10,
             'traj_frequency': 100,
             'relax_between_strain': False,
             'relax_steps': 100,
             'use_npt_transverse': False,
+            'transverse_barostat': 'Inhomogeneous Berendsen',
+            'barostat_taup': 1000.0,
             'bulk_modulus': 110.0,
+            'use_boundary_grips': False,
+            'boundary_grip_fraction': 0.08,
+            'boundary_grip_symmetric': True,
             'use_grip_mode': False,
             'grip_fraction': 0.1,
             'symmetric_pull': True,
@@ -95,15 +219,46 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             help="MD integration timestep"
         )
 
-        friction = st.number_input(
-            "Friction (1/ps)",
-            min_value=0.001,
-            max_value=10.0,
-            value=defaults['friction'],
-            step=0.001,
-            format="%.3f",
-            help="Langevin thermostat friction coefficient (used for NVT parts)"
+        nvt_options = _available_nvt_thermostats()
+        nvt_default = defaults.get('nvt_thermostat', 'Langevin')
+        nvt_thermostat = st.selectbox(
+            "NVT Thermostat",
+            nvt_options,
+            index=nvt_options.index(nvt_default) if nvt_default in nvt_options else 0,
+            help=(
+                "Thermostat used for the straining (and equilibration in grip mode) "
+                "dynamics, mirroring the Molecular Dynamics ensembles.\n"
+                "• Langevin: stochastic friction (robust for ML potentials)\n"
+                "• Berendsen: weak-coupling rescaling\n"
+                "• Nose-Hoover: deterministic chain (canonical sampling)"
+            )
         )
+
+        # Thermostat-specific coupling parameter
+        if nvt_thermostat == 'Langevin':
+            friction = st.number_input(
+                "Friction (1/fs)",
+                min_value=0.001,
+                max_value=1.0,
+                value=defaults['friction'],
+                step=0.001,
+                format="%.3f",
+                help="Langevin thermostat friction coefficient in 1/fs (used for NVT parts). Typical: 0.01–0.05."
+            )
+            thermostat_taut = defaults.get('thermostat_taut', 100.0)
+        else:
+            friction = defaults['friction']  # kept for the transverse Berendsen barostat
+            thermostat_taut = st.number_input(
+                "Thermostat Time Constant (fs)",
+                min_value=10.0,
+                max_value=2000.0,
+                value=float(defaults.get('thermostat_taut', 100.0)),
+                step=10.0,
+                help=(
+                    "Coupling time constant for the Berendsen (taut) / Nose-Hoover (tdamp) "
+                    "thermostat used during the NVT parts of the test."
+                )
+            )
 
     with col3:
         equilibration_steps = st.number_input(
@@ -166,23 +321,112 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
 
 
     st.write("**Transverse Pressure Control (Optional)**")
-    use_npt_transverse = st.checkbox(
-        "Use NPT in Transverse Directions",
-        value=defaults['use_npt_transverse'],
-        help="Apply pressure control (target P=0) in directions perpendicular to tensile strain (attempts true uniaxial tension)."
-    )
-
-    if use_npt_transverse:
-        bulk_modulus = st.number_input(
-            "Bulk Modulus (GPa)",
-            min_value=1.0,
-            max_value=1000.0,
-            value=defaults['bulk_modulus'],
-            step=10.0,
-            help="Approximate bulk modulus for pressure coupling (NPT Berendsen)"
+    baro_options = _available_transverse_barostats()
+    if baro_options:
+        use_npt_transverse = st.checkbox(
+            "Use NPT in Transverse Directions",
+            value=defaults['use_npt_transverse'],
+            help="Apply pressure control (target P=0) in directions perpendicular to tensile strain (attempts true uniaxial tension)."
         )
     else:
+        use_npt_transverse = False
+        st.info(
+            "Transverse NPT is unavailable in this ASE installation "
+            "(no axis-masked barostat found). The test will run in NVT."
+        )
+
+    if use_npt_transverse:
+        baro_default = defaults.get('transverse_barostat', 'Inhomogeneous Berendsen')
+        col_npt1, col_npt2 = st.columns(2)
+        with col_npt1:
+            transverse_barostat = st.selectbox(
+                "Transverse Barostat",
+                baro_options,
+                index=baro_options.index(baro_default) if baro_default in baro_options else 0,
+                help=(
+                    "Axis-masked NPT barostat applied to the directions perpendicular "
+                    "to the strain axis (target P=0), from the Molecular Dynamics methods.\n"
+                    "• Inhomogeneous Berendsen: weak-coupling, needs a bulk modulus\n"
+                    "• Masked MTK: Nose-Hoover-chain barostat, uses a barostat damping time"
+                )
+            )
+        with col_npt2:
+            barostat_taup = st.number_input(
+                "Barostat Time (taup/pdamp) (fs)",
+                min_value=10.0,
+                max_value=10000.0,
+                value=float(defaults.get('barostat_taup', 1000.0)),
+                step=100.0,
+                help="Barostat coupling time for the transverse pressure control."
+            )
+
+        if transverse_barostat == 'Inhomogeneous Berendsen':
+            bulk_modulus = st.number_input(
+                "Bulk Modulus (GPa)",
+                min_value=1.0,
+                max_value=1000.0,
+                value=defaults['bulk_modulus'],
+                step=10.0,
+                help="Approximate bulk modulus for compressibility (Inhomogeneous Berendsen)"
+            )
+        else:
+            bulk_modulus = defaults['bulk_modulus']  # Not used by Masked MTK
+    else:
+        transverse_barostat = defaults.get('transverse_barostat', 'Inhomogeneous Berendsen')
+        barostat_taup = defaults.get('barostat_taup', 1000.0)
         bulk_modulus = defaults['bulk_modulus'] # Keep value even if unused
+
+    # =========================================================================
+    # Boundary Grips (optional, for the periodic cell-scaling mode)
+    # =========================================================================
+    st.write("---")
+    st.write("**Boundary Grips (periodic cell-scaling, optional)**")
+    use_boundary_grips = st.checkbox(
+        "Fix boundary slabs (grip) instead of pure affine straining",
+        value=defaults['use_boundary_grips'],
+        help=(
+            "Periodic cell-scaling mode only. When OFF (default), the whole cell is "
+            "strained affinely and no atoms are fixed. When ON, atoms within a set "
+            "fraction from each end along the strain axis are held rigid as grips while "
+            "the interior atoms evolve freely under MD; the cell still grows along the "
+            "strain axis so periodic images stay consistent."
+        )
+    )
+
+    if use_boundary_grips:
+        bg_col1, bg_col2 = st.columns(2)
+        with bg_col1:
+            boundary_grip_percent = st.number_input(
+                "Grip thickness per end (%)",
+                min_value=1.0,
+                max_value=40.0,
+                value=float(defaults.get('boundary_grip_fraction', 0.08) * 100.0),
+                step=1.0,
+                help="Fraction of the cell length at EACH end treated as a rigid grip slab."
+            )
+            boundary_grip_fraction = boundary_grip_percent / 100.0
+        with bg_col2:
+            bg_pull_options = ["Symmetric (both ends move)", "One-sided (one end fixed)"]
+            bg_pull = st.selectbox(
+                "Grip Pull Mode",
+                bg_pull_options,
+                index=0 if defaults.get('boundary_grip_symmetric', True) else 1,
+                help=(
+                    "Symmetric: both grips move apart by half the increment each so the "
+                    "center stays put (strain rate = total separation rate). "
+                    "One-sided: only one grip moves while the other stays fixed."
+                )
+            )
+            boundary_grip_symmetric = bg_pull.startswith("Symmetric")
+
+        if use_npt_transverse:
+            st.warning(
+                "⚠️ Transverse NPT is ignored when boundary grips are enabled "
+                "(fixed grip atoms conflict with barostat cell scaling); NVT will be used."
+            )
+    else:
+        boundary_grip_fraction = defaults.get('boundary_grip_fraction', 0.08)
+        boundary_grip_symmetric = defaults.get('boundary_grip_symmetric', True)
 
     # =========================================================================
     # Grip-Based Pulling Mode (for finite structures in vacuum)
@@ -253,6 +497,8 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             'temperature': temperature,
             'timestep': timestep,
             'friction': friction,
+            'nvt_thermostat': nvt_thermostat,
+            'thermostat_taut': thermostat_taut,
             'equilibration_steps': equilibration_steps,
             'md_steps_per_increment': md_steps_per_increment,
             'log_frequency': log_frequency,
@@ -260,7 +506,12 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             'relax_between_strain': relax_between_strain,
             'relax_steps': relax_steps,
             'use_npt_transverse': use_npt_transverse,
+            'transverse_barostat': transverse_barostat,
+            'barostat_taup': barostat_taup,
             'bulk_modulus': bulk_modulus,
+            'use_boundary_grips': use_boundary_grips,
+            'boundary_grip_fraction': boundary_grip_fraction,
+            'boundary_grip_symmetric': boundary_grip_symmetric,
             'use_grip_mode': use_grip_mode,
             'grip_fraction': grip_fraction,
             'symmetric_pull': symmetric_pull,
@@ -292,6 +543,8 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
         'temperature': temperature,
         'timestep': timestep,
         'friction': friction,
+        'nvt_thermostat': nvt_thermostat,
+        'thermostat_taut': thermostat_taut,
         'equilibration_steps': equilibration_steps,
         'md_steps_per_increment': md_steps_per_increment,
         'log_frequency': log_frequency,
@@ -299,7 +552,12 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
         'relax_between_strain': relax_between_strain,
         'relax_steps': relax_steps,
         'use_npt_transverse': use_npt_transverse,
+        'transverse_barostat': transverse_barostat,
+        'barostat_taup': barostat_taup,
         'bulk_modulus': bulk_modulus,
+        'use_boundary_grips': use_boundary_grips,
+        'boundary_grip_fraction': boundary_grip_fraction,
+        'boundary_grip_symmetric': boundary_grip_symmetric,
         'use_grip_mode': use_grip_mode,
         'grip_fraction': grip_fraction,
         'symmetric_pull': symmetric_pull,
@@ -487,7 +745,7 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
         friction_ase_units = tensile_params['friction'] / units.fs
 
         log_queue.put(f"  Timestep: {tensile_params['timestep']} fs = {timestep_ase_units:.2e} ASE units")
-        log_queue.put(f"  Friction: {tensile_params['friction']} 1/ps = {friction_ase_units:.2e} ASE units")
+        log_queue.put(f"  Friction: {tensile_params['friction']} 1/fs = {friction_ase_units:.2e} ASE units")
 
         if tensile_params['equilibration_steps'] > 0:
             log_queue.put(
@@ -511,47 +769,38 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
             eq_energy = atoms.get_potential_energy()
             log_queue.put(f"  Equilibration complete: T={eq_temp:.1f} K, E={eq_energy:.6f} eV")
 
-        if tensile_params['use_npt_transverse']:
-            try:
-                from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen
+        use_boundary_grips = tensile_params.get('use_boundary_grips', False)
 
-                transverse_dirs = [i for i in range(3) if i != direction]
-
-                mask = [0, 0, 0]
-                for i in transverse_dirs:
-                    mask[i] = 1
-                mask = tuple(mask)
-
-                bulk_modulus_ase = tensile_params['bulk_modulus'] * units.GPa
-
-                dyn = Inhomogeneous_NPTBerendsen(
-                    atoms,
-                    timestep_ase_units,
-                    temperature_K=tensile_params['temperature'],
-                    pressure_au=0.0,
-                    taut=100.0 * units.fs,
-                    taup=1000.0 * units.fs,
-                    compressibility_au=1.0 / bulk_modulus_ase,
-                    mask=mask
-                )
-
-                log_queue.put(f"  Inhomogeneous NPT initialized with mask {mask}")
-                log_queue.put(f"  Transverse directions will maintain zero pressure")
-
-            except ImportError:
-                log_queue.put(f"  Inhomogeneous_NPTBerendsen not available, falling back to NVT")
-                dyn = Langevin(
-                    atoms,
-                    timestep_ase_units,
-                    temperature_K=tensile_params['temperature'],
-                    friction=friction_ase_units
-                )
+        if tensile_params['use_npt_transverse'] and not use_boundary_grips:
+            log_queue.put(f"  Transverse barostat: {tensile_params.get('transverse_barostat', 'Inhomogeneous Berendsen')}")
+            dyn = build_tensile_transverse_dynamics(
+                atoms, tensile_params, timestep_ase_units, direction, log_queue
+            )
+            log_queue.put(f"  Transverse directions will maintain zero pressure")
         else:
-            dyn = Langevin(
-                atoms,
-                timestep_ase_units,
-                temperature_K=tensile_params['temperature'],
-                friction=friction_ase_units
+            if tensile_params['use_npt_transverse'] and use_boundary_grips:
+                log_queue.put(f"  Boundary grips enabled: transverse NPT ignored, using NVT.")
+            log_queue.put(f"  NVT thermostat: {tensile_params.get('nvt_thermostat', 'Langevin')}")
+            dyn = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase_units)
+
+        # --- Optional boundary grips: hold two end slabs rigid, free interior under MD ---
+        bg_all_grip = None
+        bg_symmetric = tensile_params.get('boundary_grip_symmetric', True)
+        if use_boundary_grips:
+            grip_frac = tensile_params.get('boundary_grip_fraction', 0.08)
+            bg_left, bg_right, bg_free, _ = identify_grip_atoms(atoms, direction, grip_frac)
+            bg_all_grip = np.concatenate([bg_left, bg_right])
+            atoms.set_constraint(FixAtoms(indices=bg_all_grip))
+            vel = atoms.get_velocities()
+            vel[bg_all_grip] = 0.0
+            atoms.set_velocities(vel)
+            log_queue.put(
+                f"  Boundary grips ON: {len(bg_left)} + {len(bg_right)} grip atoms fixed, "
+                f"{len(bg_free)} interior atoms free"
+            )
+            log_queue.put(
+                f"    Grip thickness per end: {grip_frac * 100:.1f}%  |  "
+                f"Pull: {'symmetric (both ends)' if bg_symmetric else 'one-sided'}"
             )
 
         strain_data = []
@@ -588,8 +837,30 @@ def _run_tensile_test_cell_scaling(atoms, calculator, tensile_params, log_queue,
             step_start_time = current_time
 
             if step % tensile_params['sample_interval'] == 0:
-                apply_strain_increment(atoms, direction, strain_increment_per_step * tensile_params['sample_interval'])
-                current_strain += strain_increment_per_step * tensile_params['sample_interval']
+                inc = strain_increment_per_step * tensile_params['sample_interval']
+                old_len = np.linalg.norm(atoms.get_cell()[direction])
+                apply_strain_increment(atoms, direction, inc)
+
+                if use_boundary_grips:
+                    # apply_strain_increment anchors the affine map at the fractional
+                    # origin (the f=0 end stays put). For a symmetric pull, re-center so
+                    # both grip slabs move apart equally (cosmetic in a periodic cell, but
+                    # matches "both ends pulled out of each other"). Grip atoms are then
+                    # held fixed during MD while the interior relaxes.
+                    if bg_symmetric:
+                        new_len = np.linalg.norm(atoms.get_cell()[direction])
+                        shift = -(new_len - old_len) / 2.0
+                        pos = atoms.get_positions()
+                        pos[:, direction] += shift
+                        atoms.set_positions(pos)
+                    vel = atoms.get_velocities()
+                    vel[bg_all_grip] = 0.0
+                    atoms.set_velocities(vel)
+
+                # True engineering strain from the actual (deformed) cell length, so it
+                # stays consistent with the measured stress. Cell scaling is multiplicative
+                # ((1+inc)^n), so summing increments would drift ~2% high by 20% strain.
+                current_strain = (np.linalg.norm(atoms.get_cell()[direction]) - original_length) / original_length
 
                 if tensile_params['relax_between_strain']:
                     dyn.run(tensile_params['relax_steps'])
@@ -789,27 +1060,22 @@ def _run_tensile_test_grip(atoms, calculator, tensile_params, log_queue, structu
         timestep_ase = tensile_params['timestep'] * units.fs
         friction_ase = tensile_params['friction'] / units.fs
 
+        nvt_name = tensile_params.get('nvt_thermostat', 'Langevin')
+
         # --- Equilibration (NVT only — NPT doesn't make sense for vacuum) ---
         if tensile_params['equilibration_steps'] > 0:
             log_queue.put(
                 f"  Equilibrating free atoms at {tensile_params['temperature']} K "
-                f"for {tensile_params['equilibration_steps']} steps (NVT)..."
+                f"for {tensile_params['equilibration_steps']} steps (NVT-{nvt_name})..."
             )
-            dyn_eq = Langevin(
-                atoms, timestep_ase,
-                temperature_K=tensile_params['temperature'],
-                friction=friction_ase
-            )
+            dyn_eq = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase)
             dyn_eq.run(tensile_params['equilibration_steps'])
             eq_temp = atoms.get_temperature()
             log_queue.put(f"  Equilibration done: T={eq_temp:.1f} K")
 
         # --- Dynamics for straining (always NVT in grip mode) ---
-        dyn = Langevin(
-            atoms, timestep_ase,
-            temperature_K=tensile_params['temperature'],
-            friction=friction_ase
-        )
+        log_queue.put(f"  NVT thermostat: {nvt_name}")
+        dyn = build_tensile_nvt_dynamics(atoms, tensile_params, timestep_ase)
 
         # --- Strain loop ---
         strain_data = []
@@ -1048,9 +1314,11 @@ def create_stress_strain_plot(tensile_results):
     if grip_mode:
         stress_label = "Axial Force (eV/Å)"
         stress_rate_label = "Force Rate (eV/Å/%)"
+        strain_label = "Strain (%)"
     else:
-        stress_label = "Stress (GPa)"
+        stress_label = "Engineering Stress (GPa)"
         stress_rate_label = "Stress Rate (GPa/%)"
+        strain_label = "Engineering Strain (%)"
 
     fig = make_subplots(
         rows=2, cols=2,
@@ -1070,7 +1338,7 @@ def create_stress_strain_plot(tensile_results):
             y=stress,
             mode='lines',
             name=stress_label.split('(')[0].strip(),
-            line=dict(color='blue', width=2)
+            line=dict(color='#1f77b4', width=3.5)
         ),
         row=1, col=1
     )
@@ -1085,7 +1353,7 @@ def create_stress_strain_plot(tensile_results):
                 y=elastic_stress,
                 mode='lines',
                 name='Linear Fit',
-                line=dict(color='red', width=2, dash='dash')
+                line=dict(color='red', width=3, dash='dash')
             ),
             row=1, col=1
         )
@@ -1106,7 +1374,7 @@ def create_stress_strain_plot(tensile_results):
             y=[stress[max_stress_idx]],
             mode='markers',
             name='Ultimate',
-            marker=dict(color='red', size=10, symbol='star')
+            marker=dict(color='red', size=16, symbol='star', line=dict(color='black', width=1))
         ),
         row=1, col=1
     )
@@ -1117,7 +1385,7 @@ def create_stress_strain_plot(tensile_results):
             y=tensile_results['energy_data'],
             mode='lines',
             name='Energy',
-            line=dict(color='green', width=2),
+            line=dict(color='green', width=3),
             showlegend=False
         ),
         row=1, col=2
@@ -1129,7 +1397,7 @@ def create_stress_strain_plot(tensile_results):
             y=tensile_results['temperature_data'],
             mode='lines',
             name='Temperature',
-            line=dict(color='purple', width=2),
+            line=dict(color='purple', width=3),
             showlegend=False
         ),
         row=2, col=1
@@ -1143,32 +1411,49 @@ def create_stress_strain_plot(tensile_results):
                 y=stress_rate,
                 mode='lines',
                 name='dσ/dε',
-                line=dict(color='orange', width=2),
+                line=dict(color='orange', width=3),
                 showlegend=False
             ),
             row=2, col=2
         )
 
-    fig.update_xaxes(title_text="Strain (%)", title_font=dict(size=20), tickfont=dict(size=16), row=1, col=1)
-    fig.update_xaxes(title_text="Strain (%)", title_font=dict(size=20), tickfont=dict(size=16), row=1, col=2)
-    fig.update_xaxes(title_text="Strain (%)", title_font=dict(size=20), tickfont=dict(size=16), row=2, col=1)
-    fig.update_xaxes(title_text="Strain (%)", title_font=dict(size=20), tickfont=dict(size=16), row=2, col=2)
+    _axis_title_font = dict(size=26)
+    _tick_font = dict(size=20)
+    _axis_kw = dict(
+        title_font=_axis_title_font, tickfont=_tick_font,
+        showline=True, linewidth=2.5, linecolor="black", mirror=True,
+        ticks="outside", tickwidth=2.5, ticklen=7,
+        gridcolor="rgba(0,0,0,0.08)", zeroline=False,
+    )
 
-    fig.update_yaxes(title_text=stress_label, title_font=dict(size=20), tickfont=dict(size=16), row=1, col=1)
-    fig.update_yaxes(title_text="Energy (eV)", title_font=dict(size=20), tickfont=dict(size=16), row=1, col=2)
-    fig.update_yaxes(title_text="Temperature (K)", title_font=dict(size=20), tickfont=dict(size=16), row=2, col=1)
-    fig.update_yaxes(title_text=stress_rate_label, title_font=dict(size=20), tickfont=dict(size=16), row=2, col=2)
+    for col in (1, 2):
+        for row in (1, 2):
+            fig.update_xaxes(title_text=strain_label, row=row, col=col, **_axis_kw)
 
-    fig.update_annotations(font_size=22)
+    fig.update_yaxes(title_text=stress_label, row=1, col=1, **_axis_kw)
+    fig.update_yaxes(title_text="Energy (eV)", row=1, col=2, **_axis_kw)
+    fig.update_yaxes(title_text="Temperature (K)", row=2, col=1, **_axis_kw)
+    fig.update_yaxes(title_text=stress_rate_label, row=2, col=2, **_axis_kw)
+
+    # Subplot titles
+    fig.update_annotations(font=dict(size=24))
 
     mode_label = " (Grip Mode)" if grip_mode else ""
     fig.update_layout(
-        height=800,
+        height=900,
+        width=1300,
         showlegend=True,
-        title_text=f"Virtual Tensile Test Results ({tensile_results['strain_direction']}-direction){mode_label}",
-        title_font_size=24,
-        font=dict(size=18),
-        margin=dict(l=80, r=80, t=100, b=80)
+        legend=dict(font=dict(size=20), bordercolor="black", borderwidth=1),
+        title=dict(
+            text=f"Virtual Tensile Test Results ({tensile_results['strain_direction']}-direction){mode_label}",
+            font=dict(size=28),
+            x=0.5, xanchor="center",
+        ),
+        font=dict(size=22, family="Arial", color="black"),
+        template="plotly_white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=100, r=60, t=120, b=90),
     )
 
     return fig
