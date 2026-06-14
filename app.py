@@ -2433,46 +2433,49 @@ MACE_MODELS = {k: v for family in MODEL_FAMILIES.values() for k, v in family.ite
 # fresh virtual environment before running the standalone script they generated.
 # The keys match the family names used in MODEL_FAMILIES.
 # ---------------------------------------------------------------------------
+# Only the packages the *generated standalone script* actually imports are
+# listed here (ase, pymatgen, numpy, pandas, matplotlib, torch, the MLIP package
+# itself, plus matscipy/phonopy for relaxation/phonon runs). The GUI-only
+# packages from requirements.txt (streamlit, plotly, py3Dmol, psutil, gputil, …)
+# are intentionally left out. Versions match the project's requirements files.
+_CORE_SCI = "ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
+_CORE_SCI_ASE327 = "ase==3.27.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
+
 FAMILY_ENV_SETUP = {
     "MACE": {
-        "requirements": "requirements.txt",
-        "pip": "pip install -r requirements.txt",
-        "note": "Covers MACE (and also CHGNet, SevenNet, ORB, Nequix) on torch 2.8.",
+        "pip": f"pip install torch==2.8.0 mace-torch==0.3.16 torch-dftd {_CORE_SCI}",
+        "note": "mace-torch on torch 2.8 (torch-dftd is needed for D3 dispersion in MACE-MH).",
     },
     "UPET / PET-MAD": {
-        "requirements": "requirements-upet.txt",
-        "pip": "pip install -r requirements-upet.txt",
-        "note": "UPET / PET-MAD needs its own environment (ASE 3.27, upet).",
+        "pip": f"pip install upet==0.2.1 torch-dftd {_CORE_SCI_ASE327}",
+        "note": "upet / PET-MAD pins ASE 3.27 (torch-dftd is needed for dispersion).",
     },
     "CHGNet": {
-        "requirements": "requirements.txt",
-        "pip": "pip install -r requirements.txt",
-        "note": "Covered by the core environment (torch 2.8).",
+        "pip": f"pip install torch==2.8.0 chgnet==0.3.8 {_CORE_SCI}",
+        "note": "chgnet on torch 2.8.",
     },
     "SevenNet": {
-        "requirements": "requirements.txt",
-        "pip": "pip install -r requirements.txt",
-        "note": "Covered by the core environment (torch 2.8).",
+        "pip": f"pip install torch==2.8.0 sevenn==0.10.4 {_CORE_SCI}",
+        "note": "sevenn on torch 2.8.",
     },
     "ORB": {
-        "requirements": "requirements.txt",
-        "pip": "pip install -r requirements.txt",
-        "note": "Covered by the core environment (includes pynanoflann for ORB).",
+        "pip": (
+            f"pip install torch==2.8.0 orb-models==0.7.0 {_CORE_SCI} "
+            "\"pynanoflann @ git+https://github.com/dwastberg/pynanoflann.git@af434039ae14bedcbb838a7808924d6689274168\""
+        ),
+        "note": "orb-models on torch 2.8 (ORB needs pynanoflann from GitHub).",
     },
     "Nequix": {
-        "requirements": "requirements.txt",
-        "pip": "pip install -r requirements.txt",
-        "note": "Covered by the core environment (torch 2.8).",
+        "pip": f"pip install torch==2.8.0 nequix==0.2.0 {_CORE_SCI}",
+        "note": "nequix on torch 2.8.",
     },
     "MatterSim": {
-        "requirements": "requirements-mattersim.txt",
-        "pip": "pip install -r requirements-mattersim.txt",
-        "note": "MatterSim needs its own environment (mattersim package).",
+        "pip": f"pip install torch mattersim {_CORE_SCI}",
+        "note": "mattersim needs its own environment.",
     },
     "GRACE": {
-        "requirements": "requirements-grace.txt",
-        "pip": "pip install -r requirements-grace.txt && pip install torch==2.8.0",
-        "note": "GRACE needs its own environment (tensorpotential + torch 2.8).",
+        "pip": f"pip install tensorpotential torch==2.8.0 scipy==1.17.1 {_CORE_SCI_ASE327}",
+        "note": "GRACE needs tensorpotential on torch 2.8 (and ASE 3.27).",
     },
 }
 
@@ -2490,11 +2493,11 @@ def render_online_script_setup_info(selected_family, selected_model):
         f"   python3 -m venv mlip_env\n"
         f"   source mlip_env/bin/activate      # Windows: mlip_env\\Scripts\\activate\n"
         f"   ```\n"
-        f"2. **Install the packages** for the selected MLIP — {setup['note']}\n"
+        f"2. **Install only the packages needed** to run the generated script for "
+        f"the selected MLIP — {setup['note']}\n"
         f"   ```bash\n"
         f"   {setup['pip']}\n"
         f"   ```\n"
-        f"   (the `{setup['requirements']}` file is in the project repository)\n"
         f"3. **Put every structure you want to compute** (`.cif`, `POSCAR`/`.vasp`, "
         f"extended `.xyz`, `.lmp`, …) **into the same folder as the downloaded script.**\n"
         f"4. **Run the script** from that folder:\n"
