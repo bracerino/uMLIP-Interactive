@@ -517,8 +517,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Monitor CPU, GPU, RAM
-display_system_monitoring_detailed()
+# Monitor CPU, GPU, RAM — hidden in the online/demo version, where it makes no
+# sense (the user is not running simulations on the server).
+if not ONLINE_MODE:
+    display_system_monitoring_detailed()
 
 
 def estimate_phonon_supercell(atoms, target_min_length=15.0, max_supercell=4, log_queue=None):
