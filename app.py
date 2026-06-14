@@ -4948,11 +4948,7 @@ with st.sidebar:
         )
 
     with col_c2:
-        if st.button(
-            "💾 Save as Default"
-            + (" (disabled in online version)" if ONLINE_MODE else ""),
-            disabled=ONLINE_MODE,
-        ):
+        if st.button("💾 Save as Default", disabled=ONLINE_MODE):
             new_settings = {
                 'thread_count': st.session_state.thread_count,
                 'selected_model': selected_model,
