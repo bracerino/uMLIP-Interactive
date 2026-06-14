@@ -392,10 +392,20 @@ def load_default_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
-                return json.load(f)
+                settings = json.load(f)
         except:
-            return DEFAULT_SETTINGS.copy()
-    return DEFAULT_SETTINGS.copy()
+            settings = DEFAULT_SETTINGS.copy()
+    else:
+        settings = DEFAULT_SETTINGS.copy()
+
+    # In the online/demo version, force the server-friendly defaults and
+    # ignore whatever is persisted on disk (saving is disabled online anyway).
+    if ONLINE_MODE:
+        settings['device'] = "cuda"
+        settings['dtype'] = "float32"
+        settings['thread_count'] = 4
+
+    return settings
 
 
 def save_default_settings(settings):
@@ -4938,7 +4948,11 @@ with st.sidebar:
         )
 
     with col_c2:
-        if st.button("💾 Save as Default"):
+        if st.button(
+            "💾 Save as Default"
+            + (" (disabled in online version)" if ONLINE_MODE else ""),
+            disabled=ONLINE_MODE,
+        ):
             new_settings = {
                 'thread_count': st.session_state.thread_count,
                 'selected_model': selected_model,
