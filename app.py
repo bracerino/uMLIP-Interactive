@@ -1,7 +1,7 @@
 from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
-st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide")
+st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide", initial_sidebar_state="expanded")
 
 import os
 import pandas as pd
@@ -496,7 +496,14 @@ st.markdown("""
     }
 
     div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stDecoration"] {display: none;}
+    [data-testid="stToolbarActions"] {display: none;}
+    [data-testid="stStatusWidget"] {display: none;}
+    /* keep the sidebar open/close control usable */
+    [data-testid="stSidebarCollapsedControl"] {visibility: visible !important; display: block !important;}
+    [data-testid="collapsedControl"] {visibility: visible !important; display: block !important;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -7035,7 +7042,14 @@ with tab_st:
             }
 
             div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
-            #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            [data-testid="stDecoration"] {display: none;}
+            [data-testid="stToolbarActions"] {display: none;}
+            [data-testid="stStatusWidget"] {display: none;}
+            /* keep the sidebar open/close control usable */
+            [data-testid="stSidebarCollapsedControl"] {visibility: visible !important; display: block !important;}
+            [data-testid="collapsedControl"] {visibility: visible !important; display: block !important;}
             </style>
         """, unsafe_allow_html=True)
 
