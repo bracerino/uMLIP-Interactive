@@ -129,6 +129,13 @@ try:
     from ase.optimize.sciopt import SciPyFminBFGS, SciPyFminCG
     from ase.constraints import FixAtoms
     from ase.filters import ExpCellFilter, UnitCellFilter
+    try:
+        # FrechetCellFilter (ASE >= 3.23) supersedes the deprecated ExpCellFilter:
+        # it gives consistent cell gradients and converges better. Fall back to
+        # ExpCellFilter on older ASE.
+        from ase.filters import FrechetCellFilter
+    except ImportError:
+        FrechetCellFilter = ExpCellFilter
     from ase.stress import voigt_6_to_full_3x3_stress
     from helpers.fix_angles_filter import FixAnglesCellFilter
 
@@ -2175,8 +2182,8 @@ class OptimizationLogger:
 
         if optimizer is not None and hasattr(optimizer, 'atoms'):
             atoms = optimizer.atoms
-            # When the optimiser wraps a cell filter (UnitCellFilter / ExpCellFilter),
-            # unwrap to the underlying Atoms so .cell/.positions are available.
+            # When the optimiser wraps a cell filter (UnitCellFilter / FrechetCellFilter /
+            # FixAnglesCellFilter), unwrap to the underlying Atoms so .cell/.positions are available.
             if hasattr(atoms, 'atoms'):
                 atoms = atoms.atoms
             self.step_count += 1
@@ -2736,13 +2743,13 @@ def create_cell_filter(atoms, optimization_params):
 
     if cell_constraint == "Full cell (lattice + angles)":
         if hydrostatic:
-            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
+            return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
-            return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+            return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3)
 
     elif cell_constraint == "Tetragonal (a=b, optimize a and c)":
 
-        return ExpCellFilter(atoms, scalar_pressure=pressure_eV_A3)
+        return FrechetCellFilter(atoms, scalar_pressure=pressure_eV_A3)
 
     else:  # "Lattice parameters only (fix angles)"
         if hydrostatic:
@@ -2781,7 +2788,7 @@ def build_relax_target(atoms, lattice_mode):
             # so angles stay fixed for non-orthogonal cells too.
             return (FixAnglesCellFilter(atoms),
                     "atoms + lattice lengths (a, b, c; angles fixed)")
-        return ExpCellFilter(atoms), "atoms + full lattice (lengths + angles)"
+        return FrechetCellFilter(atoms), "atoms + full lattice (lengths + angles)"
     return atoms, "atomic positions only"
 
 
