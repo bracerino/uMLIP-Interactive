@@ -3166,8 +3166,8 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                 print(f"  🔧 Running pre-elastic {pre_opt_optimizer} optimization "
                       f"(fmax={pre_opt_fmax} eV/Å, max {pre_opt_steps} steps)...")
                 if pre_opt_lattice == "lengths":
-                    pre_opt_target = UnitCellFilter(
-                        atoms, mask=[True, True, True, False, False, False])
+                    pre_opt_target = FixAnglesCellFilter(
+                        atoms, axis_mask=(True, True, True))
                     print("  Relaxing atoms + lattice lengths (a, b, c; angles fixed)")
                 elif pre_opt_lattice == "full":
                     pre_opt_target = FrechetCellFilter(atoms)
@@ -4424,6 +4424,68 @@ def calculate_formation_energy(structure_energy, atoms, reference_energies):
     return formation_energy_per_atom
 
 
+class FixAnglesCellFilter(UnitCellFilter):
+    """Relax atoms + lattice-vector lengths while keeping all cell angles fixed.
+
+    Each lattice vector's length is scaled independently with its direction
+    frozen, so the cell angles are preserved exactly for any cell. A Cartesian
+    shear mask ([1,1,1,0,0,0]) only preserves angles for orthogonal cells.
+    """
+
+    def __init__(self, atoms, axis_mask=(True, True, True),
+                 scalar_pressure=0.0, cell_factor=None):
+        UnitCellFilter.__init__(self, atoms, scalar_pressure=scalar_pressure,
+                                cell_factor=cell_factor)
+        self.axis_mask = np.array([bool(x) for x in axis_mask])
+        self.orig_lens = np.linalg.norm(self.orig_cell, axis=1)
+
+    def _scales(self):
+        return np.linalg.norm(self.atoms.cell, axis=1) / self.orig_lens
+
+    def _deform(self, s):
+        C0 = np.array(self.orig_cell)
+        return np.linalg.solve(C0, np.diag(s) @ C0)
+
+    def get_positions(self):
+        s = self._scales()
+        G = self._deform(s)
+        natoms = len(self.atoms)
+        pos = np.zeros((natoms + 3, 3))
+        pos[:natoms] = np.linalg.solve(G.T, self.atoms.positions.T).T
+        np.fill_diagonal(pos[natoms:], self.cell_factor * s)
+        return pos
+
+    def set_positions(self, new, **kwargs):
+        natoms = len(self.atoms)
+        s = np.diag(new[natoms:]) / self.cell_factor
+        s = np.where(self.axis_mask, s, self._scales())
+        newcell = np.diag(s) @ np.array(self.orig_cell)
+        G = self._deform(s)
+        self.atoms.set_cell(newcell, scale_atoms=False)
+        self.atoms.set_positions(new[:natoms] @ G, **kwargs)
+
+    def get_forces(self, **kwargs):
+        from ase.stress import voigt_6_to_full_3x3_stress
+        s = self._scales()
+        G = self._deform(s)
+        atoms_forces = self.atoms.get_forces(**kwargs) @ G.T
+        stress = voigt_6_to_full_3x3_stress(self.atoms.get_stress(**kwargs))
+        C = np.array(self.atoms.cell)
+        volume = self.atoms.get_volume()
+        CsCinv = C @ stress @ np.linalg.inv(C)
+        g = -(volume / s) * (np.diag(CsCinv) + self.scalar_pressure)
+        g *= self.axis_mask
+        natoms = len(self.atoms)
+        forces = np.zeros((natoms + 3, 3))
+        forces[:natoms] = atoms_forces
+        np.fill_diagonal(forces[natoms:], g / self.cell_factor)
+        return forces
+
+    def get_stress(self):
+        from ase.calculators.calculator import PropertyNotImplementedError
+        raise PropertyNotImplementedError
+
+
 def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydrostatic_strain):
     pressure_eV_A3 = pressure * 0.00624150913
 
@@ -4442,8 +4504,10 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
         if hydrostatic_strain:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
-            mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
-            return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+            # Scale a, b, c lengths independently with directions frozen so the
+            # cell angles stay fixed for non-orthogonal cells too.
+            axis_mask = (optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'])
+            return FixAnglesCellFilter(atoms, axis_mask=axis_mask, scalar_pressure=pressure_eV_A3)
 
 
 class OptimizationLogger:
@@ -5542,8 +5606,8 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 pre_atoms = atoms.copy()
                 pre_atoms.calc = calculator
                 if pre_relax_lattice == "lengths":
-                    relax_target = UnitCellFilter(
-                        pre_atoms, mask=[True, True, True, False, False, False])
+                    relax_target = FixAnglesCellFilter(
+                        pre_atoms, axis_mask=(True, True, True))
                     log("  Relaxing atoms + lattice lengths (a, b, c; angles fixed)")
                 elif pre_relax_lattice == "full":
                     relax_target = FrechetCellFilter(pre_atoms)
