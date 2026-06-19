@@ -414,15 +414,15 @@ def _cell_filter_lines(cell_constraint, pressure_eV, hydrostatic, optimize_lat, 
             + ")",
         ]
     elif cell_constraint == "Full cell (lattice + angles)":
-        lines += ["from ase.filters import ExpCellFilter"]
+        lines += ["from ase.filters import FrechetCellFilter"]
         args = []
         if pressure_eV:
             args.append(f"scalar_pressure={pressure_eV}")
         if hydrostatic:
             args.append("hydrostatic_strain=True")
         arg_str = ", ".join(args)
-        lines.append(f"opt_target = ExpCellFilter(atoms, {arg_str})" if arg_str
-                     else "opt_target = ExpCellFilter(atoms)")
+        lines.append(f"opt_target = FrechetCellFilter(atoms, {arg_str})" if arg_str
+                     else "opt_target = FrechetCellFilter(atoms)")
     elif hydrostatic:
         # Uniform (hydrostatic) scaling preserves all angles for any cell.
         lines += ["from ase.filters import UnitCellFilter"]
