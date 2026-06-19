@@ -130,6 +130,7 @@ try:
     from ase.constraints import FixAtoms
     from ase.filters import ExpCellFilter, UnitCellFilter
     from ase.stress import voigt_6_to_full_3x3_stress
+    from helpers.fix_angles_filter import FixAnglesCellFilter
 
     CELL_OPT_AVAILABLE = True
 except ImportError:
@@ -2747,8 +2748,11 @@ def create_cell_filter(atoms, optimization_params):
         if hydrostatic:
             return UnitCellFilter(atoms, scalar_pressure=pressure_eV_A3, hydrostatic_strain=True)
         else:
-            mask = [optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'], False, False, False]
-            return UnitCellFilter(atoms, mask=mask, scalar_pressure=pressure_eV_A3)
+            # Scale each lattice vector's length independently while keeping its
+            # direction fixed, so the cell angles are preserved exactly for any
+            # cell (a Cartesian shear mask only does this for orthogonal cells).
+            axis_mask = (optimize_lattice['a'], optimize_lattice['b'], optimize_lattice['c'])
+            return FixAnglesCellFilter(atoms, axis_mask=axis_mask, scalar_pressure=pressure_eV_A3)
 
 
 # Lattice-relaxation options shared by the Phonon and Elastic pre-optimisation.
@@ -2773,8 +2777,9 @@ def build_relax_target(atoms, lattice_mode):
     """
     if lattice_mode in ("lengths", "full") and CELL_OPT_AVAILABLE:
         if lattice_mode == "lengths":
-            mask = [True, True, True, False, False, False]
-            return (UnitCellFilter(atoms, mask=mask),
+            # FixAnglesCellFilter scales a, b, c lengths with directions frozen,
+            # so angles stay fixed for non-orthogonal cells too.
+            return (FixAnglesCellFilter(atoms),
                     "atoms + lattice lengths (a, b, c; angles fixed)")
         return ExpCellFilter(atoms), "atoms + full lattice (lengths + angles)"
     return atoms, "atomic positions only"
