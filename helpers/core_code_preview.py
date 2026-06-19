@@ -423,16 +423,23 @@ def _cell_filter_lines(cell_constraint, pressure_eV, hydrostatic, optimize_lat, 
         arg_str = ", ".join(args)
         lines.append(f"opt_target = ExpCellFilter(atoms, {arg_str})" if arg_str
                      else "opt_target = ExpCellFilter(atoms)")
-    else:
+    elif hydrostatic:
+        # Uniform (hydrostatic) scaling preserves all angles for any cell.
         lines += ["from ase.filters import UnitCellFilter"]
-        mask = [optimize_lat.get('a', True), optimize_lat.get('b', True),
-                optimize_lat.get('c', True), False, False, False]
-        args = [f"mask={mask}"]
+        args = ["hydrostatic_strain=True"]
         if pressure_eV:
             args.append(f"scalar_pressure={pressure_eV}")
-        if hydrostatic:
-            args.append("hydrostatic_strain=True")
         lines.append(f"opt_target = UnitCellFilter(atoms, {', '.join(args)})")
+    else:
+        # Fix angles: scale a, b, c lengths with directions frozen (correct for
+        # non-orthogonal cells too). FixAnglesCellFilter is defined in the
+        # downloaded script.
+        axis_mask = (optimize_lat.get('a', True), optimize_lat.get('b', True),
+                     optimize_lat.get('c', True))
+        args = [f"axis_mask={axis_mask}"]
+        if pressure_eV:
+            args.append(f"scalar_pressure={pressure_eV}")
+        lines.append(f"opt_target = FixAnglesCellFilter(atoms, {', '.join(args)})")
     return lines
 
 
