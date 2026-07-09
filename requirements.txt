@@ -4,7 +4,8 @@ pymatgen==2025.10.7 # 2026.5.4
 matscipy==1.2.0 # required for ASE 3.26
 ase==3.28.0
 #ase==3.26.0
-phonopy==2.40.0
+#phonopy==2.40.0
+phonopy==2.41.0
 py3Dmol==2.5.0
 
 
