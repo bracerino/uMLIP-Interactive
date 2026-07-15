@@ -5274,7 +5274,7 @@ with tab1:
           {upload_info}
           <div style="margin-top: 8px;">
           If you like the uMLIP-Interactive, please
-          <strong><a style="color:#0b63c4;" href="https://www.sciencedirect.com/science/article/pii/S2238785426004540" target="_blank">📖 cite this work</a></strong>
+          <strong><a style="color:#0b63c4;" href="https://www.sciencedirect.com/science/article/pii/S2238785426004540" target="_blank">📖 cite this work</a></strong>.
           Please also cite the:
           <strong><a style="color:#0b63c4;" href="https://doi.org/10.1088/1361-648X/aa680e" target="_blank">📖 Atomic Simulation Environment (ASE)</a></strong>
           and the publications corresponding to the employed uMLIPs:
