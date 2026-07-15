@@ -1,4 +1,4 @@
-# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, Allegro/NequIP, SevenNet, Orb-v3, MatterSim, UPET, GRACE
+# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP)
 
 Run basic molecular dynamics/static simulations:
 - **Single-point energy**
@@ -44,7 +44,6 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [UPET](https://github.com/lab-cosmo/pet-mad)  
 - [GRACE](https://github.com/ICAMS/grace-tensorpotential)
 
-**Note:** *Nequix* (atomicarchitects, JAX-based) and *NequIP* (mir-group, PyTorch-based) are different projects despite the nearly identical names. In the app, Allegro and NequIP share one model family, since both are served by the `nequip-allegro` package and are selected by their [nequip.net](https://www.nequip.net/models) model id. Their foundation models (Allegro-OAM-L, NequIP-OAM-S/M/L/XL, trained on OMat24+sAlex+MPtrj) are downloaded automatically on first use and then cached.
 
 ---
 ![MACE GUI illustration](images/Mace-01.png)
