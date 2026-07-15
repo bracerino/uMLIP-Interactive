@@ -30,7 +30,7 @@ For **online version** which can be used **to generate standalone python scripts
 
 If you using the app, do not forgot from time to time to **update it with 'git pull' in the main folder** or download the newest **release**. I might be adding additional small features from time to time.   
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
-Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000**. 
+Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000 - 10 000**. 
 
 #### Currently supported uMLIP
 - [MACE](https://github.com/ACEsuit/mace)  
