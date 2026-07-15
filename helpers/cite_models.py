@@ -218,6 +218,27 @@ def create_citation_info():
             </div>
         </div>
 
+        <div class="model-section" style="border-left-color: #009688;">
+            <div class="model-title">
+                <span class="model-icon">⚛️</span>
+                <span>Allegro / NequIP</span>
+            </div>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2204.05249" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> Allegro: arXiv Paper, Nat. Commun. 14 (2023)
+                </a>
+                <a href="https://github.com/mir-group/allegro" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub (allegro)
+                </a>
+                <a href="https://github.com/mir-group/nequip" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub (nequip)
+                </a>
+                <a href="https://www.nequip.net/models" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Model registry (nequip.net)
+                </a>
+            </div>
+        </div>
+
         <div class="model-section" style="border-left-color: #E91E63;">
             <div class="model-title">
                 <span class="model-icon">🔟</span>

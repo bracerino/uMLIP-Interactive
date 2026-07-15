@@ -1,0 +1,33 @@
+streamlit==1.57.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26
+ase==3.28.0
+phonopy==2.40.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+# GPUtil imports distutils, which Python 3.12 dropped from the stdlib and which
+# venv no longer installs by default. setuptools re-provides it. The other envs
+# get setuptools transitively via torch; the JAX-only nequix stack does not.
+setuptools
+
+seekpath==2.2.1
+
+# Nequix runs on JAX, not torch. On Linux `nequix` already pulls in
+# jax[cuda12], so the GPU is used without any extra install.
+nequix==0.4.5
+
+# app.py imports torch at module level for all model families, so it is needed
+# even though Nequix itself computes in JAX. The CPU build is deliberate: it
+# keeps torch from pulling its own CUDA wheels and fighting jax[cuda12] over
+# them. JAX still gets the GPU; torch here only sets thread counts.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.8.0+cpu
+
+# Optional: OpenEquivariance kernels (faster on GPU). Nequix defaults to
+# kernel=True, but the app falls back to the pure-JAX path when these are
+# missing, so they are not required. To enable them, install after this file:
+#   pip install 'nequix[oeq]==0.4.5'
+#   pip install openequivariance_extjax --no-build-isolation

@@ -1,0 +1,25 @@
+streamlit==1.57.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26, and used as the neighborlist backend
+ase==3.28.0
+phonopy==2.40.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+# GPUtil imports distutils, which Python 3.12 dropped from the stdlib and which
+# venv no longer installs by default. setuptools re-provides it.
+setuptools
+
+seekpath==2.2.1
+
+# Allegro / NequIP foundation models from the nequip.net registry.
+# Unlike Nequix (JAX), these run in PyTorch, so the CUDA build of torch is what
+# puts them on the GPU. No JAX here, so there is no CUDA-wheel conflict.
+torch==2.8.0
+nequip-allegro==0.8.3
+
+# Models are downloaded from nequip.net on first use and cached; nothing to
+# install per model. nequip-compile is NOT required: the app runs these models
+# eagerly, since compiling must happen on the same hardware that runs them.

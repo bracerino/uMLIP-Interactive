@@ -63,6 +63,15 @@ try:
 except ImportError:
     NEQUIX_AVAILABLE = False
 
+# Allegro / NequIP imports
+try:
+    from nequip.model.saved_models.load_utils import load_saved_model as _nequip_load_saved_model
+    from nequip.integrations.ase import NequIPCalculator
+    from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
+    ALLEGRO_AVAILABLE = True
+except ImportError:
+    ALLEGRO_AVAILABLE = False
+
 #MAD-PET
 try:
     from pet_mad.calculator import PETMADCalculator
@@ -78,7 +87,7 @@ except ImportError:
     GRACE_AVAILABLE = False
 
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -87,6 +96,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILAB
     print("  - MatterSim: pip install mattersim")
     print("  - ORB: pip install orb-models")
     print("  - Nequix: pip install nequix")
+    print("  - Allegro / NequIP: pip install nequip-allegro")
     print("  - PET-MAD: pip install pet-mad")
     print("  - UPET: pip install upet")
     exit(1)
@@ -106,6 +116,8 @@ else:
         available_models.append("ORB")
     if NEQUIX_AVAILABLE:
         available_models.append("Nequix")
+    if ALLEGRO_AVAILABLE:
+        available_models.append("Allegro / NequIP")
     if PETMAD_AVAILABLE:
         available_models.append("PET-MAD")
     if UPET_AVAILABLE:
@@ -2007,8 +2019,42 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             "http://" in model_size or "https://" in model_size)
     is_upet = selected_model_key is not None and "UPET" in selected_model_key
     is_grace = selected_model_key is not None and "GRACE" in selected_model_key
+    is_allegro = selected_model_key is not None and selected_model_key.startswith(("Allegro", "NequIP"))
 
-    if is_nequix:
+    if is_allegro:
+        calc_code = f'''    device = "{device}"
+    print(f"🔧 Initializing Allegro / NequIP calculator...")
+    try:
+        from nequip.model.saved_models.load_utils import load_saved_model
+        from nequip.integrations.ase import NequIPCalculator
+        from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
+
+        print(f"🎯 Using model: {model_size}")
+        print("   First use downloads from nequip.net, then it is cached.")
+
+        _model = load_saved_model("{model_size}")
+        _model.eval()
+        _md = _model.metadata
+        _type_names = _md["type_names"]
+        if isinstance(_type_names, str):
+            _type_names = _type_names.split()
+        calculator = NequIPCalculator(
+            model=_model,
+            device=device,
+            transforms=basic_transforms(
+                _md,
+                float(_md["r_max"]),
+                _type_names,
+                handle_chemical_species_map(True, _type_names),
+                neighborlist_backend="matscipy",
+            ),
+        )
+        print(f"✅ {selected_model_key} initialized successfully")
+
+    except Exception as e:
+        print(f"❌ Allegro / NequIP initialization failed: {{e}}")
+        raise e'''
+    elif is_nequix:
 
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing Nequix calculator...")
@@ -2017,7 +2063,12 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
         print(f"🎯 Using Nequix model: {model_size}")
 
-        calculator = NequixCalculator("{model_size}")
+        try:
+            calculator = NequixCalculator("{model_size}", use_kernel=True)
+        except ImportError:
+            # OpenEquivariance kernels are an optional extra; fall back to pure JAX.
+            calculator = NequixCalculator("{model_size}", use_kernel=False)
+            print("ℹ️ OpenEquivariance kernels unavailable, using pure-JAX path")
         print(f"✅ Nequix {model_size} initialized successfully")
 
     except Exception as e:
@@ -4518,8 +4569,11 @@ class OptimizationLogger:
         self.step_times = []
         self.step_start_time = time.time()
         self.output_dir = output_dir
-        self.save_trajectory = save_trajectory  
+        self.save_trajectory = save_trajectory
         self.trajectory = [] if save_trajectory else None
+        # Per-step convergence record. Kept separate from `trajectory` so the
+        # convergence CSV/plot are written even when trajectories are disabled.
+        self.history = []
 
     def __call__(self, optimizer=None):
         current_time = time.time()
@@ -4561,6 +4615,17 @@ class OptimizationLogger:
 
             lattice = get_lattice_parameters(atoms)
 
+            self.history.append({
+                'step': self.step_count,
+                'energy_eV': energy,
+                'energy_per_atom_eV': energy_per_atom,
+                'max_force_eV_per_A': max_force,
+                'max_stress_GPa': max_stress,
+                # inf on the first step, where there is no previous energy yet
+                'energy_change_eV': None if energy_change == float('inf') else energy_change,
+                'energy_change_per_atom_eV': None if energy_change_per_atom == float('inf') else energy_change_per_atom,
+            })
+
             if self.save_trajectory:
                 self.trajectory.append({
                     'step': self.step_count,
@@ -4597,6 +4662,74 @@ class OptimizationLogger:
                 print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
                       f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
                       f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
+
+
+def save_optimization_convergence(history, base_name, fmax=None, output_dir="results"):
+    """Save the per-step convergence history as a CSV and an energy/force plot.
+
+    Returns (csv_path, png_path); either may be None if it could not be written.
+    """
+    if not history:
+        print("  ⚠️ No convergence history recorded, skipping convergence outputs")
+        return None, None
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    csv_path = f"{output_dir}/convergence_{base_name}.csv"
+    df = pd.DataFrame(history)
+    df.to_csv(csv_path, index=False)
+    print(f"  📊 Saved convergence data to {csv_path}")
+
+    png_path = None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        steps = df["step"].to_numpy()
+        forces = df["max_force_eV_per_A"].to_numpy()
+        # |E_i - E_(i-1)|. The first step has no previous energy (NaN), and a step
+        # with an exactly zero change cannot be drawn on a log axis, so both are
+        # masked out rather than plotted at a made-up floor value.
+        energy_change = pd.to_numeric(df["energy_change_eV"], errors="coerce").to_numpy(dtype=float)
+        de_ok = np.isfinite(energy_change) & (energy_change > 0)
+
+        fig, (ax_e, ax_f) = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+
+        if np.any(de_ok):
+            ax_e.plot(steps[de_ok], energy_change[de_ok], "o-", color="#2f5fd0",
+                      linewidth=1.8, markersize=4)
+            ax_e.set_yscale("log")
+        else:
+            ax_e.text(0.5, 0.5, "No energy-change data (single step)",
+                      transform=ax_e.transAxes, ha="center", va="center", fontsize=12)
+        ax_e.set_ylabel("|ΔE| vs previous step (eV)", fontsize=13, fontweight="bold")
+        ax_e.set_title(f"Optimization convergence: {base_name}", fontsize=15, fontweight="bold")
+        ax_e.grid(True, alpha=0.3, which="both")
+
+        ax_f.plot(steps, forces, "o-", color="#c0392b", linewidth=1.8, markersize=4)
+        ax_f.set_ylabel("Max force (eV/Å)", fontsize=13, fontweight="bold")
+        ax_f.set_xlabel("Optimization step", fontsize=13, fontweight="bold")
+        ax_f.grid(True, alpha=0.3)
+        # Forces drop by orders of magnitude, so a log axis keeps the tail readable.
+        if len(forces) > 0 and np.all(forces > 0):
+            ax_f.set_yscale("log")
+        if fmax is not None:
+            ax_f.axhline(fmax, color="#27ae60", linestyle="--", linewidth=1.5,
+                         label=f"fmax = {fmax} eV/Å")
+            ax_f.legend(fontsize=11)
+
+        fig.tight_layout()
+        png_path = f"{output_dir}/convergence_{base_name}.png"
+        fig.savefig(png_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  🖼️ Saved convergence plot to {png_path}")
+    except ImportError:
+        print("  ⚠️ matplotlib not available, skipping convergence plot (CSV was still saved)")
+    except Exception as e:
+        print(f"  ⚠️ Could not create convergence plot: {e}")
+
+    return csv_path, png_path
 '''
 
 
@@ -4977,6 +5110,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             )
             if cif_saved:
                 print(f"  💾 Saved CIF to {cif_output_filename} (P1, all atoms explicit)")
+
+            convergence_csv, convergence_plot = save_optimization_convergence(
+                logger.history, base_name, fmax=fmax
+            )
+
             detailed_summary_file = "results/optimization_detailed_summary.csv"
             print(f"  📊 Appending detailed summary to {detailed_summary_file}")
             append_optimization_summary(
@@ -5018,6 +5156,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                 "num_fixed_atoms": len([flags for flags in (selective_dynamics or []) if not any(flags)]),
                 "output_structure": output_filename,
                 "output_cif": cif_output_filename if cif_saved else None,
+                "convergence_csv": convergence_csv,
+                "convergence_plot": convergence_plot,
                 # Convert dict to individual fields for CSV compatibility
                 "optimize_lattice_a": optimize_lattice.get('a', True) if isinstance(optimize_lattice, dict) else True,
                 "optimize_lattice_b": optimize_lattice.get('b', True) if isinstance(optimize_lattice, dict) else True,

@@ -27,7 +27,7 @@ chgnet==0.3.8
 sevenn==0.10.4
 #mattersim
 orb-models==0.7.0
-nequix==0.2.0
+#nequix==0.4.5 # now in requirements-nequix.txt (it pulls in the whole JAX stack)
 #pet-mad==1.4.3
 
 torch-dftd # for mace-mh d3 dispersion corrections

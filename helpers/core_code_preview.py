@@ -132,10 +132,30 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
             f'calculator = grace_fm("{model_size}")'
         )
 
+    if (selected_model or "").startswith(("Allegro", "NequIP")):
+        return (
+            f'from nequip.model.saved_models.load_utils import load_saved_model\n'
+            f'from nequip.integrations.ase import NequIPCalculator\n'
+            f'from nequip.integrations.utils import basic_transforms, handle_chemical_species_map\n'
+            f'model = load_saved_model("{model_size}")\n'
+            f'model.eval()\n'
+            f'md = model.metadata\n'
+            f'types = md["type_names"]\n'
+            f'calculator = NequIPCalculator(\n'
+            f'    model=model, device="{device}",\n'
+            f'    transforms=basic_transforms(\n'
+            f'        md, float(md["r_max"]), types,\n'
+            f'        handle_chemical_species_map(True, types),\n'
+            f'        neighborlist_backend="matscipy",\n'
+            f'    ),\n'
+            f')'
+        )
+
     if "Nequix" in (selected_model or ""):
+        # use_kernel=False keeps this runnable without the OpenEquivariance extra.
         return (
             f'from nequix.calculator import NequixCalculator\n'
-            f'calculator = NequixCalculator("{model_size}")'
+            f'calculator = NequixCalculator("{model_size}", use_kernel=False)'
         )
 
     if "CHGNet" in (selected_model or ""):

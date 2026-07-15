@@ -1,4 +1,4 @@
-# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, SevenNet, Orb-v3, MatterSim, UPET, GRACE
+# uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIP) - MACE, CHGNet, Nequix, Allegro/NequIP, SevenNet, Orb-v3, MatterSim, UPET, GRACE
 
 Run basic molecular dynamics/static simulations:
 - **Single-point energy**
@@ -11,7 +11,7 @@ Run basic molecular dynamics/static simulations:
 - **Energy grid scan** (with generated Python script)
 - **Additional post-processing scripts** (average powder diffraction pattern, average structure from .xyz trajectory)  
 
-**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
+**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
 The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
@@ -39,8 +39,12 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
 - [MatterSim](https://github.com/microsoft/mattersim)
 - [Nequix](https://github.com/atomicarchitects/nequix)
+- [Allegro](https://github.com/mir-group/allegro)
+- [NequIP](https://github.com/mir-group/nequip)
 - [UPET](https://github.com/lab-cosmo/pet-mad)  
 - [GRACE](https://github.com/ICAMS/grace-tensorpotential)
+
+**Note:** *Nequix* (atomicarchitects, JAX-based) and *NequIP* (mir-group, PyTorch-based) are different projects despite the nearly identical names. In the app, Allegro and NequIP share one model family, since both are served by the `nequip-allegro` package and are selected by their [nequip.net](https://www.nequip.net/models) model id. Their foundation models (Allegro-OAM-L, NequIP-OAM-S/M/L/XL, trained on OMat24+sAlex+MPtrj) are downloaded automatically on first use and then cached.
 
 ---
 ![MACE GUI illustration](images/Mace-01.png)
@@ -86,7 +90,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **UPET** / **GRACE** (please pay separated attention to GRACE):  
+#### To run simulations with **MatterSim** / **UPET** / **GRACE** / **Nequix** / **Allegro, NequIP** (please pay separated attention to GRACE):  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -99,7 +103,10 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
-   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE)  
+   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment)  
+   
+   Note on **Nequix**: it runs on JAX rather than Torch and needs its own environment (`requirements-nequix.txt`), because it pulls in the whole JAX stack. On Linux `pip` installs `jax[cuda12]` automatically, so the GPU is used without any extra step. The OpenEquivariance kernels mentioned in the Nequix docs are optional: the app falls back to the pure-JAX path if they are missing.  
+   Note on **Allegro / NequIP**: these run on Torch, and the models are downloaded from [nequip.net](https://www.nequip.net/models) on first use and then cached, so the first run of a given model takes longer. `nequip-compile` is *not* needed.  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  

@@ -67,7 +67,8 @@ def _preprocess_grid(energies, blocked, smoothing_sigma, zoom_factor):
 
 # Reuse the project-wide MLIP setup so the generated script supports the
 # *same* model list (GRACE / MACE / MACE-OFF / MACE-POLAR / CHGNet /
-# SevenNet / MatterSim / ORB / Nequix / PET-MAD / UPET / custom MACE).
+# SevenNet / MatterSim / ORB / Nequix / Allegro / NequIP / PET-MAD / UPET /
+# custom MACE).
 from helpers.generate_python_code import (
     _generate_calculator_setup_code,
     _generate_mlip_imports,

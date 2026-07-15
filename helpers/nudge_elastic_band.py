@@ -168,6 +168,7 @@ def _calc_block(selected_model, model_size, device, dtype,
     is_mattersim = selected_model.startswith("MatterSim")
     is_orb       = selected_model.startswith("ORB")
     is_nequix    = selected_model.startswith("Nequix")
+    is_allegro   = selected_model.startswith(("Allegro", "NequIP"))
     is_mace_off  = "OFF" in selected_model
     is_upet      = model_size.startswith("upet:")
     is_petmad    = selected_model.startswith("PET-MAD")
@@ -196,9 +197,34 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}orbff = pretrained.{model_size}(device='{device}', precision='float32-high')\n"
                 f"{i}calculator = ORBCalculator(orbff, device='{device}')\n"
                 f"{i}print('ORB ready')\n")
+    if is_allegro:
+        # Loaded eagerly from nequip.net; downloaded once, then cached.
+        return (f"{i}from nequip.model.saved_models.load_utils import load_saved_model\n"
+                f"{i}from nequip.integrations.ase import NequIPCalculator\n"
+                f"{i}from nequip.integrations.utils import basic_transforms, handle_chemical_species_map\n"
+                f"{i}_model = load_saved_model('{model_size}')\n"
+                f"{i}_model.eval()\n"
+                f"{i}_md = _model.metadata\n"
+                f"{i}_type_names = _md['type_names']\n"
+                f"{i}if isinstance(_type_names, str):\n"
+                f"{i}    _type_names = _type_names.split()\n"
+                f"{i}calculator = NequIPCalculator(\n"
+                f"{i}    model=_model,\n"
+                f"{i}    device='{device}',\n"
+                f"{i}    transforms=basic_transforms(\n"
+                f"{i}        _md, float(_md['r_max']), _type_names,\n"
+                f"{i}        handle_chemical_species_map(True, _type_names),\n"
+                f"{i}        neighborlist_backend='matscipy',\n"
+                f"{i}    ),\n"
+                f"{i})\n"
+                f"{i}print('Allegro / NequIP ready')\n")
     if is_nequix:
+        # OpenEquivariance kernels are an optional extra; fall back to pure JAX.
         return (f"{i}from nequix.calculator import NequixCalculator\n"
-                f"{i}calculator = NequixCalculator('{model_size}')\n"
+                f"{i}try:\n"
+                f"{i}    calculator = NequixCalculator('{model_size}', use_kernel=True)\n"
+                f"{i}except ImportError:\n"
+                f"{i}    calculator = NequixCalculator('{model_size}', use_kernel=False)\n"
                 f"{i}print('Nequix ready')\n")
     if is_upet or is_petmad:
         if is_upet:

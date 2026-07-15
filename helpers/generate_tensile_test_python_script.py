@@ -61,7 +61,13 @@ from collections import deque
 import io
 
 try:
-    from nequix.ase_calculator import NequixCalculator
+    from nequix.calculator import NequixCalculator
+except ImportError:
+    pass
+try:
+    from nequip.model.saved_models.load_utils import load_saved_model as _nequip_load_saved_model
+    from nequip.integrations.ase import NequIPCalculator
+    from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
 except ImportError:
     pass
 try:
@@ -220,30 +226,55 @@ except Exception as e:
         print(f"❌ ORB CPU fallback failed: {{cpu_e}}")
         exit()
 """
+    elif selected_model.startswith(("Allegro", "NequIP")):
+        calculator_setup_str = f"""
+print("Setting up Allegro / NequIP calculator...")
+print("First use downloads the model from nequip.net, then it is cached.")
+try:
+    _model = _nequip_load_saved_model("{model_size}")
+    _model.eval()
+    _md = _model.metadata
+    _type_names = _md["type_names"]
+    if isinstance(_type_names, str):
+        _type_names = _type_names.split()
+    calculator = NequIPCalculator(
+        model=_model,
+        device="{device}",
+        transforms=basic_transforms(
+            _md,
+            float(_md["r_max"]),
+            _type_names,
+            handle_chemical_species_map(True, _type_names),
+            neighborlist_backend="matscipy",
+        ),
+    )
+    print(f"✅ {selected_model} initialized on {device}")
+except NameError:
+    print("❌ Allegro / NequIP initialization failed: nequip not found. Is nequip-allegro installed?")
+    exit()
+except Exception as e:
+    print(f"❌ Allegro / NequIP initialization failed on {device}: {{e}}")
+    exit()
+"""
     elif "Nequix" in selected_model:
+        # Nequix runs on JAX and picks its own device; it takes a model *name*
+        # from its registry (not a path) and accepts no device argument.
         calculator_setup_str = f"""
 print("Setting up Nequix calculator...")
 try:
-    calculator = NequixCalculator(
-        model_path="{model_size}",
-        device="{device}"
-    )
-    print(f"✅ Nequix {model_size} initialized on {device}")
+    try:
+        calculator = NequixCalculator("{model_size}", use_kernel=True)
+    except ImportError:
+        # OpenEquivariance kernels are an optional extra; fall back to pure JAX.
+        calculator = NequixCalculator("{model_size}", use_kernel=False)
+        print("ℹ️ OpenEquivariance kernels unavailable, using pure-JAX path")
+    print(f"✅ Nequix {model_size} initialized")
 except NameError:
      print(f"❌ Nequix initialization failed: NequixCalculator class not found. Is nequix installed?")
      exit()
 except Exception as e:
-    print(f"❌ Nequix initialization failed on {device}: {{e}}")
-    print("Attempting fallback to CPU...")
-    try:
-        calculator = NequixCalculator(
-            model_path="{model_size}",
-            device="cpu"
-        )
-        print("✅ Nequix initialized on CPU (fallback)")
-    except Exception as cpu_e:
-        print(f"❌ Nequix CPU fallback failed: {{cpu_e}}")
-        exit()
+    print(f"❌ Nequix initialization failed: {{e}}")
+    exit()
 """
     elif "DeePMD" in selected_model:
         calculator_setup_str = f"""

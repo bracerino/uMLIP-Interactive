@@ -2035,6 +2035,42 @@ try:
 except ImportError:
     NEQUIX_AVAILABLE = False
 
+# Allegro / NequIP foundation models, served from the nequip.net registry.
+try:
+    from nequip.model.saved_models.load_utils import load_saved_model as _nequip_load_saved_model
+    from nequip.integrations.ase import NequIPCalculator
+    from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
+
+    ALLEGRO_AVAILABLE = True
+except ImportError:
+    ALLEGRO_AVAILABLE = False
+
+
+def build_allegro_calculator(model_id, device):
+    """Build an ASE calculator for an Allegro / NequIP model from nequip.net.
+
+    The model is run eagerly. nequip-compile would be faster, but it must run on
+    the same hardware the model runs on, so it is not usable from the GUI.
+    """
+    model = _nequip_load_saved_model(model_id)
+    model.eval()
+    metadata = model.metadata
+    type_names = metadata["type_names"]
+    if isinstance(type_names, str):
+        type_names = type_names.split()
+    return NequIPCalculator(
+        model=model,
+        device=device,
+        transforms=basic_transforms(
+            metadata,
+            float(metadata["r_max"]),
+            type_names,
+            # These models' type names are chemical symbols, so map them 1:1.
+            handle_chemical_species_map(True, type_names),
+            neighborlist_backend="matscipy",
+        ),
+    )
+
 try:
     from chgnet.model.model import CHGNet
     from chgnet.model.dynamics import CHGNetCalculator
@@ -2398,7 +2434,30 @@ MODEL_FAMILIES = {
         "OrbMol-v2 (Learnable Electrostatics, OMol25+OPoly26) ⭐": "orbmol_v2",
     },
     "Nequix": {
-        "Nequix-MP-1 (Universal Materials) ⭐": "nequix-mp-1",
+        # --- OAM models (OMat24 + sAlex + MPtrj), broadest training data ---
+        "Nequix-OAM-1-PFT (OMat24+sAlex+MPtrj+MDR Phonon) ⭐": "nequix-oam-1-pft",
+        "Nequix-OAM-1 (OMat24+sAlex+MPtrj) ⭐": "nequix-oam-1",
+        # --- OMat24 only ---
+        "Nequix-OMAT-1 (OMat24, VASP 54)": "nequix-omat-1",
+        # --- MPtrj models ---
+        "Nequix-MP-1-PFT (MPtrj+MDR Phonon)": "nequix-mp-1-pft",
+        # nequix-mp-1-pft-no-cotrain is in the nequix registry but its checkpoint
+        # URL 404s upstream, so it is deliberately not offered here.
+        "Nequix-MP-1 (MPtrj, Universal Materials)": "nequix-mp-1",
+    },
+    # Allegro and NequIP share one family: same package, same loader, and the
+    # model id carries the architecture. Names must not start with "Nequix",
+    # which is a different code path dispatched on that prefix.
+    "Allegro / NequIP": {
+        # --- Allegro architecture (strictly local, scales to large systems) ---
+        "Allegro-OAM-L (OMat24+sAlex+MPtrj) ⭐": "nequip.net:mir-group/Allegro-OAM-L:0.1",
+        "Allegro-MP-L (MPtrj)": "nequip.net:mir-group/Allegro-MP-L:0.1",
+        # --- NequIP architecture ---
+        "NequIP-OAM-XL (OMat24+sAlex+MPtrj, largest)": "nequip.net:mir-group/NequIP-OAM-XL:0.1",
+        "NequIP-OAM-L (OMat24+sAlex+MPtrj) ⭐": "nequip.net:mir-group/NequIP-OAM-L:0.1",
+        "NequIP-OAM-M (OMat24+sAlex+MPtrj, medium)": "nequip.net:mir-group/NequIP-OAM-M:0.1",
+        "NequIP-OAM-S (OMat24+sAlex+MPtrj, small/fast)": "nequip.net:mir-group/NequIP-OAM-S:0.1",
+        "NequIP-MP-L (MPtrj)": "nequip.net:mir-group/NequIP-MP-L:0.1",
     },
     "GRACE": {
         # --- SMAX models (recommended for general use) ---
@@ -2476,8 +2535,12 @@ FAMILY_ENV_SETUP = {
         "note": "orb-models on torch 2.8 (ORB needs pynanoflann from GitHub).",
     },
     "Nequix": {
-        "pip": f"pip install torch==2.8.0 nequix==0.2.0 {_CORE_SCI}",
-        "note": "nequix on torch 2.8.",
+        "pip": f"pip install nequix==0.4.5 {_CORE_SCI}",
+        "note": "nequix runs on JAX (pip pulls jax[cuda12] on Linux), not torch.",
+    },
+    "Allegro / NequIP": {
+        "pip": f"pip install torch==2.8.0 nequip-allegro==0.8.3 {_CORE_SCI}",
+        "note": "nequip-allegro on torch 2.8; models download from nequip.net on first use.",
     },
     "MatterSim": {
         "pip": f"pip install torch mattersim {_CORE_SCI}",
@@ -2641,6 +2704,10 @@ def get_model_type_from_selection(selected_model_name):
         return "ORB", "Universal potential with confidence estimation"
     elif "Nequix" in selected_model_name:
         return "Nequix", "Universal materials potential (foundation model)"
+    elif selected_model_name.startswith("Allegro"):
+        return "Allegro", "Universal potential (foundation model, strictly local)"
+    elif selected_model_name.startswith("NequIP"):
+        return "NequIP", "Universal potential (foundation model)"
     else:
         return "Model", "foundation"
 
@@ -3069,6 +3136,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_orbmol = is_orbmol_model(selected_model, model_size)
         is_orb = selected_model.startswith("ORB") or is_orbmol
         is_nequix = selected_model.startswith("Nequix")
+        is_allegro = selected_model.startswith(("Allegro", "NequIP"))
         is_deepmd = selected_model.startswith("DeePMD")
         is_alignn = selected_model.startswith("AlignN")
 
@@ -3157,11 +3225,31 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put(f"Device: {device}")
 
             try:
-                calculator = NequixCalculator(model_size)
+                try:
+                    calculator = NequixCalculator(model_size, use_kernel=True)
+                except ImportError:
+                    # OpenEquivariance kernels are an optional extra; fall back to pure JAX.
+                    calculator = NequixCalculator(model_size, use_kernel=False)
+                    log_queue.put("ℹ️ OpenEquivariance kernels unavailable, using pure-JAX path")
                 log_queue.put(f"✅ Nequix {model_size} initialized successfully")
 
             except Exception as e:
                 log_queue.put(f"❌ Nequix initialization failed: {str(e)}")
+                return
+
+        elif is_allegro:
+            # Allegro / NequIP setup
+            log_queue.put("Setting up Allegro / NequIP calculator...")
+            log_queue.put(f"Selected model: {selected_model}")
+            log_queue.put(f"Device: {device}")
+            log_queue.put("First use downloads the model from nequip.net (then cached).")
+
+            try:
+                calculator = build_allegro_calculator(model_size, device)
+                log_queue.put(f"✅ {selected_model} initialized successfully")
+
+            except Exception as e:
+                log_queue.put(f"❌ Allegro / NequIP initialization failed: {str(e)}")
                 return
 
         elif is_grace:
@@ -4572,7 +4660,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.6 · 6/11/2026
+            v0.9.7 · 7/15/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -4731,6 +4819,7 @@ with st.sidebar:
 
     is_mattersim = selected_model.startswith("MatterSim")
     is_nequix = selected_model.startswith("Nequix")
+    is_allegro = selected_model.startswith(("Allegro", "NequIP"))
     if st.button("🔍 Check available calculators"):
         availability = {
             "MACE": MACE_AVAILABLE,
@@ -4740,6 +4829,7 @@ with st.sidebar:
             "MatterSim": MATTERSIM_AVAILABLE,
             "ORB": ORB_AVAILABLE,
             "Nequix": NEQUIX_AVAILABLE,
+            "Allegro / NequIP": ALLEGRO_AVAILABLE,
             "UPET": UPET_AVAILABLE,
             "GRACE": GRACE_AVAILABLE,
         }
@@ -4780,7 +4870,7 @@ with st.sidebar:
     col_mult1, col_mult2 = st.columns([1, 1])
     # Only show for MACE models (not other calculators)
 
-    if not any(x in selected_model for x in ["CHGNet", "SevenNet", "MatterSim", "ORB", "Nequix"]) \
+    if not any(x in selected_model for x in ["CHGNet", "SevenNet", "MatterSim", "ORB", "Nequix", "Allegro", "NequIP"]) \
             and not is_orbmol_model(selected_model, model_size):
        # st.markdown("---")
 
@@ -5163,8 +5253,14 @@ with tab1:
     if st.session_state.structures:
         pass
     else:
+        # The upload prompt is not shown online; only the citation block below is.
+        upload_info = "" if ONLINE_MODE else """
+          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file
+          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).
+          Alternatively, you can select a calculation setup, configure it, generate the standalone
+          Python script, and run it directly in a folder containing your crystal structure."""
         st.markdown(
-            """
+            f"""
         <div style="
           background-color: #e8f4fd;
           border-left: 6px solid #2196f3;
@@ -5175,10 +5271,7 @@ with tab1:
           max-width: 1100px;
           margin: 10px 0;
         ">
-          <strong>ℹ️ Info:</strong> Please upload at least one crystal structure file
-          (<code>.cif</code>, <code>.poscar / .vasp / POSCAR</code>, <code>extended .xyz</code>, <code>.lmp</code>).
-          Alternatively, you can select a calculation setup, configure it, generate the standalone
-          Python script, and run it directly in a folder containing your crystal structure.
+          {upload_info}
           <div style="margin-top: 8px;">
           If you like the uMLIP-Interactive, please
           <strong><a style="color:#0b63c4;" href="https://www.sciencedirect.com/science/article/pii/S2238785426004540" target="_blank">📖 cite this work</a></strong>
