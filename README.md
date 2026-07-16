@@ -103,9 +103,6 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
    **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment)  
-   
-   Note on **Nequix**: it runs on JAX rather than Torch and needs its own environment (`requirements-nequix.txt`), because it pulls in the whole JAX stack. On Linux `pip` installs `jax[cuda12]` automatically, so the GPU is used without any extra step. The OpenEquivariance kernels mentioned in the Nequix docs are optional: the app falls back to the pure-JAX path if they are missing.  
-   Note on **Allegro / NequIP**: these run on Torch, and the models are downloaded from [nequip.net](https://www.nequip.net/models) on first use and then cached, so the first run of a given model takes longer. `nequip-compile` is *not* needed.  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  
