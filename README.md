@@ -1,6 +1,6 @@
 # uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIPs)
 
-Run basic molecular dynamics/static simulations:
+Run or generate input script for basic molecular dynamics/static simulations:
 - **Single-point energy**
 - **Geometry optimization**
 - **Elastic properties**  
