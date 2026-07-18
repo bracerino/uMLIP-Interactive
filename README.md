@@ -12,7 +12,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 - **Energy grid scan** (with generated Python script)
 - **Additional post-processing scripts** (average powder diffraction pattern, average structure from .xyz trajectory)  
 
-**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate stand-alone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
+**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate standalone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 🌐 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
 
@@ -23,7 +23,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 
 ### Tutorials
 - 🎥 **Calculations within the interface [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.
-- 🎥 **Using the stand-alone generated Python script for the calculations [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw)**.   
+- 🎥 **Using the standalone generated Python script for the calculations [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw)**.   
 - 🎥 **Calculating phonons [YouTube](https://www.youtube.com/watch?v=XG3N1fjijfA)**.
 - 🎥 **Running MD [YouTube](https://www.youtube.com/watch?v=dKhu1kIuGso)**.
 - 🎥 **Using genetic algorithm to obtain candidates for the low-energy distributions of point defects in crystal structure [YouTube](https://youtu.be/SXUsAsatyRQ?si=3MKPwuyHk7AtLNeK)**.  
