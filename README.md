@@ -3,7 +3,8 @@
 Run basic molecular dynamics/static simulations:
 - **Single-point energy**
 - **Geometry optimization**
-- **Elastic properties**
+- **Elastic properties**  
+- **Birch-Murnaghan EOS**  
 - **Phonons**
 - **Genetic algorithm for finding energetically favorible atomic site configurations of substitutes/vacancies**
 - **Basic MD simulations (NVE, NVT, NPT)** (with generated Python script)  
