@@ -14,11 +14,16 @@ package (``pip install xrd-rust``).
 """
 
 import json
+import os
 import time
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
 
 # --------------------------------------------------------------------------- #
@@ -1046,6 +1051,15 @@ def render_xrd_animation_viewer():
         "and its diffuse companion."
     )
 
+    if ONLINE_MODE:
+        st.warning(
+            "⬆️ Result upload is disabled in the online version. "
+            "Generate the standalone script above and run it locally, then use "
+            "your own machine to explore the `xrd_trajectory_animation.json` it "
+            "produces."
+        )
+        return
+
     upload = st.file_uploader(
         "Upload `xrd_trajectory_animation.json`",
         type=["json"],
@@ -1794,6 +1808,15 @@ def render_average_structure_viewer():
         "(`.cif`, `.vasp`/`POSCAR`, or extended `.xyz`) to view its averaged "
         "lattice parameters and a 3-D rendering."
     )
+
+    if ONLINE_MODE:
+        st.warning(
+            "⬆️ Result upload is disabled in the online version. "
+            "Generate the standalone script above and run it locally, then use "
+            "your own machine to inspect the `average_structure.*` file it "
+            "produces."
+        )
+        return
 
     upload = st.file_uploader(
         "Upload an averaged structure file",
