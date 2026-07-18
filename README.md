@@ -12,8 +12,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 - **Energy grid scan** (with generated Python script)
 - **Additional post-processing scripts** (average powder diffraction pattern, average structure from .xyz trajectory)  
 
-**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate Python code with the set settings and run the simulations directly in the console (currently works for energies, geometry optimization, elastic properties, and genetic algorithm). For the generated Python code, simply put it into an empty folder and run it. The structures that were uploaded to the app will be automatically created in the POSCAR format before the simulation start. 
-The application also **supports selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
+**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate stand-alone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
 
