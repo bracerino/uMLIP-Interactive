@@ -24,7 +24,7 @@ cuequivariance-ops-torch-cu12==0.6.1
 
 mace-torch==0.3.16
 chgnet==0.3.8
-sevenn==0.13.0 # also available standalone in requirements-sevennet.txt
+# sevenn==0.13.0 # available standalone in requirements-sevennet.txt
 #mattersim
 orb-models==0.7.0
 #nequix==0.4.5 # now in requirements-nequix.txt (it pulls in the whole JAX stack)
