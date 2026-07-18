@@ -112,6 +112,13 @@ from helpers.generate_md_script import generate_md_python_script
 from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
 from helpers.postprocessing_scripts import render_postprocessing_panel
+from helpers.birch_murnaghan_eos import (
+    setup_eos_ui,
+    display_eos_info,
+    run_eos_calculation,
+    render_eos_results,
+    generate_eos_script,
+)
 
 import py3Dmol
 from pymatgen.core import Structure
@@ -2524,7 +2531,7 @@ FAMILY_ENV_SETUP = {
         "note": "chgnet on torch 2.8.",
     },
     "SevenNet": {
-        "pip": f"pip install torch==2.8.0 sevenn==0.10.4 {_CORE_SCI}",
+        "pip": f"pip install torch==2.8.0 sevenn==0.13.0 {_CORE_SCI}",
         "note": "sevenn on torch 2.8.",
     },
     "ORB": {
@@ -3115,8 +3122,9 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                          custom_upet_path=None,
-                         polar_settings=None):
+                         polar_settings=None, eos_params=None):
     import time
+    eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
         total_start_time = time.time()
         log_queue.put({
@@ -3917,6 +3925,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     phonon_results = None
                     rmscd_results = None
                     elastic_results = None
+                    eos_results = None
                     orb_confidence = None
                     polar_results = None
                     orbmol_results = None
@@ -4426,6 +4435,25 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             energy = None
                             final_structure = structure  # Keep original structure
                             md_results = None
+                    elif calc_type == "Birch-Murnaghan EOS":
+                        log_queue.put(f"Starting Birch–Murnaghan EOS calculation for {name}")
+
+                        atoms = pymatgen_to_ase(structure)
+                        atoms.calc = calculator
+
+                        eos_results = run_eos_calculation(
+                            atoms, calculator, eos_params or {}, log_queue, name, stop_event
+                        )
+
+                        if eos_results and eos_results.get('success'):
+                            energy = eos_results['E0']
+                            final_structure = structure
+                            eos_b0_collected.append(eos_results['B0_GPa'])
+                            log_queue.put(f"✅ Birch–Murnaghan EOS completed for {name}")
+                        else:
+                            log_queue.put(f"❌ Birch–Murnaghan EOS failed for {name}")
+                            energy = None
+
                     elif calc_type == "Virtual Tensile Test":
                         log_queue.put(f"Starting virtual tensile test for {name}")
 
@@ -4566,6 +4594,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         'ga_results': ga_results if calc_type == "GA Structure Optimization" else None,
                         'md_results': md_results if calc_type == "Molecular Dynamics" else None,
                         'tensile_results': tensile_results if calc_type == "Virtual Tensile Test" else None,
+                        'eos_results': eos_results if calc_type == "Birch-Murnaghan EOS" else None,
                         'orb_confidence': orb_confidence,
                         'polar_results': polar_results,
                         'orbmol_results': orbmol_results,
@@ -4606,6 +4635,15 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         'error': str(e),
                         'polar_results': None,
                     })
+        if calc_type == "Birch-Murnaghan EOS" and eos_b0_collected:
+            import numpy as _np
+            _b0 = _np.asarray(eos_b0_collected, dtype=float)
+            _std = float(_b0.std(ddof=1)) if _b0.size > 1 else 0.0
+            log_queue.put(
+                f"📊 Average bulk modulus B0 over {_b0.size} structure(s): "
+                f"{float(_b0.mean()):.3f} ± {_std:.3f} GPa"
+            )
+
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
 
@@ -4660,7 +4698,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.9.7 · 7/15/2026
+            v0.10.0 · 7/18/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5333,9 +5371,10 @@ with tab1:
         with col_calc_setup:
             calc_type = st.radio(
                 "Calculation Type",
-                ["Energy Only", "Geometry Optimization", "Phonon Calculation", "Elastic Properties",
-                 "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics", "Virtual Tensile Test",
-                 "Energy Grid Scan", "NEB Calculation", "Selected postprocessing scripts"],
+                ["Energy Only", "Geometry Optimization", "Birch-Murnaghan EOS", "Phonon Calculation",
+                 "Elastic Properties", "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics",
+                 "Virtual Tensile Test", "Energy Grid Scan", "NEB Calculation",
+                 "Selected postprocessing scripts"],
                 help="Choose the type of calculation to perform"
             )
 
@@ -5387,6 +5426,7 @@ with tab1:
             _calc_type_captions = {
                 "Energy Only": "⚡ **Fast** — single point energy calculation, ideal for energy comparisons.",
                 "Geometry Optimization": "🔄 **Structure relaxation** — optimizes atomic positions & lattice parameters.",
+                "Birch-Murnaghan EOS": "📈 **Equation of state** — E(V) scan fitted to Birch–Murnaghan for V₀, bulk modulus B₀ & B₀'.",
                 "Phonon Calculation": "🎵 **Vibrational analysis** — phonon dispersion & DOS, thermodynamic properties.",
                 "Elastic Properties": "⚙️ **Mechanical properties** — elastic tensor & moduli (bulk, shear, Young's).",
                 "GA Structure Optimization": "🧬 **Evolutionary optimization** — optimal substitution patterns & defect configurations.",
@@ -5779,6 +5819,81 @@ with tab1:
             'strain_magnitude': 0.01,
             'density': None
         }
+        eos_params = {
+            'optimize_positions': False,
+            'volume_range_pct': 10.0,
+            'volume_step_pct': 2.0,
+            'optimizer': "LBFGS",
+            'fmax': 0.01,
+            'max_steps': 300,
+            'save_trajectory': True,
+        }
+
+        if calc_type == "Birch-Murnaghan EOS":
+            eos_params = setup_eos_ui(
+                default_settings=st.session_state.default_settings,
+                save_settings_function=save_default_settings,
+            )
+            display_eos_info(eos_params)
+
+            st.markdown("---")
+            st.subheader("Generate Standalone Birch–Murnaghan EOS Script")
+
+            if 'generated_eos_script' not in st.session_state:
+                st.session_state.generated_eos_script = None
+
+            if st.button("📝 Generate EOS Python Script (using current settings)",
+                         key="generate_eos_script_button", type="secondary"):
+                try:
+                    mace_config = st.session_state.get('mace_config', {})
+                    st.session_state.generated_eos_script = generate_eos_script(
+                        eos_params,
+                        model_size=model_size,
+                        device=device,
+                        dtype=dtype,
+                        thread_count=st.session_state.thread_count,
+                        selected_model_key=selected_model,
+                        mace_head=mace_config.get('head'),
+                        mace_dispersion=mace_config.get('dispersion', False),
+                        mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
+                        custom_mace_path=custom_mace_path if is_custom_mace else None,
+                        custom_upet_path=custom_upet_path if is_custom_upet else None,
+                        polar_settings=st.session_state.get('polar_settings', {}),
+                    )
+                    st.success("✅ EOS script generated successfully!")
+                except Exception as exc:
+                    st.error(f"❌ Failed to generate EOS script: {exc}")
+                    st.session_state.generated_eos_script = None
+
+            if st.session_state.generated_eos_script:
+                with st.expander("🐍 View Generated EOS Script", expanded=True):
+                    st.code(st.session_state.generated_eos_script, language='python')
+                    st.download_button(
+                        label="💾 Download EOS Script (.py)",
+                        data=st.session_state.generated_eos_script,
+                        file_name="run_birch_murnaghan_eos.py",
+                        mime="text/x-python",
+                        key="download_generated_eos_script",
+                        type='primary',
+                    )
+                st.info(
+                    "**Instructions (Birch–Murnaghan EOS):**\n"
+                    "1. Save the script (e.g. `run_birch_murnaghan_eos.py`).\n"
+                    "2. Place one or more structure files (`.cif`, `.vasp`, `POSCAR*`) "
+                    "in the same directory.\n"
+                    "3. Install dependencies (`pip install ase numpy scipy matplotlib` "
+                    "plus the MLIP package matching your model selection).\n"
+                    "4. Run: `python run_birch_murnaghan_eos.py`.\n"
+                    "5. Per-structure results land in `eos_results/<basename>/` as "
+                    "`eos_data.csv`, `eos_fit.png` and `eos_summary.txt`.\n"
+                    "6. With **more than one structure**, aggregate files are also "
+                    "written directly under `eos_results/`: `eos_summary_all.csv` "
+                    "(one row per structure), `eos_statistics.txt` (average / std / "
+                    "min / max bulk modulus) and `bulk_modulus_by_structure.png` "
+                    "(bulk modulus vs. structure index).\n\n"
+                    "💡 You can also run this calculation directly in the interface "
+                    "with the **🚀 Start Batch Calculation** button below."
+                )
 
         if calc_type == "GA Structure Optimization":
             st.divider()
@@ -7248,7 +7363,43 @@ with tab_st:
                     key="download_core_preview",
                 )
 
-        if but_local_script:
+        if (but_script or but_local_script) and calc_type == "Birch-Murnaghan EOS":
+            mace_config = st.session_state.get('mace_config', {})
+            eos_script_content = generate_eos_script(
+                eos_params,
+                model_size=model_size,
+                device=device,
+                dtype=dtype,
+                thread_count=st.session_state.get('thread_count', 4),
+                selected_model_key=selected_model,
+                mace_head=mace_config.get('head'),
+                mace_dispersion=mace_config.get('dispersion', False),
+                mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
+                custom_mace_path=custom_mace_path if is_custom_mace else None,
+                custom_upet_path=custom_upet_path if is_custom_upet else None,
+                polar_settings=st.session_state.get('polar_settings', {}),
+            )
+            st.download_button(
+                label="💾 Download Birch–Murnaghan EOS Script",
+                data=eos_script_content,
+                file_name="run_birch_murnaghan_eos.py",
+                mime="text/x-python",
+                key="download_eos_generic_button",
+                type='primary',
+            )
+            with st.expander("📋 Generated Birch–Murnaghan EOS Script", expanded=True):
+                st.code(eos_script_content, language='python')
+                st.info(
+                    "**Usage:** place your structure files (`.cif`, `.vasp`, `POSCAR*`) "
+                    "in the same folder as the script and run "
+                    "`python run_birch_murnaghan_eos.py`. Per-structure results are "
+                    "written to `eos_results/<basename>/`; with more than one structure "
+                    "aggregate files (`eos_summary_all.csv`, `eos_statistics.txt` with "
+                    "the average bulk modulus, and `bulk_modulus_by_structure.png`) are "
+                    "written directly under `eos_results/`."
+                )
+
+        if but_local_script and calc_type != "Birch-Murnaghan EOS":
             substitutions_for_script = None
             ga_params_for_script = None
 
@@ -7343,7 +7494,7 @@ with tab_st:
                         - Various plots and visualizations
                         """)
 
-        if but_script:
+        if but_script and calc_type != "Birch-Murnaghan EOS":
             substitutions_for_script = None
             ga_params_for_script = None
 
@@ -7469,7 +7620,7 @@ with tab_st:
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
                       st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass,
                       neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
-                      custom_upet_path,st.session_state.get('polar_settings', {}),)
+                      custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,)
             )
             thread.start()
             st.rerun()
@@ -8009,10 +8160,11 @@ def get_atomic_concentrations_from_structure(structure):
 with tab3:
     st.header("Results & Analysis")
     if st.session_state.results:
-        results_tab1, results_tab2, results_tab3, results_tab4, results_tab6, results_NEB, results_tab5, = st.tabs(["📊 Energies",
+        results_tab1, results_tab2, results_tab3, results_tab4, results_tab_eos, results_tab6, results_NEB, results_tab5, = st.tabs(["📊 Energies",
                                                                                                        "🔧 Geometry Optimization Details",
                                                                                                        "Elastic properties",
                                                                                                        "Phonons",
+                                                                                                       "📈 Birch-Murnaghan EOS",
 
                                                                                                        "🧬 GA Optimization",
                                                                                                        "NEB Calculations",
@@ -9502,6 +9654,9 @@ with tab3:
                     phonon_results,
                     add_entropy_vs_temperature_plot=add_entropy_vs_temperature_plot,
                 )
+
+        with results_tab_eos:
+            render_eos_results(st.session_state.results)
 
         with results_tab3:
             if elastic_results:

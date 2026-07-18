@@ -69,7 +69,7 @@ If you update the app, also consider to **update the installed packages**.
       **sudo apt install git**    
 
 Currently, certain u-MLIP does not share compatible versions of certain packages (Torch, ...) with each other. Depending on which u-MLIP you want to use, please choose one option: 
-#### To run simulations with **MACE, CHGNet, SevenNet, Orb-v3**:
+#### To run simulations with **MACE, CHGNet, Orb-v3**:
 
   1) Download updates and prerequisites (if you are using WSL, include also 'python3.12-dev'):  
      **sudo apt update**  
@@ -89,7 +89,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **UPET** / **GRACE** / **Nequix** / **Allegro, NequIP** (please pay separated attention to GRACE):  
+#### To run simulations with **MatterSim** / **UPET** / **GRACE** / **Nequix** / **Allegro, NequIP** / **SevenNet** (please pay separated attention to GRACE):  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -102,7 +102,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
-   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment)  
+   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment) or **pip install -r requirements-sevennet.txt** (for SevenNet in its own environment)  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  
