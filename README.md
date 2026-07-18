@@ -17,12 +17,12 @@ The application also **supports selective dynamics in POSCAR** files, preserving
 
 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
 
-#### References
+### References
 - If you like the app, 📖 **please cite** the following work: **[Lebeda, M., Drahokoupil, J., Mazáčová, V., & Vlčák, P. (2026). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials. Journal of Materials Research and Technology, 41, 6766–6774.](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**  
 - Please also 📖 cite the **[Atomic Simulation Environment (ASE)](https://iopscience.iop.org/article/10.1088/1361-648X/aa680e/meta?casa_token=ylmp7uEZ-BYAAAAA:SRe2v_QrxXhw5O0ZrwNP5yyNQ8HbaG5vcbvBK98BQ6aZIs-qJ6C_1gjYBQ552Y68eJhnK0vPOheT8-R2gyGlaxCsnhGs)** and 📖 the employed uMLIP (you can see the corresponding publications for each model in the right corner of the app).
 - When using calculated phonons, please cite also **[Implementation strategies in phonopy and phono3py](https://iopscience.iop.org/article/10.1088/1361-648X/acd831/meta)**.  
 
-#### Tutorials
+### Tutorials
 - 🎥 **Calculations within the interface [YouTube](https://youtu.be/xh98fQqKXaI?si=m0Hysd9dvZis0any)**.
 - 🎥 **Using the stand-alone generated Python script for the calculations [YouTube](https://youtu.be/w6hmvzC2J-8?si=9BYWJuUg7pohL1sw)**.   
 - 🎥 **Calculating phonons [YouTube](https://www.youtube.com/watch?v=XG3N1fjijfA)**.
@@ -36,7 +36,7 @@ If you using the app, do not forgot from time to time to **update it with 'git p
 If you have any request for improvements, additional features, or you spot a bug, please let me know: **lebedmi2@cvut.cz**  
 Personal recommendation for the **maximum number of atoms** (for energies, geometry optimization) in a structure file: **below 1 000 - 10 000**. 
 
-#### Currently supported uMLIP
+### Currently supported uMLIP
 - [MACE](https://github.com/ACEsuit/mace)  
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
 - [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
