@@ -14,7 +14,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 
 **Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE interatomic potentials**. It is also possible to generate stand-alone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
-For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
+🌐 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
 
 ### References
 - If you like the app, 📖 **please cite** the following work: **[Lebeda, M., Drahokoupil, J., Mazáčová, V., & Vlčák, P. (2026). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal base alloy via universal machine learning interatomic potentials. Journal of Materials Research and Technology, 41, 6766–6774.](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**  
