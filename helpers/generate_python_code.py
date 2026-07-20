@@ -1,6 +1,10 @@
 import json
 from datetime import datetime
 
+from helpers.quantum_espresso import (
+    is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
+)
+
 
 def _generate_mlip_imports():
     return """# MACE imports
@@ -1885,6 +1889,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                                     polar_settings=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
+    # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
+    # short-circuits the whole model-detection chain below.
+    if is_qe_model(selected_model_key, model_size):
+        return generate_qe_calculator_code(get_active_qe_settings(), indent="    ")
+
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     if is_mace_polar:
         _ps = polar_settings or {}

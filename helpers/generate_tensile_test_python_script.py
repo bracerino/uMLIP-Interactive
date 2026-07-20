@@ -4,6 +4,10 @@ from collections import deque
 from ase import units
 import numpy as np
 
+from helpers.quantum_espresso import (
+    is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
+)
+
 
 def generate_tensile_test_python_script(tensile_params, selected_model, model_size, device, dtype, thread_count):
 
@@ -79,7 +83,11 @@ os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 torch.set_num_threads({thread_count})
 """
 
-    if "CHGNet" in selected_model:
+    if is_qe_model(selected_model, model_size):
+        # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
+        calculator_setup_str = generate_qe_calculator_code(
+            get_active_qe_settings(), indent="")
+    elif "CHGNet" in selected_model:
         imports_str += """
 try:
     from chgnet.model.model import CHGNet

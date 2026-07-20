@@ -111,6 +111,11 @@ from helpers.tensile_test import (
 from helpers.generate_md_script import generate_md_python_script
 from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
+import helpers.quantum_espresso as qe
+from helpers.quantum_espresso import (
+    QE_FAMILY_NAME, QE_MODEL_KEY, QE_MODEL_VALUE, QE_DEFAULTS, QE_ENV_SETUP,
+    is_qe_model, build_qe_calculator, set_active_qe_settings,
+)
 from helpers.postprocessing_scripts import render_postprocessing_panel
 from helpers.birch_murnaghan_eos import (
     setup_eos_ui,
@@ -2358,6 +2363,10 @@ def create_xyz_content(trajectory_data, structure_name):
     return xyz_content
 
 MODEL_FAMILIES = {
+    # Not an MLIP: runs ab initio DFT through an external pw.x binary.
+    QE_FAMILY_NAME: {
+        QE_MODEL_KEY: QE_MODEL_VALUE,
+    },
     "MACE": {
         "MACE-MP-0b3 (medium)": "medium-0b3",
         "MACE-MP-0 (small) - Original": "small",
@@ -2518,6 +2527,7 @@ _CORE_SCI = "ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 num
 _CORE_SCI_ASE327 = "ase==3.27.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
 
 FAMILY_ENV_SETUP = {
+    QE_FAMILY_NAME: QE_ENV_SETUP,
     "MACE": {
         "pip": f"pip install torch==2.8.0 mace-torch==0.3.16 torch-dftd {_CORE_SCI}",
         "note": "mace-torch on torch 2.8 (torch-dftd is needed for D3 dispersion in MACE-MH).",
@@ -3138,6 +3148,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put("CALCULATION_FINISHED")
             return
 
+        is_qe = is_qe_model(selected_model, model_size)
         is_chgnet = model_size.startswith("chgnet")
         is_sevennet = selected_model.startswith("SevenNet")
         is_mattersim = selected_model.startswith("MatterSim")
@@ -3155,7 +3166,28 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_custom_upet_model = (model_size == "upet:custom")
         is_mace_polar = is_polar_model(selected_model)
 
-        if is_upet:
+        if is_qe:
+            log_queue.put("Setting up Quantum ESPRESSO (pw.x) calculator...")
+            qe_settings = qe.get_active_qe_settings()
+
+            problems = qe.validate_qe_settings(qe_settings)
+            if problems:
+                for problem in problems:
+                    log_queue.put(f"❌ {problem}")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+
+            try:
+                calculator = build_qe_calculator(
+                    qe_settings, log=lambda msg: log_queue.put(msg)
+                )
+                log_queue.put("✅ Quantum ESPRESSO calculator initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ Quantum ESPRESSO initialization failed: {str(e)}")
+                log_queue.put("CALCULATION_FINISHED")
+                return
+
+        elif is_upet:
             log_queue.put("Setting up UPET calculator...")
             log_queue.put(f"Selected model: {selected_model}")
             log_queue.put(f"Device: {device}")
@@ -4778,7 +4810,32 @@ with st.sidebar:
     )
     model_size = family_models[selected_model]
 
-    is_custom_mace = (selected_model == "Custom MACE Model 🔧")
+    # Quantum ESPRESSO is an external DFT code, not an MLIP: it has its own
+    # settings block and none of the MLIP options below apply to it.
+    use_qe = is_qe_model(selected_model, model_size)
+    if use_qe:
+        _qe_symbols = sorted({
+            str(sp.symbol)
+            for structure in st.session_state.get('structures', {}).values()
+            for sp in getattr(structure, 'composition', {})
+        })
+        qe_settings = qe.render_qe_sidebar(
+            saved=st.session_state.get('qe_settings'),
+            symbols=_qe_symbols or None,
+        )
+        st.session_state['qe_settings'] = qe_settings
+        set_active_qe_settings(qe_settings)
+        # Kept only so the rest of the app (which assumes an MLIP) stays happy.
+        device = "cpu"
+        dtype = "float64"
+        mace_head = None
+        mace_dispersion = False
+        mace_dispersion_xc = "pbe"
+        custom_mace_path = None
+        custom_upet_path = None
+        st.session_state['polar_settings'] = {}
+
+    is_custom_mace = (not use_qe) and (selected_model == "Custom MACE Model 🔧")
     custom_mace_path = None
 
     if is_custom_mace:
@@ -4821,7 +4878,7 @@ with st.sidebar:
                 st.error("❌ File not found at this path")
         else:
             st.warning("⚠️ Please provide a path to your custom .model file")
-    is_custom_upet = (selected_model == "Custom UPET Model (.ckpt) 🔧")
+    is_custom_upet = (not use_qe) and (selected_model == "Custom UPET Model (.ckpt) 🔧")
     custom_upet_path = None
 
     if is_custom_upet:
@@ -4877,38 +4934,42 @@ with st.sidebar:
         if not_available:
             st.error(f"❌ Packages not installed: {', '.join(not_available)}")
 
-    cols1, cols2 = st.columns([1, 1])
-    with cols1:
-        default_device_index = 0 if defaults['device'] == "cpu" else 1
-        device_option = st.radio(
-            "Compute Device",
-            ["CPU", "GPU (CUDA)"],
-            index=default_device_index,
-            help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
-        )
-        device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
-
-    with cols2:
-        if not selected_model.startswith("CHGNet"):
-            default_precision_index = 0 if defaults['dtype'] == "float32" else 1
-            precision_option = st.radio(
-                "Precision",
-                ["Float32", "Float64"],
-                index=default_precision_index,
-                help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
+    # Device/precision are MLIP concepts; pw.x gets its hardware settings from
+    # the Quantum ESPRESSO block above.
+    if not use_qe:
+        cols1, cols2 = st.columns([1, 1])
+        with cols1:
+            default_device_index = 0 if defaults['device'] == "cpu" else 1
+            device_option = st.radio(
+                "Compute Device",
+                ["CPU", "GPU (CUDA)"],
+                index=default_device_index,
+                help="GPU will be much faster if available. Falls back to CPU if GPU unavailable."
             )
-            dtype = "float32" if precision_option == "Float32" else "float64"
-        else:
-            st.info("CHGNet uses fixed precision.")
-            dtype = "float32"
-    mace_head = None
-    mace_dispersion = False
-    mace_dispersion_xc = "pbe"
+            device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
+
+        with cols2:
+            if not selected_model.startswith("CHGNet"):
+                default_precision_index = 0 if defaults['dtype'] == "float32" else 1
+                precision_option = st.radio(
+                    "Precision",
+                    ["Float32", "Float64"],
+                    index=default_precision_index,
+                    help="Float32 uses less memory but lower precision. Float64 is more accurate but uses more memory."
+                )
+                dtype = "float32" if precision_option == "Float32" else "float64"
+            else:
+                st.info("CHGNet uses fixed precision.")
+                dtype = "float32"
+        mace_head = None
+        mace_dispersion = False
+        mace_dispersion_xc = "pbe"
 
     col_mult1, col_mult2 = st.columns([1, 1])
     # Only show for MACE models (not other calculators)
 
-    if not any(x in selected_model for x in ["CHGNet", "SevenNet", "MatterSim", "ORB", "Nequix", "Allegro", "NequIP"]) \
+    if not use_qe \
+            and not any(x in selected_model for x in ["CHGNet", "SevenNet", "MatterSim", "ORB", "Nequix", "Allegro", "NequIP"]) \
             and not is_orbmol_model(selected_model, model_size):
        # st.markdown("---")
 
@@ -4970,7 +5031,7 @@ with st.sidebar:
     polar_spin = 1
     polar_efield = [0.0, 0.0, 0.0]
 
-    if is_polar_model(selected_model):
+    if is_polar_model(selected_model) and not use_qe:
         st.markdown("---")
         st.subheader("⚡ MACE-POLAR-1 Settings")
 
@@ -5054,7 +5115,7 @@ with st.sidebar:
         'spin': polar_spin,
         'external_field': polar_efield,
     }
-    if model_size.startswith("upet:"):
+    if model_size.startswith("upet:") and not use_qe:
         with col_mult2:
             st.subheader("🔬 Dispersion Correction")
             mace_dispersion = st.checkbox(
@@ -5380,9 +5441,19 @@ with tab1:
 
             calculate_formation_energy_flag = st.checkbox(
                 "Calculate Formation Energy",
-                value=True,
+                value=not use_qe,
                 help="Calculate formation energy per atom"
             )
+
+            if use_qe and calculate_formation_energy_flag:
+                # References are isolated atoms in a 20 Å box — one full DFT run
+                # per element, and spin-unpolarised atoms are poor references.
+                st.warning(
+                    "⚠️ With Quantum ESPRESSO each reference energy is a separate "
+                    "DFT run on an isolated atom in a 20 Å box: very slow, and "
+                    "unreliable unless you enable spin polarisation. Consider "
+                    "switching this off."
+                )
 
         with col_calc_image:
             illustration_name = (

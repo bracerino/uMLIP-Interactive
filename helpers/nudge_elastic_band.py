@@ -10,6 +10,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
 import json
+
+from helpers.quantum_espresso import (
+    is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
+)
 from datetime import datetime
 
 
@@ -163,6 +167,10 @@ def _calc_block(selected_model, model_size, device, dtype,
                 custom_mace_path=None, indent="    "):
     """Return Python source-code string that creates `calculator`."""
     i = indent
+    if is_qe_model(selected_model, model_size):
+        # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
+        return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
+
     is_chgnet    = selected_model.startswith("CHGNet")
     is_sevennet  = selected_model.startswith("SevenNet")
     is_mattersim = selected_model.startswith("MatterSim")

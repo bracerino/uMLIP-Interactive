@@ -1,3 +1,8 @@
+from helpers.quantum_espresso import (
+    is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
+)
+
+
 def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           thread_count=4,
                           optimization_params=None, phonon_params=None,
@@ -92,6 +97,10 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
                         custom_mace_path, custom_upet_path,
                         polar_settings=None):
+
+    if is_qe_model(selected_model, model_size):
+        # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
+        return generate_qe_calculator_code(get_active_qe_settings(), indent="")
 
     if custom_mace_path:
         args = [f'model="{custom_mace_path}"']

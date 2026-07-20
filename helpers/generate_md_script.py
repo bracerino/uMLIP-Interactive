@@ -3,6 +3,10 @@ import textwrap
 from collections import deque
 import copy  # Import copy
 
+from helpers.quantum_espresso import (
+    is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
+)
+
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
@@ -142,7 +146,11 @@ except ImportError:
     exit()
 """
 
-    if "Fairchem" in actual_selected_model:
+    if is_qe_model(actual_selected_model, actual_model_size):
+        # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
+        calculator_setup_str = generate_qe_calculator_code(
+            get_active_qe_settings(), indent="")
+    elif "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
         calculator_setup_str = f"""
 print("Setting up Fairchem/UMA calculator...")
