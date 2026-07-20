@@ -1,7 +1,7 @@
 streamlit==1.57.0
 plotly
 pymatgen==2025.10.7
-ase==3.28.0
+ase==3.25.0 # 3.27.0 is not supported currently with MatterSim
 #phonopy==2.40.0
 phonopy==2.41.0
 py3Dmol==2.5.0
