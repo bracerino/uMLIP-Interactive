@@ -1380,6 +1380,35 @@ def create_elastic_data_export(elastic_results, structure_name):
         'mechanical_stability': elastic_results['mechanical_stability']
     }
 
+# Width of the blank gap drawn at each k-path discontinuity, as a fraction of
+# the total path length (0 ⇒ the two branches touch at a single merged tick).
+KPATH_BREAK_GAP_FRAC = 0.03
+
+_KPATH_GREEK_MAP = {
+    "GAMMA": "Γ", "G": "Γ", "SIGMA": "Σ", "DELTA": "Δ", "LAMBDA": "Λ",
+    "PI": "Π", "PHI": "Φ", "OMEGA": "Ω", "THETA": "Θ", "XI": "Ξ", "PSI": "Ψ",
+    "ETA": "Η", "MU": "Μ", "NU": "Ν",
+}
+
+
+def prettify_kpoint_label(raw):
+    """LaTeX-ish pymatgen k-point name → plain unicode.
+
+    pymatgen returns names like ``\\Gamma``, ``\\Sigma_1`` or ``Y_1``; turn
+    those into ``Γ``, ``Σ₁`` and ``Y₁`` for logs, axis ticks and exports.
+    """
+    name = str(raw).strip()
+    base, _, sub = name.partition("_")
+    base = base.lstrip("\\")
+    base = _KPATH_GREEK_MAP.get(base.upper(), base)
+    sub = sub.strip("{}")
+    if sub:
+        base += "".join(
+            "₀₁₂₃₄₅₆₇₈₉"[int(ch)] if ch.isdigit() else ch for ch in sub
+        )
+    return base
+
+
 def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, structure_name):
     try:
         log_queue.put(f"Starting Pymatgen+Phonopy phonon calculation for {structure_name}")
@@ -1536,6 +1565,12 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         ))
         manual_kpath = phonon_params.get('manual_kpath')
         use_auto_kpath = phonon_params.get('use_auto_kpath', True)
+        # (start, end) index ranges of each continuous stretch of `all_kpts`;
+        # filled by the manual and automatic branches, empty ⇒ one continuous path.
+        contiguous_chunks = []
+        # Chunk index of every entry in `unique_labels`, used to open a visible
+        # gap on the x-axis at each discontinuity (see KPATH_BREAK_GAP_FRAC).
+        unique_chunks = []
 
         # Manual k-path
         if manual_kpath and not use_auto_kpath:
@@ -1576,30 +1611,41 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
                     chunk_start_idx = len(all_kpts)
 
-                if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                cur_chunk = len(contiguous_chunks)
+
+                # Labels are merged ("X|Y") only when they sit at the same
+                # position of the SAME chunk. Across a discontinuity the two
+                # labels stay separate — the gap inserted below puts empty
+                # space between them.
+                if (unique_pos and unique_chunks[-1] == cur_chunk
+                        and abs(unique_pos[-1] - dist) < 1e-8):
                     if unique_labels[-1] != s_lbl:
                         unique_labels[-1] = unique_labels[-1] + "|" + s_lbl
                 else:
                     unique_labels.append(s_lbl)
                     unique_pos.append(dist)
+                    unique_chunks.append(cur_chunk)
 
                 for j in range(npoints_per_segment):
                     t = j / (npoints_per_segment - 1)
                     kpt = start + t * (end - start)
                     # Skip distance accumulation across a discontinuity (j=0 of
-                    # a new chunk) so the band-plot x-axis has no phantom gap.
+                    # a new chunk): the jump in reciprocal space is meaningless
+                    # as a path length; a fixed visual gap is added afterwards.
                     if all_kpts and not (is_discontinuity and j == 0):
                         dk = (kpt - all_kpts[-1]) @ rec_mat
                         dist += float(np.linalg.norm(dk))
                     all_kpts.append(kpt)
                     cumul_dist.append(dist)
 
-                if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                if (unique_pos and unique_chunks[-1] == cur_chunk
+                        and abs(unique_pos[-1] - dist) < 1e-8):
                     if unique_labels[-1] != e_lbl:
                         unique_labels[-1] = unique_labels[-1] + "|" + e_lbl
                 else:
                     unique_labels.append(e_lbl)
                     unique_pos.append(dist)
+                    unique_chunks.append(cur_chunk)
 
             contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
 
@@ -1657,75 +1703,130 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                 path_labels_raw = []
                 label_positions = []
 
-                for seg in path_segs:
+                # pymatgen returns the path as a list of *branches*. Consecutive
+                # branches are NOT connected in reciprocal space — they are the
+                # `|` in e.g. Γ-X-M-Γ-Z-R-A-Z|X-R|M-A. Each branch therefore
+                # becomes its own contiguous chunk: no distance is accumulated
+                # across the jump, band connection is broken there and the plot
+                # gets a clean break instead of a phantom straight line.
+                contiguous_chunks = []
+                chunk_start_idx = 0
+
+                _greek_label = prettify_kpoint_label
+                label_chunks = []
+
+                for br_idx, seg in enumerate(path_segs):
+                    if br_idx > 0:
+                        contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+                        chunk_start_idx = len(all_kpts)
                     for i in range(len(seg) - 1):
                         start = np.array(kpoints_dict[seg[i]], dtype=float)
                         end = np.array(kpoints_dict[seg[i + 1]], dtype=float)
                         for j in range(npoints_per_segment):
                             t = j / (npoints_per_segment - 1)
                             kpt = start + t * (end - start)
-                            all_kpts.append(kpt)
-                            if len(all_kpts) > 1:
-                                dk = (kpt - all_kpts[-2]) @ rec_std
+                            # First point of a new branch: keep `dist` frozen so
+                            # the discontinuity has zero width on the x-axis.
+                            is_chunk_head = (br_idx > 0 and i == 0 and j == 0)
+                            if all_kpts and not is_chunk_head:
+                                dk = (kpt - all_kpts[-1]) @ rec_std
                                 dist += float(np.linalg.norm(dk))
+                            all_kpts.append(kpt)
                             cumul_dist.append(dist)
                             if j == 0:
-                                lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
-                                if label_positions and abs(label_positions[-1] - dist) < 1e-8:
-                                    path_labels_raw[-1] = path_labels_raw[-1] + "|" + lbl
+                                lbl = _greek_label(seg[i])
+                                # Merge coincident labels only inside the same
+                                # branch; across a discontinuity they stay apart
+                                # so the gap below can separate them.
+                                if (label_positions and label_chunks[-1] == br_idx
+                                        and abs(label_positions[-1] - dist) < 1e-8):
+                                    if lbl not in path_labels_raw[-1].split("|"):
+                                        path_labels_raw[-1] = path_labels_raw[-1] + "|" + lbl
                                 else:
                                     path_labels_raw.append(lbl)
                                     label_positions.append(dist)
+                                    label_chunks.append(br_idx)
 
-                        lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
                         if i == len(seg) - 2:
+                            lbl = _greek_label(seg[-1])
                             path_labels_raw.append(lbl)
                             label_positions.append(dist)
+                            label_chunks.append(br_idx)
+
+                contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
 
                 seen_pos = set()
                 unique_labels = []
                 unique_pos = []
-                for lbl, pos in zip(path_labels_raw, label_positions):
-                    key = round(pos, 8)
+                unique_chunks = []
+                for lbl, pos, ch in zip(path_labels_raw, label_positions, label_chunks):
+                    key = (ch, round(pos, 8))
                     if key not in seen_pos:
                         seen_pos.add(key)
                         unique_labels.append(lbl)
                         unique_pos.append(pos)
+                        unique_chunks.append(ch)
 
                 log_queue.put(
                     f"  High-symmetry path: {' → '.join(unique_labels)}"
-                    f"  ({len(all_kpts)} k-points)"
+                    f"  ({len(all_kpts)} k-points, "
+                    f"{len(contiguous_chunks)} contiguous branch(es))"
                 )
 
             except Exception as path_error:
+                contiguous_chunks = []
                 log_queue.put(f"  ⚠️ High-symmetry path detection failed: {path_error}")
                 log_queue.put("  Using simple Γ–X–M–Γ fallback path")
                 npts = npoints_per_segment
-                all_kpts, dist = [], 0.0
-                segs = [([0, 0, 0], [0.5, 0, 0]), ([0.5, 0, 0], [0.5, 0.5, 0]),
-                        ([0.5, 0.5, 0], [0, 0, 0])]
-                for start, end in segs:
+                all_kpts, cumul_dist, dist = [], [], 0.0
+                unique_labels, unique_pos = ["Γ"], [0.0]
+                segs = [([0, 0, 0], [0.5, 0, 0], "X"),
+                        ([0.5, 0, 0], [0.5, 0.5, 0], "M"),
+                        ([0.5, 0.5, 0], [0, 0, 0], "Γ")]
+                for start, end, end_lbl in segs:
                     for j in range(npts):
                         t = j / (npts - 1)
                         kpt = [start[k] + t * (end[k] - start[k]) for k in range(3)]
-                        if j > 0:
+                        if all_kpts:
                             dk = np.array(kpt) - np.array(all_kpts[-1])
                             dist += float(np.linalg.norm(dk))
                         all_kpts.append(kpt)
-                unique_labels = ["Γ", "X", "M", "Γ"]
-                unique_pos = [0.0,
-                              float(npts - 1) * 0.5 / (npts - 1),
-                              float(2 * npts - 2) * 0.5 / (npts - 1),
-                              dist]
+                        cumul_dist.append(dist)
+                    unique_labels.append(end_lbl)
+                    unique_pos.append(dist)
 
 
         # Build the band paths from the contiguous chunks so that
         # is_band_connection=True connects bands *within* a continuous stretch
-        # but breaks them at every `|` discontinuity. The manual k-path branch
-        # fills `contiguous_chunks`; the automatic / fallback branches are a
-        # single continuous path.
-        if not (manual_kpath and not use_auto_kpath):
+        # but breaks them at every `|` discontinuity. Both the manual and the
+        # automatic k-path branches fill `contiguous_chunks` (the automatic one
+        # from pymatgen's path branches); the fallback path is continuous.
+        if not contiguous_chunks:
             contiguous_chunks = [(0, len(all_kpts))]
+
+        # ── Visible gap at every discontinuity ────────────────────────────────
+        # Each branch after the first is shifted right by a fixed fraction of
+        # the total path length, so the band plot shows blank space between
+        # e.g. …-Z and X-… instead of gluing the two branches at one tick.
+        # Only the plotting x-axis is affected — the q-points themselves and
+        # the band connection are untouched.
+        if len(contiguous_chunks) > 1 and cumul_dist:
+            _total_len = float(cumul_dist[-1])
+            _gap = KPATH_BREAK_GAP_FRAC * _total_len if _total_len > 0 else 0.0
+            if _gap > 0:
+                for _ci, (_s, _e) in enumerate(contiguous_chunks):
+                    if _ci == 0:
+                        continue
+                    _off = _ci * _gap
+                    for _i in range(_s, min(_e, len(cumul_dist))):
+                        cumul_dist[_i] += _off
+                if len(unique_chunks) == len(unique_pos):
+                    unique_pos = [p + unique_chunks[i] * _gap
+                                  for i, p in enumerate(unique_pos)]
+                log_queue.put(
+                    f"  Inserted {len(contiguous_chunks) - 1} discontinuity gap(s) "
+                    f"of {_gap:.4f} Å⁻¹ on the band-plot x-axis"
+                )
         bands = [all_kpts[s:e] for (s, e) in contiguous_chunks if e - s >= 2]
         if not bands:
             bands = [all_kpts]
@@ -6344,6 +6445,40 @@ with tab1:
                     "k-points per segment", min_value=10, max_value=500, value=101, step=10,
                     key="phonon_kpath_npoints")
 
+                # ── Body-centred tetragonal cell parameters ────────────────
+                # BCT high-symmetry coordinates are not constant: η (and ζ for
+                # BCT2) depend on c/a of the CONVENTIONAL cell, so the two
+                # BCT entries of the library below are rebuilt from these two
+                # numbers on every render. Seed them from the first loaded
+                # structure so the defaults are already correct.
+                if ("phonon_kpath_bct_a" not in st.session_state
+                        or "phonon_kpath_bct_c" not in st.session_state):
+                    _seed_a, _seed_c = 4.0, 6.0
+                    try:
+                        _structs = st.session_state.get("structures", {})
+                        if _structs:
+                            _s0 = next(iter(_structs.values()))
+                            if not hasattr(_s0, "lattice"):
+                                from pymatgen.io.ase import AseAtomsAdaptor
+                                _s0 = AseAtomsAdaptor().get_structure(_s0)
+                            from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+                            _lat = SpacegroupAnalyzer(
+                                _s0).get_conventional_standard_structure().lattice
+                            _seed_a, _seed_c = float(_lat.a), float(_lat.c)
+                    except Exception:
+                        pass
+                    st.session_state.setdefault("phonon_kpath_bct_a", _seed_a)
+                    st.session_state.setdefault("phonon_kpath_bct_c", _seed_c)
+
+                _bct_a = float(st.session_state.get("phonon_kpath_bct_a", 4.0)) or 4.0
+                _bct_c = float(st.session_state.get("phonon_kpath_bct_c", 6.0)) or 6.0
+                _bct_eta1 = (1.0 + _bct_c ** 2 / _bct_a ** 2) / 4.0
+                _bct_eta2 = (1.0 + _bct_a ** 2 / _bct_c ** 2) / 4.0
+                _bct_zeta = _bct_a ** 2 / (2.0 * _bct_c ** 2)
+
+                BCT1_SYSTEM = "Tetragonal I (BCT1, c < a)"
+                BCT2_SYSTEM = "Tetragonal I (BCT2, c > a)"
+
                 # ── Lattice-aware high-symmetry point library ──────────────
                 # Coordinates follow the Setyawan-Curtarolo (2010) convention.
                 # The same label means different points in different Bravais
@@ -6378,6 +6513,31 @@ with tab1:
                         "R": (0.0, 0.5, 0.5),
                         "A": (0.5, 0.5, 0.5),
                     },
+                    # BCT1 — body-centred tetragonal with c < a.
+                    # η = (1 + c²/a²)/4.  SC path:  Γ-X-M-Γ-Z-P-N-Z₁-M | X-P
+                    BCT1_SYSTEM: {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "M": (-0.5, 0.5, 0.5),
+                        "N": (0.0, 0.5, 0.0),
+                        "P": (0.25, 0.25, 0.25),
+                        "X": (0.0, 0.0, 0.5),
+                        "Z": (_bct_eta1, _bct_eta1, -_bct_eta1),
+                        "Z₁": (-_bct_eta1, 1.0 - _bct_eta1, _bct_eta1),
+                    },
+                    # BCT2 — body-centred tetragonal with c > a.
+                    # η = (1 + a²/c²)/4, ζ = a²/(2c²).
+                    # SC path:  Γ-X-Y-Σ-Γ-Z-Σ₁-N-P-Y₁-Z | X-P
+                    BCT2_SYSTEM: {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "N": (0.0, 0.5, 0.0),
+                        "P": (0.25, 0.25, 0.25),
+                        "Σ": (-_bct_eta2, _bct_eta2, _bct_eta2),
+                        "Σ₁": (_bct_eta2, 1.0 - _bct_eta2, -_bct_eta2),
+                        "X": (0.0, 0.0, 0.5),
+                        "Y": (-_bct_zeta, _bct_zeta, 0.5),
+                        "Y₁": (0.5, 0.5, -_bct_zeta),
+                        "Z": (0.5, 0.5, -0.5),
+                    },
                     "Orthorhombic P": {
                         "Γ": (0.0, 0.0, 0.0),
                         "X": (0.5, 0.0, 0.0),
@@ -6402,6 +6562,20 @@ with tab1:
                     },
                 }
                 CUSTOM_LABEL_SENTINEL = "Custom…"
+                AUTO_SYSTEM_LABEL = "🔍 From loaded structure (auto-detected)"
+
+                # Lattices whose Setyawan-Curtarolo coordinates depend on the
+                # cell parameters — body-centred tetragonal (P, Σ, Σ₁, Y, Y₁, …),
+                # C/F/I-centred orthorhombic, rhombohedral, monoclinic,
+                # triclinic — cannot be tabulated statically. For those, the
+                # point set is extracted from the loaded structure with
+                # pymatgen (button below the selector) and cached here.
+                _auto_pts = st.session_state.get("phonon_kpath_auto_points")
+                if _auto_pts:
+                    KPATH_BRAVAIS_LIBRARY[AUTO_SYSTEM_LABEL] = {
+                        str(lbl): tuple(float(c) for c in coords)
+                        for lbl, coords in _auto_pts.items()
+                    }
 
                 if "phonon_kpath_system" not in st.session_state:
                     st.session_state["phonon_kpath_system"] = "Tetragonal P"
@@ -6429,9 +6603,145 @@ with tab1:
                          "Same label → different coords across lattices "
                          "(e.g. tetragonal-P R = (0, ½, ½) ≠ cubic-P R = (½, ½, ½)).",
                 )
+                # ── Auto-detect the full point set from a loaded structure ────
+                _avail_structs = list(st.session_state.get("structures", {}).keys())
+
+                def _detect_kpoints_cb(struct_key):
+                    structs = st.session_state.get("structures", {})
+                    name = st.session_state.get(struct_key) or (
+                        next(iter(structs)) if structs else None
+                    )
+                    if not name or name not in structs:
+                        st.session_state["kpath_parse_msg"] = (
+                            "error", "No structure loaded — upload one first.")
+                        return
+                    try:
+                        from pymatgen.symmetry.bandstructure import HighSymmKpath
+                        from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+                        import warnings as _warnings
+
+                        struct = structs[name]
+                        if not hasattr(struct, "lattice"):
+                            from pymatgen.io.ase import AseAtomsAdaptor
+                            struct = AseAtomsAdaptor().get_structure(struct)
+
+                        sga = SpacegroupAnalyzer(struct)
+                        prim = sga.get_primitive_standard_structure()
+                        with _warnings.catch_warnings():
+                            _warnings.simplefilter("ignore")
+                            kp = HighSymmKpath(prim)
+
+                        pts = {
+                            prettify_kpoint_label(lbl): tuple(float(c) for c in coords)
+                            for lbl, coords in kp.kpath["kpoints"].items()
+                        }
+                        path_str = " | ".join(
+                            "-".join(prettify_kpoint_label(l) for l in branch)
+                            for branch in kp.kpath["path"]
+                        )
+                        st.session_state["phonon_kpath_auto_points"] = pts
+                        st.session_state["phonon_kpath_auto_path"] = path_str
+                        st.session_state["phonon_kpath_auto_info"] = (
+                            f"{name} — {sga.get_space_group_symbol()} "
+                            f"(#{sga.get_space_group_number()})"
+                        )
+                        st.session_state["phonon_kpath_system"] = AUTO_SYSTEM_LABEL
+                        for _k in [k for k in list(st.session_state.keys())
+                                   if k.startswith("kpath_w_")]:
+                            del st.session_state[_k]
+                        st.session_state["kpath_parse_msg"] = (
+                            "success",
+                            f"Loaded {len(pts)} high-symmetry point(s) from '{name}' "
+                            f"({sga.get_space_group_symbol()}). "
+                            f"Recommended path: {path_str}",
+                        )
+                    except Exception as exc:
+                        st.session_state["kpath_parse_msg"] = (
+                            "error", f"Could not detect high-symmetry points: {exc}")
+
+                _det_cols = st.columns([3, 2])
+                _struct_key = "kpath_detect_struct"
+                if _avail_structs:
+                    _det_cols[0].selectbox(
+                        "Structure for auto-detection",
+                        options=_avail_structs,
+                        key=_struct_key,
+                        label_visibility="collapsed",
+                    )
+                    _det_cols[1].button(
+                        "🔍 Detect points from structure", key="kpath_detect_btn",
+                        width='stretch', on_click=_detect_kpoints_cb, args=(_struct_key,),
+                        help="Run pymatgen's HighSymmKpath on the selected structure "
+                             "and load *all* of its high-symmetry labels — including "
+                             "the parameter-dependent ones (P, Σ₁, Y₁, N, …) that "
+                             "no static table can list, e.g. for body-centred "
+                             "tetragonal.",
+                    )
+                else:
+                    st.caption("_Load a structure to enable automatic "
+                               "high-symmetry-point detection._")
+
                 _cur_system = st.session_state["phonon_kpath_system"]
                 HIGH_SYMMETRY_POINTS = KPATH_BRAVAIS_LIBRARY[_cur_system]
                 LABEL_OPTIONS = list(HIGH_SYMMETRY_POINTS.keys()) + [CUSTOM_LABEL_SENTINEL]
+
+                if _cur_system == AUTO_SYSTEM_LABEL:
+                    _auto_info = st.session_state.get("phonon_kpath_auto_info", "")
+                    _auto_path = st.session_state.get("phonon_kpath_auto_path", "")
+                    st.caption(
+                        f"Points detected from **{_auto_info}** — recommended "
+                        f"path: `{_auto_path}` (`|` = discontinuity; type it as a "
+                        f"space in the path string below)."
+                    )
+
+                # ── BCT: cell-dependent η / ζ ─────────────────────────────────
+                if _cur_system in (BCT1_SYSTEM, BCT2_SYSTEM):
+                    def _on_bct_param_change():
+                        # New a/c ⇒ new η/ζ ⇒ stale coordinates in the segment
+                        # widgets; drop them so the editor re-reads the library.
+                        for _k in [k for k in list(st.session_state.keys())
+                                   if k.startswith("kpath_w_")]:
+                            del st.session_state[_k]
+
+                    _bct_cols = st.columns([1, 1, 2])
+                    _bct_cols[0].number_input(
+                        "a (Å) — conventional", min_value=0.1, max_value=100.0,
+                        step=0.1, format="%.4f", key="phonon_kpath_bct_a",
+                        on_change=_on_bct_param_change,
+                        help="In-plane lattice parameter of the CONVENTIONAL "
+                             "body-centred tetragonal cell (not the primitive one).",
+                    )
+                    _bct_cols[1].number_input(
+                        "c (Å) — conventional", min_value=0.1, max_value=100.0,
+                        step=0.1, format="%.4f", key="phonon_kpath_bct_c",
+                        on_change=_on_bct_param_change,
+                        help="Out-of-plane lattice parameter of the CONVENTIONAL "
+                             "body-centred tetragonal cell.",
+                    )
+                    if _cur_system == BCT1_SYSTEM:
+                        _bct_cols[2].markdown(
+                            f"η = (1 + c²/a²)/4 = **{_bct_eta1:.5f}**  \n"
+                            f"SC path: `Γ-X-M-Γ-Z-P-N-Z₁-M X-P`"
+                        )
+                    else:
+                        _bct_cols[2].markdown(
+                            f"η = (1 + a²/c²)/4 = **{_bct_eta2:.5f}**, "
+                            f"ζ = a²/(2c²) = **{_bct_zeta:.5f}**  \n"
+                            f"SC path: `Γ-X-Y-Σ-Γ-Z-Σ₁-N-P-Y₁-Z X-P`"
+                        )
+
+                    if _cur_system == BCT1_SYSTEM and _bct_c >= _bct_a:
+                        st.warning(
+                            f"c = {_bct_c:.3f} Å ≥ a = {_bct_a:.3f} Å — Setyawan-"
+                            f"Curtarolo assigns this cell to **BCT2**, which has a "
+                            f"different point set (Σ, Σ₁, Y, Y₁ instead of M, Z, Z₁)."
+                        )
+                    elif _cur_system == BCT2_SYSTEM and _bct_c <= _bct_a:
+                        st.warning(
+                            f"c = {_bct_c:.3f} Å ≤ a = {_bct_a:.3f} Å — Setyawan-"
+                            f"Curtarolo assigns this cell to **BCT1**, which has a "
+                            f"different point set (M, Z, Z₁ instead of Σ, Σ₁, Y, Y₁)."
+                        )
 
                 with st.expander(
                     f"📋 {_cur_system} — available high-symmetry points", expanded=False
@@ -6466,6 +6776,15 @@ with tab1:
                 _TET = KPATH_BRAVAIS_LIBRARY["Tetragonal P"]
                 _CUB = KPATH_BRAVAIS_LIBRARY["Cubic P (simple cubic)"]
                 _ORT = KPATH_BRAVAIS_LIBRARY["Orthorhombic P"]
+                _BC1 = KPATH_BRAVAIS_LIBRARY[BCT1_SYSTEM]
+                _BC2 = KPATH_BRAVAIS_LIBRARY[BCT2_SYSTEM]
+
+                def _seg_chain(pts, labels):
+                    """Segments along `labels`; a repeated-but-not-matching start
+                    (i.e. a new branch) is simply expressed by the next segment
+                    starting elsewhere, which the run code reads as a `|`."""
+                    return [_seg(a, pts[a], b, pts[b])
+                            for a, b in zip(labels[:-1], labels[1:])]
 
                 KPATH_PRESETS = {
                     "Γ→M→K→Γ  (Hexagonal — phonon.materialscloud.io)": {
@@ -6503,6 +6822,23 @@ with tab1:
                             _seg("Y", _ORT["Y"], "Γ", _ORT["Γ"]),
                             _seg("Γ", _ORT["Γ"], "Z", _ORT["Z"]),
                         ],
+                    },
+                    # Full Setyawan-Curtarolo BCT paths, including the trailing
+                    # X-P branch that sits behind a `|` discontinuity.
+                    "BCT1 full path  (Γ→X→M→Γ→Z→P→N→Z₁→M ∣ X→P, c < a)": {
+                        "system": BCT1_SYSTEM,
+                        "segments": (
+                            _seg_chain(_BC1, ["Γ", "X", "M", "Γ", "Z", "P", "N", "Z₁", "M"])
+                            + _seg_chain(_BC1, ["X", "P"])
+                        ),
+                    },
+                    "BCT2 full path  (Γ→X→Y→Σ→Γ→Z→Σ₁→N→P→Y₁→Z ∣ X→P, c > a)": {
+                        "system": BCT2_SYSTEM,
+                        "segments": (
+                            _seg_chain(_BC2, ["Γ", "X", "Y", "Σ", "Γ", "Z", "Σ₁",
+                                              "N", "P", "Y₁", "Z"])
+                            + _seg_chain(_BC2, ["X", "P"])
+                        ),
                     },
                 }
 
@@ -6590,13 +6926,18 @@ with tab1:
                     _clear_kpath_widget_keys()
 
                 st.write("**Load a preset path:**")
-                preset_cols = st.columns(len(KPATH_PRESETS))
-                for col, (label, preset) in zip(preset_cols, KPATH_PRESETS.items()):
-                    btn_label = label.split("(")[0].strip()
-                    col.button(
-                        btn_label, key=f"preset_{label[:20]}", width='stretch',
-                        on_click=_apply_preset_cb, args=(preset,),
-                    )
+                _preset_items = list(KPATH_PRESETS.items())
+                _per_row = 3
+                for _row_start in range(0, len(_preset_items), _per_row):
+                    _row = _preset_items[_row_start:_row_start + _per_row]
+                    preset_cols = st.columns(_per_row)
+                    for col, (label, preset) in zip(preset_cols, _row):
+                        btn_label = label.split("(")[0].strip()
+                        col.button(
+                            btn_label, key=f"preset_{label[:20]}", width='stretch',
+                            on_click=_apply_preset_cb, args=(preset,),
+                            help=label,
+                        )
 
                 # ── User-saved custom paths (persisted to CUSTOM_KPATHS_FILE) ─
                 # Reload from disk every render so paths saved in earlier runs
@@ -6716,6 +7057,22 @@ with tab1:
                 # where each whitespace-separated (or '|'-separated) group is a
                 # continuous sub-path, and labels within a group are joined by
                 # any of:  -  −  –  —  →  ->
+                def _norm_label(lbl):
+                    """Canonical form for matching typed labels against the
+                    library: Γ/G/Gamma → Γ, Σ1/Sigma_1/Σ₁ → Σ1, case-folded."""
+                    s = prettify_kpoint_label(lbl)
+                    s = s.translate(str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789"))
+                    return s.replace("_", "").replace(" ", "").upper()
+
+                def _resolve_label(lbl, hsp_dict):
+                    if lbl in hsp_dict:
+                        return lbl
+                    target = _norm_label(lbl)
+                    for key in hsp_dict:
+                        if _norm_label(key) == target:
+                            return key
+                    return None
+
                 def _parse_kpath_string(path_str, hsp_dict):
                     import re as _re
                     if not path_str or not path_str.strip():
@@ -6730,27 +7087,35 @@ with tab1:
                         if len(labels) < 2:
                             continue
                         for a, b in zip(labels[:-1], labels[1:]):
-                            if a not in hsp_dict:
+                            key_a = _resolve_label(a, hsp_dict)
+                            key_b = _resolve_label(b, hsp_dict)
+                            if key_a is None:
                                 unknown.append(a)
                                 continue
-                            if b not in hsp_dict:
+                            if key_b is None:
                                 unknown.append(b)
                                 continue
-                            sx, sy, sz = hsp_dict[a]
-                            ex, ey, ez = hsp_dict[b]
+                            sx, sy, sz = hsp_dict[key_a]
+                            ex, ey, ez = hsp_dict[key_b]
                             new_segs.append({
-                                "start_label": a,
+                                "start_label": key_a,
                                 "start_x": sx, "start_y": sy, "start_z": sz,
-                                "end_label": b,
+                                "end_label": key_b,
                                 "end_x": ex, "end_y": ey, "end_z": ez,
                             })
                     err = None
                     if unknown:
                         uniq = sorted(set(unknown))
                         err = (f"Unknown label(s) skipped: {uniq}. "
-                               f"Known labels: {list(hsp_dict.keys())}. "
-                               "Use the per-segment editor below to set "
-                               "non-standard points by picking 'Custom…'.")
+                               f"Known labels for {_cur_system}: "
+                               f"{list(hsp_dict.keys())}. "
+                               "Labels such as P, N, Σ₁ or Y₁ belong to "
+                               "parameter-dependent lattices (body-centred "
+                               "tetragonal, centred orthorhombic, rhombohedral, "
+                               "monoclinic) whose coordinates depend on the cell "
+                               "— press **🔍 Detect points from structure** above "
+                               "to load the exact set for your structure, or use "
+                               "the per-segment editor below with 'Custom…'.")
                     if not new_segs:
                         return [], err or "No valid segments parsed."
                     return new_segs, err

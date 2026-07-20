@@ -5706,6 +5706,10 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     use_auto_kpath          = {use_auto_kpath_str}
     manual_kpath_data       = {manual_kpath_repr}
     kpath_convention        = "{kpath_convention}"
+    # Blank space drawn at each k-path discontinuity, as a fraction of the
+    # total path length. Set to 0.0 to butt the two branches together on a
+    # single merged tick (e.g. "Z|X") instead of leaving a gap.
+    KPATH_BREAK_GAP_FRAC    = 0.03
     dos_mesh                = {dos_mesh_str}
     pre_relax               = {pre_relax_str}
     pre_relax_optimizer     = "{pre_relax_optimizer}"
@@ -5927,6 +5931,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 dist              = 0.0
                 unique_labels     = []
                 unique_pos        = []
+                # Chunk index of each label, used to open a visible gap on the
+                # x-axis at every discontinuity (see KPATH_BREAK_GAP_FRAC).
+                unique_chunks     = []
                 # Each contiguous sub-path is (start_idx, end_idx) in all_kpts.
                 # A new chunk starts wherever a segment's start_coords differ from
                 # the previous segment's end_coords (i.e., the user inserted a `|`).
@@ -5954,30 +5961,40 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                         contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
                         chunk_start_idx = len(all_kpts)
 
-                    if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                    cur_chunk = len(contiguous_chunks)
+
+                    # Merge coincident labels ("X|Y") only within one chunk;
+                    # across a discontinuity they stay separate so the gap
+                    # inserted below can put empty space between them.
+                    if (unique_pos and unique_chunks[-1] == cur_chunk
+                            and abs(unique_pos[-1] - dist) < 1e-8):
                         if unique_labels[-1] != s_lbl:
                             unique_labels[-1] += "|" + s_lbl
                     else:
                         unique_labels.append(s_lbl)
                         unique_pos.append(dist)
+                        unique_chunks.append(cur_chunk)
 
                     for j in range(npoints_per_segment):
                         t   = j / (npoints_per_segment - 1)
                         kpt = start + t * (end - start)
                         # Skip distance accumulation across a discontinuity (j=0
-                        # of a new chunk) so the band-plot x-axis has no phantom gap.
+                        # of a new chunk): the jump in reciprocal space is not a
+                        # path length. A fixed visual gap is added afterwards.
                         if all_kpts and not (is_discontinuity and j == 0):
                             dk    = (kpt - all_kpts[-1]) @ rec_mat
                             dist += float(np.linalg.norm(dk))
                         all_kpts.append(kpt)
                         cumul_dist.append(dist)
 
-                    if unique_pos and abs(unique_pos[-1] - dist) < 1e-8:
+                    if (unique_pos and unique_chunks[-1] == cur_chunk
+                            and abs(unique_pos[-1] - dist) < 1e-8):
                         if unique_labels[-1] != e_lbl:
                             unique_labels[-1] += "|" + e_lbl
                     else:
                         unique_labels.append(e_lbl)
                         unique_pos.append(dist)
+                        unique_chunks.append(cur_chunk)
 
                 contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
 
@@ -6020,6 +6037,28 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                         except TypeError:
                             kpath_obj = HighSymmKpath(pmg_std)
 
+                    # pymatgen names points LaTeX-style ("\\Gamma", "\\Sigma_1",
+                    # "Y_1"); render them as plain unicode for logs/ticks.
+                    _GREEK = {{
+                        "GAMMA": "Γ", "G": "Γ", "SIGMA": "Σ", "DELTA": "Δ",
+                        "LAMBDA": "Λ", "PI": "Π", "PHI": "Φ", "OMEGA": "Ω",
+                        "THETA": "Θ", "XI": "Ξ", "PSI": "Ψ", "ETA": "Η",
+                        "MU": "Μ", "NU": "Ν",
+                    }}
+
+                    def _pretty_label(raw):
+                        name = str(raw).strip()
+                        base, _, sub = name.partition("_")
+                        base = base.lstrip("\\\\")
+                        base = _GREEK.get(base.upper(), base)
+                        sub = sub.strip("{{}}")
+                        if sub:
+                            base += "".join(
+                                "₀₁₂₃₄₅₆₇₈₉"[int(ch)] if ch.isdigit() else ch
+                                for ch in sub
+                            )
+                        return base
+
                     path_segs    = kpath_obj.kpath["path"]
                     kpoints_dict = kpath_obj.kpath["kpoints"]
                     pmg_cell     = np.array(pmg_std.lattice.matrix)
@@ -6029,43 +6068,74 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     dist            = 0.0
                     path_labels_raw = []
                     label_positions = []
+                    # pymatgen returns the path as a list of *branches*; consecutive
+                    # branches are not connected in reciprocal space (they are the
+                    # `|` in e.g. Γ-X-M-Γ-Z-R-A-Z|X-R|M-A). Each branch is its own
+                    # contiguous chunk: no distance accumulates across the jump,
+                    # band connection breaks there and the plot gets a clean break.
+                    contiguous_chunks = []
+                    chunk_start_idx   = 0
+                    label_chunks      = []
 
-                    for seg in path_segs:
+                    for br_idx, seg in enumerate(path_segs):
+                        if br_idx > 0:
+                            contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
+                            chunk_start_idx = len(all_kpts)
                         for i in range(len(seg) - 1):
                             start = np.array(kpoints_dict[seg[i]],     dtype=float)
                             end   = np.array(kpoints_dict[seg[i + 1]], dtype=float)
                             for j in range(npoints_per_segment):
                                 t   = j / (npoints_per_segment - 1)
                                 kpt = start + t * (end - start)
-                                all_kpts.append(kpt)
-                                if len(all_kpts) > 1:
-                                    dk    = (kpt - all_kpts[-2]) @ rec_std
+                                # First point of a new branch: freeze `dist` so the
+                                # discontinuity has zero width on the x-axis.
+                                is_chunk_head = (br_idx > 0 and i == 0 and j == 0)
+                                if all_kpts and not is_chunk_head:
+                                    dk    = (kpt - all_kpts[-1]) @ rec_std
                                     dist += float(np.linalg.norm(dk))
+                                all_kpts.append(kpt)
                                 cumul_dist.append(dist)
                                 if j == 0:
-                                    lbl = "Γ" if seg[i].upper() in ("GAMMA", "G") else seg[i]
-                                    if label_positions and abs(label_positions[-1] - dist) < 1e-8:
-                                        path_labels_raw[-1] += "|" + lbl
+                                    lbl = _pretty_label(seg[i])
+                                    # Merge coincident labels only inside one
+                                    # branch; across a discontinuity they stay
+                                    # apart so the gap below separates them.
+                                    if (label_positions and label_chunks[-1] == br_idx
+                                            and abs(label_positions[-1] - dist) < 1e-8):
+                                        if lbl not in path_labels_raw[-1].split("|"):
+                                            path_labels_raw[-1] += "|" + lbl
                                     else:
                                         path_labels_raw.append(lbl)
                                         label_positions.append(dist)
-                            lbl = "Γ" if seg[-1].upper() in ("GAMMA", "G") else seg[-1]
+                                        label_chunks.append(br_idx)
                             if i == len(seg) - 2:
+                                lbl = _pretty_label(seg[-1])
                                 path_labels_raw.append(lbl)
                                 label_positions.append(dist)
+                                label_chunks.append(br_idx)
+
+                    contiguous_chunks.append((chunk_start_idx, len(all_kpts)))
 
                     seen_pos      = set()
                     unique_labels = []
                     unique_pos    = []
-                    for lbl, pos in zip(path_labels_raw, label_positions):
-                        key = round(pos, 8)
+                    unique_chunks = []
+                    for lbl, pos, ch in zip(path_labels_raw, label_positions, label_chunks):
+                        key = (ch, round(pos, 8))
                         if key not in seen_pos:
                             seen_pos.add(key)
                             unique_labels.append(lbl)
                             unique_pos.append(pos)
+                            unique_chunks.append(ch)
 
-                    log(f"  High-symmetry path: {{' → '.join(unique_labels)}}  ({{len(all_kpts)}} k-points)")
-                    bands = [all_kpts]
+                    log(f"  High-symmetry path: {{' → '.join(unique_labels)}}  "
+                        f"({{len(all_kpts)}} k-points, "
+                        f"{{len(contiguous_chunks)}} contiguous branch(es))")
+                    # One band path per branch so is_band_connection=True does not
+                    # connect bands across a `|`.
+                    bands = [all_kpts[s:e] for (s, e) in contiguous_chunks if e - s >= 2]
+                    if not bands:
+                        bands = [all_kpts]
 
                 except Exception as kpath_err:
                     log(f"  ⚠️ k-path detection failed: {{kpath_err}} – using Γ–X–M–Γ fallback")
@@ -6089,7 +6159,30 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                                      cumul_dist[npts - 1],
                                      cumul_dist[2 * npts - 2],
                                      cumul_dist[-1]]
+                    unique_chunks     = [0, 0, 0, 0]
+                    contiguous_chunks = [(0, len(all_kpts))]
                     bands = [all_kpts]
+
+            # ── Visible gap at every discontinuity ────────────────────────
+            # Shift each branch after the first to the right by a fixed
+            # fraction of the total path length, so the plot shows blank
+            # space between e.g. …-Z and X-… instead of gluing both branches
+            # onto one tick. Only the plotting x-axis is affected — the
+            # q-points and the band connection are untouched.
+            if len(contiguous_chunks) > 1 and cumul_dist:
+                _total_len = float(cumul_dist[-1])
+                _gap = KPATH_BREAK_GAP_FRAC * _total_len if _total_len > 0 else 0.0
+                if _gap > 0:
+                    for _ci, (_s, _e) in enumerate(contiguous_chunks):
+                        if _ci == 0:
+                            continue
+                        for _i in range(_s, min(_e, len(cumul_dist))):
+                            cumul_dist[_i] += _ci * _gap
+                    if len(unique_chunks) == len(unique_pos):
+                        unique_pos = [p + unique_chunks[_i] * _gap
+                                      for _i, p in enumerate(unique_pos)]
+                    log(f"  Inserted {{len(contiguous_chunks) - 1}} discontinuity "
+                        f"gap(s) of {{_gap:.4f}} on the band-plot x-axis")
 
             phonon.run_band_structure(bands,
                                       is_band_connection=True,
