@@ -510,9 +510,21 @@ def _phonon(p):
         lines += [
             "",
             f"from ase.optimize import {pre_relax_opt}",
+        ]
+        if p.get('pre_relax_fix_symmetry', False):
+            _symprec = float(p.get('pre_relax_symprec', 1e-2))
+            lines += [
+                "from ase.constraints import FixSymmetry",
+                f"atoms.set_constraint(FixSymmetry(atoms, symprec={_symprec:g}))",
+            ]
+        lines += [
             f"pre_opt = {pre_relax_opt}(atoms, logfile=None)",
             f"pre_opt.run(fmax={pre_relax_fmax}, steps={pre_relax_steps})",
         ]
+        if p.get('pre_relax_fix_symmetry', False):
+            lines += [
+                "atoms.set_constraint()   # release before generating displacements",
+            ]
 
     lines += ["", "pmg = AseAtomsAdaptor().get_structure(atoms)"]
 

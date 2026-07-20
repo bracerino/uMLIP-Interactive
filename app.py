@@ -1443,12 +1443,61 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
 
                 temp_atoms = atoms.copy()
                 temp_atoms.calc = calculator
+
+                # Optionally freeze the space group for the duration of the
+                # pre-relaxation. The constraint is stripped again below so that
+                # phonopy sees a plain structure and does its own symmetry analysis.
+                _prev_constraints = list(temp_atoms.constraints) if temp_atoms.constraints else []
+                _fix_sym = bool(phonon_params.get('pre_relax_fix_symmetry', False))
+                if _fix_sym:
+                    try:
+                        from ase.constraints import FixSymmetry
+                        from ase.spacegroup.symmetrize import check_symmetry
+                        _symprec = float(phonon_params.get('pre_relax_symprec', 1e-2))
+                        _spg = check_symmetry(temp_atoms, symprec=_symprec, verbose=False)
+                        temp_atoms.set_constraint(
+                            _prev_constraints + [FixSymmetry(temp_atoms, symprec=_symprec)]
+                        )
+                        log_queue.put(
+                            f"  🔷 FixSymmetry applied for pre-relax — holding "
+                            f"{spg_label(_spg)} at symprec={_symprec:g} Å")
+                    except ImportError:
+                        _fix_sym = False
+                        log_queue.put("  ⚠️ FixSymmetry not available — pre-relaxing without it")
+                    except Exception as _sym_err:
+                        _fix_sym = False
+                        log_queue.put(f"  ⚠️ FixSymmetry failed ({_sym_err}) — pre-relaxing without it")
+
                 lattice_mode = phonon_params.get('pre_relax_lattice_mode', 'none')
+                if _fix_sym and lattice_mode == 'lengths':
+                    # FixAnglesCellFilter sets the cell with scale_atoms=False and
+                    # never calls FixSymmetry.adjust_cell, which breaks the symmetry
+                    # on the first step. The space group already constrains the
+                    # angles, so relax the full cell instead.
+                    lattice_mode = 'full'
+                    log_queue.put("  (fix-angles mode is redundant under FixSymmetry — "
+                                  "relaxing the full cell, symmetry still held)")
                 relax_target, relax_desc = build_relax_target(temp_atoms, lattice_mode)
                 log_queue.put(f"  Pre-relax target: {relax_desc}")
                 opt = FIRE(relax_target, logfile=None) if opt_name == 'FIRE'\
                       else LBFGS(relax_target, logfile=None)
                 opt.run(fmax=fmax_crit, steps=max_steps)
+
+                if _fix_sym:
+                    # Drop FixSymmetry before the displacement/force stage: leaving it
+                    # attached would symmetrise the forces on the displaced supercells.
+                    temp_atoms.set_constraint(_prev_constraints)
+                    try:
+                        from ase.spacegroup.symmetrize import check_symmetry
+                        _spg_after = check_symmetry(
+                            temp_atoms,
+                            symprec=float(phonon_params.get('pre_relax_symprec', 1e-2)),
+                            verbose=False)
+                        log_queue.put(
+                            f"  🔷 Space group after pre-relax: "
+                            f"{spg_label(_spg_after)} — constraint released")
+                    except Exception:
+                        pass
 
                 atoms = temp_atoms
                 energy = atoms.get_potential_energy()
@@ -2953,6 +3002,19 @@ LATTICE_OPT_LABELS = {
     "Atoms + lattice parameters (a, b, c; fix angles)": "lengths",
     "Atoms + full lattice (lengths + angles)": "full",
 }
+
+
+def spg_label(dataset):
+    """'Fm-3m (#225)' from an ASE/spglib symmetry dataset.
+
+    Recent spglib returns a ``SpglibDataset`` whose dict interface is
+    deprecated; older versions returned a plain dict. Handle both.
+    """
+    sym = getattr(dataset, "international", None)
+    num = getattr(dataset, "number", None)
+    if sym is None and hasattr(dataset, "get"):
+        sym, num = dataset.get("international"), dataset.get("number")
+    return f"{sym or 'unknown'} (#{num if num is not None else '?'})"
 
 
 def build_relax_target(atoms, lattice_mode):
@@ -7329,27 +7391,111 @@ with tab1:
                         min_value=1, max_value=2000, value=_pg('pre_relax_steps', 100), step=10,
                         help="Hard cap on optimisation steps — convergence may not be reached")
 
-                _lat_opts = list(LATTICE_OPT_LABELS.keys())
-                _saved_lat_mode = _phonon_defaults.get('pre_relax_lattice_mode', 'none')
-                _saved_lat_idx = next(
-                    (i for i, lbl in enumerate(_lat_opts)
-                     if LATTICE_OPT_LABELS[lbl] == _saved_lat_mode), 0)
-                _phonon_lat_label = st.selectbox(
-                    "What to optimise",
-                    options=_lat_opts,
-                    index=_saved_lat_idx,
-                    help="Atomic positions only keeps the cell fixed. The lattice "
-                         "options also relax the cell — either the a, b, c lengths "
-                         "(angles fixed) or the full cell including angles.",
-                    key="phonon_pre_relax_lattice",
-                )
-                phonon_params["pre_relax_lattice_mode"] = LATTICE_OPT_LABELS[_phonon_lat_label]
+                col_sym1, col_sym2 = st.columns([2, 1])
+                with col_sym1:
+                    _fix_sym = st.checkbox(
+                        "Fix symmetry during pre-optimisation (ASE FixSymmetry)",
+                        value=_pg('pre_relax_fix_symmetry', False),
+                        help="Applies ASE's `FixSymmetry` constraint so the space "
+                             "group detected in the input structure is preserved "
+                             "while the pre-relaxation runs. Useful when a nominally "
+                             "high-symmetry cell would otherwise drift into a "
+                             "slightly distorted one, which shows up as spurious "
+                             "splittings or small imaginary modes in the phonon "
+                             "spectrum.\n\n"
+                             "The constraint is removed again before the "
+                             "displacements are generated, so phonopy still sees a "
+                             "plain structure and determines the symmetry itself.")
+                    phonon_params["pre_relax_fix_symmetry"] = _fix_sym
+                with col_sym2:
+                    phonon_params["pre_relax_symprec"] = st.number_input(
+                        "Symmetry tolerance (Å)",
+                        min_value=1e-6, max_value=1.0,
+                        value=_pg('pre_relax_symprec', 1e-2),
+                        step=1e-3, format="%.6f",
+                        disabled=not _fix_sym,
+                        help="Distance tolerance used to detect the space group "
+                             "that gets frozen (`FixSymmetry(atoms, symprec=…)`).\n\n"
+                             "ASE's default is 0.01 Å — deliberately looser than "
+                             "phonopy's 1e-5 Å — so that experimental or "
+                             "slightly-off structures are still recognised as "
+                             "symmetric. Increase to ~0.1 Å for noisy input "
+                             "geometries; decrease only if a too-high symmetry is "
+                             "being detected and locked in.")
+
+                if _fix_sym:
+                    # With FixSymmetry active the cell shape is already restricted to
+                    # whatever the space group allows, so a separate "fix angles" mode
+                    # is meaningless. Offer only positions-only or full relaxation, and
+                    # use the standard cell filter (FixAnglesCellFilter bypasses
+                    # FixSymmetry.adjust_cell and silently breaks the symmetry).
+                    _SYM_LAT_LABELS = {
+                        "Atomic positions only (symmetry preserved)": "none",
+                        "Atoms + lattice parameters (symmetry preserved)": "full",
+                    }
+                    _sym_opts = list(_SYM_LAT_LABELS.keys())
+                    _saved_sym_mode = _phonon_defaults.get('pre_relax_lattice_mode', 'none')
+                    _sym_idx = 1 if _saved_sym_mode == "full" else 0
+                    _sym_lat_label = st.selectbox(
+                        "What to optimise",
+                        options=_sym_opts,
+                        index=_sym_idx,
+                        help="Both options hold the detected space group fixed.\n\n"
+                             "• **Atomic positions only** — the cell is untouched; "
+                             "only the free Wyckoff parameters relax.\n\n"
+                             "• **Atoms + lattice parameters** — the cell relaxes too, "
+                             "but only in the ways the space group permits (e.g. for "
+                             "a tetragonal cell a and b stay equal and all angles stay "
+                             "at 90° automatically).\n\n"
+                             "There is no separate 'fix angles' choice here: the "
+                             "symmetry constraint already fixes every angle the space "
+                             "group requires to be fixed.",
+                        key="phonon_pre_relax_lattice_sym",
+                    )
+                    phonon_params["pre_relax_lattice_mode"] = _SYM_LAT_LABELS[_sym_lat_label]
+                else:
+                    _lat_opts = list(LATTICE_OPT_LABELS.keys())
+                    _saved_lat_mode = _phonon_defaults.get('pre_relax_lattice_mode', 'none')
+                    _saved_lat_idx = next(
+                        (i for i, lbl in enumerate(_lat_opts)
+                         if LATTICE_OPT_LABELS[lbl] == _saved_lat_mode), 0)
+                    _phonon_lat_label = st.selectbox(
+                        "What to optimise",
+                        options=_lat_opts,
+                        index=_saved_lat_idx,
+                        help="Atomic positions only keeps the cell fixed. The lattice "
+                             "options also relax the cell — either the a, b, c lengths "
+                             "(angles fixed) or the full cell including angles.",
+                        key="phonon_pre_relax_lattice",
+                    )
+                    phonon_params["pre_relax_lattice_mode"] = LATTICE_OPT_LABELS[_phonon_lat_label]
 
                 if (phonon_params["pre_relax_lattice_mode"] != "none"
                         and not CELL_OPT_AVAILABLE):
                     st.warning(
                         "⚠️ Cell-optimisation filters are unavailable in this ASE "
                         "install — only atomic positions will be relaxed.")
+
+                if _fix_sym:
+                    _sym_struct = None
+                    try:
+                        _structs = st.session_state.get("structures", {})
+                        if _structs:
+                            _sym_atoms = next(iter(_structs.values()))
+                            from ase.spacegroup.symmetrize import check_symmetry as _chk
+                            if not hasattr(_sym_atoms, "get_positions"):
+                                from pymatgen.io.ase import AseAtomsAdaptor
+                                _sym_atoms = AseAtomsAdaptor().get_atoms(_sym_atoms)
+                            _sym_struct = spg_label(_chk(
+                                _sym_atoms,
+                                symprec=float(phonon_params["pre_relax_symprec"]),
+                                verbose=False))
+                    except Exception:
+                        _sym_struct = None
+                    if _sym_struct:
+                        st.caption(f"At this tolerance the first loaded structure is "
+                                   f"detected as **{_sym_struct}** — this is what "
+                                   f"would be held fixed.")
 
 
             st.write("### ⚖️ Stability tolerance")
@@ -7422,7 +7568,8 @@ with tab1:
                 'auto_supercell', 'target_supercell_length', 'displacement_distance',
                 'temperature', 'use_auto_kpath', 'npoints_per_segment', 'kpath_convention',
                 'plot_freq_unit', 'pre_relax', 'pre_relax_optimizer', 'pre_relax_fmax',
-                'pre_relax_steps', 'pre_relax_lattice_mode', 'imaginary_mode_tol_mev',
+                'pre_relax_steps', 'pre_relax_lattice_mode',
+                'pre_relax_fix_symmetry', 'pre_relax_symprec', 'imaginary_mode_tol_mev',
                 'calc_gamma_irreps',
             ]
             if st.button("💾 Save Phonon Settings as Default", key="save_phonon_defaults"):

@@ -5600,6 +5600,8 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_fmax      = phonon_params.get('pre_relax_fmax', 0.01)
     pre_relax_steps     = phonon_params.get('pre_relax_steps', 100)
     pre_relax_lattice   = phonon_params.get('pre_relax_lattice_mode', 'none')
+    pre_relax_fix_sym   = bool(phonon_params.get('pre_relax_fix_symmetry', False))
+    pre_relax_symprec   = float(phonon_params.get('pre_relax_symprec', 1e-2))
     imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
                           -phonon_params.get('imaginary_freq_threshold', 0.1))
     calc_gamma_irreps   = bool(phonon_params.get('calc_gamma_irreps', False))
@@ -5716,6 +5718,8 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_fmax          = {pre_relax_fmax}
     pre_relax_steps         = {pre_relax_steps}
     pre_relax_lattice       = "{pre_relax_lattice}"   # 'none' | 'lengths' | 'full'
+    pre_relax_fix_symmetry  = {pre_relax_fix_sym!r}   # hold the space group while pre-relaxing
+    pre_relax_symprec       = {pre_relax_symprec!r}   # tolerance (Å) for detecting that space group
     imaginary_tol_mev       = {imag_tol_mev}
     imaginary_tol_thz       = imaginary_tol_mev / 4.136
     calc_gamma_irreps       = {calc_gamma_irreps!r}
@@ -5758,13 +5762,58 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     f"fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)...")
                 pre_atoms = atoms.copy()
                 pre_atoms.calc = calculator
-                if pre_relax_lattice == "lengths":
+
+                # Optionally hold the space group fixed while pre-relaxing. The
+                # constraint is released again afterwards so that phonopy sees a
+                # plain structure and runs its own symmetry analysis, and so the
+                # forces on the displaced supercells are not symmetrised.
+                def _spg_label(_ds):
+                    # Recent spglib returns a SpglibDataset (dict interface
+                    # deprecated); older versions returned a plain dict.
+                    _sym = getattr(_ds, "international", None)
+                    _num = getattr(_ds, "number", None)
+                    if _sym is None and hasattr(_ds, "get"):
+                        _sym, _num = _ds.get("international"), _ds.get("number")
+                    return f"{{_sym or 'unknown'}} (#{{_num if _num is not None else '?'}})"
+
+                _pre_constraints = list(pre_atoms.constraints) if pre_atoms.constraints else []
+                _pre_fix_sym = pre_relax_fix_symmetry
+                if _pre_fix_sym:
+                    try:
+                        from ase.constraints import FixSymmetry
+                        from ase.spacegroup.symmetrize import check_symmetry
+                        _spg = check_symmetry(pre_atoms, symprec=pre_relax_symprec, verbose=False)
+                        pre_atoms.set_constraint(
+                            _pre_constraints + [FixSymmetry(pre_atoms, symprec=pre_relax_symprec)]
+                        )
+                        log(f"  🔷 FixSymmetry applied — holding "
+                            f"{{_spg_label(_spg)}} at symprec={{pre_relax_symprec:g}} Å")
+                    except ImportError:
+                        _pre_fix_sym = False
+                        log("  ⚠️ FixSymmetry not available — pre-relaxing without it")
+                    except Exception as _sym_err:
+                        _pre_fix_sym = False
+                        log(f"  ⚠️ FixSymmetry failed ({{_sym_err}}) — pre-relaxing without it")
+
+                _pre_lattice = pre_relax_lattice
+                if _pre_fix_sym and _pre_lattice == "lengths":
+                    # FixAnglesCellFilter sets the cell with scale_atoms=False and
+                    # never routes through FixSymmetry.adjust_cell, which breaks the
+                    # symmetry on the first step. The space group already fixes the
+                    # angles, so relax the full cell instead.
+                    _pre_lattice = "full"
+                    log("  (fix-angles mode is redundant under FixSymmetry — "
+                        "relaxing the full cell, symmetry still held)")
+
+                if _pre_lattice == "lengths":
                     relax_target = FixAnglesCellFilter(
                         pre_atoms, axis_mask=(True, True, True))
                     log("  Relaxing atoms + lattice lengths (a, b, c; angles fixed)")
-                elif pre_relax_lattice == "full":
+                elif _pre_lattice == "full":
                     relax_target = FrechetCellFilter(pre_atoms)
-                    log("  Relaxing atoms + full lattice (lengths + angles)")
+                    log("  Relaxing atoms + full lattice"
+                        + (" (shape restricted by the space group)" if _pre_fix_sym
+                           else " (lengths + angles)"))
                 else:
                     relax_target = pre_atoms
                 if pre_relax_optimizer == "FIRE":
@@ -5831,6 +5880,18 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
 
                 pre_opt.attach(_log_pre_relax_step, interval=1)
                 pre_opt.run(fmax=pre_relax_fmax, steps=pre_relax_steps)
+
+                if _pre_fix_sym:
+                    pre_atoms.set_constraint(_pre_constraints)
+                    try:
+                        from ase.spacegroup.symmetrize import check_symmetry
+                        _spg_after = check_symmetry(pre_atoms, symprec=pre_relax_symprec,
+                                                    verbose=False)
+                        log(f"  🔷 Space group after pre-relax: "
+                            f"{{_spg_label(_spg_after)}} — constraint released")
+                    except Exception:
+                        pass
+
                 atoms = pre_atoms
                 log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
                     f"F_max={{np.max(np.linalg.norm(atoms.get_forces(), axis=1)):.4f}} eV/Å")
