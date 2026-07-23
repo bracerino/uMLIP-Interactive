@@ -5,7 +5,7 @@ st.set_page_config(page_title="MLIP-Interactive: Compute properties with univers
 
 import os
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -435,6 +435,44 @@ def save_default_settings(settings):
         return True
     except:
         return False
+
+
+PAGEVIEWS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pageviews.json")
+
+
+def record_and_get_pageviews():
+    """Count one page view per user session and return daily view statistics.
+
+    Views are stored in a small JSON file keyed by date. Each browser session is
+    counted only once (tracked via st.session_state). Note: on Streamlit Community
+    Cloud the filesystem is ephemeral, so counts reset when the app reboots.
+    """
+    today = date.today().isoformat()
+
+    try:
+        with open(PAGEVIEWS_FILE, "r") as f:
+            counts = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        counts = {}
+
+    if not st.session_state.get("_pageview_counted", False):
+        counts[today] = counts.get(today, 0) + 1
+        try:
+            with open(PAGEVIEWS_FILE, "w") as f:
+                json.dump(counts, f)
+            st.session_state["_pageview_counted"] = True
+        except OSError:
+            pass
+
+    today_views = counts.get(today, 0)
+    # Show up to the three most recent finished days (dates before today) that
+    # have recorded views. If there are none yet, nothing extra is shown.
+    finished = sorted(d for d in counts if d < today)[-3:]
+    previous_days = [
+        (f"{date.fromisoformat(d).day}.{date.fromisoformat(d).month}", counts[d])
+        for d in finished
+    ]
+    return today_views, previous_days
 
 if 'core_preview_code' not in st.session_state:
     st.session_state.core_preview_code = None
@@ -5346,6 +5384,21 @@ with st.sidebar:
                 st.toast("✅ All settings saved as default!")
             else:
                 st.toast("❌ Failed to save settings")
+
+    # Page-view counter, online demo only: locally there is a single user, so
+    # the number would be meaningless. Never let a counter problem break the
+    # sidebar.
+    if ONLINE_MODE:
+        try:
+            today_views, previous_days = record_and_get_pageviews()
+            st.markdown("---")
+            caption = f"📈 Page views today: **{today_views}**"
+            if previous_days:
+                caption += " (" + ", ".join(
+                    f"{day} - **{views}**" for day, views in previous_days) + ")"
+            st.caption(caption + ".")
+        except Exception:
+            pass
 css = '''
 <style>
 .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
