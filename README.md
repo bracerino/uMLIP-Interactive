@@ -38,7 +38,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 ### Currently supported uMLIPs
 - [MACE](https://github.com/ACEsuit/mace)  
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
-- [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
+- [SevenNet](https://github.com/MDIL-SNU/SevenNet) (including [SevenNet-Nano](https://sevennet.readthedocs.io/en/latest/user_guide/pretrained.html), the lightweight 105k-parameter model distilled from SevenNet-Omni, in its 4.5 / 5.0 / 5.5 / 6.0 Å cutoff variants)  
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  
 - [MatterSim](https://github.com/microsoft/mattersim)
 - [Nequix](https://github.com/atomicarchitects/nequix)

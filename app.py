@@ -2564,6 +2564,14 @@ MODEL_FAMILIES = {
         "CHGNet-0.2.0 (Legacy Universal)": "chgnet-0.2.0",
     },
     "SevenNet": {
+        # --- Nano: 105k-parameter distillation of the Omni "mpa" task. Four
+        # single-task checkpoints that differ only in the radial cutoff, so the
+        # cutoff is chosen through the keyword and there is no modal argument.
+        # A larger cutoff is more accurate but slower.
+        "SevenNet-Nano 5.5 Å (Lightweight, distilled from Omni mpa) ⭐": "7net-nano-5.5",
+        "SevenNet-Nano 4.5 Å (Lightweight, fastest)": "7net-nano-4.5",
+        "SevenNet-Nano 5.0 Å (Lightweight)": "7net-nano-5.0",
+        "SevenNet-Nano 6.0 Å (Lightweight, largest cutoff)": "7net-nano-6.0",
         "SevenNet-0": "7net-0",
         "SevenNet-MF-OMPA (MPA Modal)": "7net-mf-ompa-mpa",
         "SevenNet-MF-OMPA (OMat24 Modal)": "7net-mf-ompa-omat24",
@@ -2691,8 +2699,14 @@ FAMILY_ENV_SETUP = {
         "note": "chgnet on torch 2.8.",
     },
     "SevenNet": {
-        "pip": f"pip install torch==2.8.0 sevenn==0.13.0 {_CORE_SCI}",
-        "note": "sevenn on torch 2.8.",
+        # SevenNet-Nano only exists on the development branch (0.13.1.dev); the
+        # 0.13.0 release on PyPI does not know the 7net-nano-* keywords, so
+        # install sevenn straight from the GitHub main branch.
+        "pip": (
+            f"pip install torch==2.8.0 "
+            f"\"sevenn @ git+https://github.com/MDIL-SNU/SevenNet.git@main\" {_CORE_SCI}"
+        ),
+        "note": "sevenn from the GitHub main branch on torch 2.8 (SevenNet-Nano is not in the 0.13.0 release).",
     },
     "ORB": {
         "pip": (
@@ -4893,7 +4907,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.10.0 · 7/18/2026
+            v0.10.1 · 7/23/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -7572,7 +7586,8 @@ with tab1:
                 'pre_relax_fix_symmetry', 'pre_relax_symprec', 'imaginary_mode_tol_mev',
                 'calc_gamma_irreps',
             ]
-            if st.button("💾 Save Phonon Settings as Default", key="save_phonon_defaults"):
+            if st.button("💾 Save Phonon Settings as Default", key="save_phonon_defaults",
+                         disabled=ONLINE_MODE):
                 persisted = {k: phonon_params[k] for k in _PHONON_PERSIST_KEYS if k in phonon_params}
                 st.session_state.default_settings['phonon_calculation'] = persisted
                 if save_default_settings(st.session_state.default_settings):

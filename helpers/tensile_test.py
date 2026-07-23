@@ -10,9 +10,13 @@ from ase import units
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
+import os
 from datetime import datetime
 import time
 from collections import deque
+
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
 # Optional ensembles shared with the Molecular Dynamics panel. These are guarded
 # so the tensile UI only offers ensembles that the installed ASE version provides.
@@ -505,7 +509,8 @@ def setup_tensile_test_ui(default_settings=None, save_settings_function=None):
             symmetric_pull = gm_pull.startswith("Symmetric")
 
     # --- Save Button Logic ---
-    if st.button("💾 Save as Default Tensile Parameters", key="save_tensile_defaults"):
+    if st.button("💾 Save as Default Tensile Parameters", key="save_tensile_defaults",
+                 disabled=ONLINE_MODE):
         new_tensile_settings = {
             'strain_direction_index': strain_direction_index,
             'strain_rate': strain_rate,

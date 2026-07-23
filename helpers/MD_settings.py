@@ -9,6 +9,9 @@ import time
 import streamlit as st
 import os
 
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
+
 # Import all NPT implementations
 NPT_BERENDSEN_AVAILABLE = True
 
@@ -553,7 +556,8 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
     st.info(f"**Simulation time:** {total_time_fs:.0f} fs = {total_time_ps:.2f} ps")
 
     if default_settings is not None and save_settings_function is not None:
-        if st.button("💾 Save MD Settings as Default", key="save_md_defaults"):
+        if st.button("💾 Save MD Settings as Default", key="save_md_defaults",
+                     disabled=ONLINE_MODE):
             persisted = {k: md_params[k] for k in MD_PERSIST_KEYS if k in md_params}
             default_settings['molecular_dynamics'] = persisted
             if save_settings_function(default_settings):

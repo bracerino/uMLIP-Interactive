@@ -167,6 +167,9 @@ def create_citation_info():
                 <a href="https://pubs.acs.org/doi/full/10.1021/jacs.4c14455?casa_token=4BHW_eAM-5gAAAAA%3AgvZXUbXDbgWtlsARu2CMr6cOwu_2dGrN2gLhf3jxFEWSDMXuyu4FZwCxoKaJHJYxEhz_clsSQ-jPfwVRig8" target="_blank" class="citation-link">
                     <span class="paper-icon"></span> JACS Paper, 2024
                 </a>
+                <a href="https://doi.org/10.1021/acs.jcim.6c01103" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> J. Chem. Inf. Model., 2026 (SevenNet-Nano)
+                </a>
                 <a href="https://github.com/MDIL-SNU/SevenNet" target="_blank" class="github-link">
                     <span class="github-icon"></span> GitHub
                 </a>

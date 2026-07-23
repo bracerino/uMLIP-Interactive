@@ -15,6 +15,7 @@ interactive Streamlit interface *and* emit a fully self-contained standalone
 Python script that reproduces the calculation outside the GUI.
 """
 
+import os
 from datetime import datetime
 
 import numpy as np
@@ -23,6 +24,9 @@ try:
     import streamlit as st
 except Exception:  # allow importing the pure-python helpers without streamlit
     st = None
+
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
 # eV/Å³ → GPa
 _EV_A3_TO_GPA = 160.21766208
@@ -239,7 +243,8 @@ def setup_eos_ui(default_settings=None, save_settings_function=None):
     }
 
     if save_settings_function is not None:
-        if st.button("💾 Save EOS settings as default", key="save_eos_defaults"):
+        if st.button("💾 Save EOS settings as default", key="save_eos_defaults",
+                     disabled=ONLINE_MODE):
             new_settings = dict(default_settings)
             new_settings["eos_calculation"] = eos_params
             if save_settings_function(new_settings):

@@ -15,4 +15,9 @@ seekpath==2.2.1
 # SevenNet runs on PyTorch (shares the torch 2.8 stack with MACE / CHGNet /
 # orb-models), so the CUDA build of torch is what puts it on the GPU.
 torch==2.8.0
-sevenn==0.13.0
+
+# Installed from the GitHub main branch (0.13.1.dev) rather than the 0.13.0
+# release on PyPI: the SevenNet-Nano checkpoints (7net-nano-4.5 / 5.0 / 5.5 /
+# 6.0) and SevenNet-Omni-i8 / i12 are only registered on the development
+# branch. Pin back to `sevenn==0.13.0` if you do not need those models.
+sevenn @ git+https://github.com/MDIL-SNU/SevenNet.git@main

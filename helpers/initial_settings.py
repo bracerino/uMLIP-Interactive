@@ -1,4 +1,9 @@
+import os
+
 import streamlit as st
+
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
 # Default geometry optimization settings
 DEFAULT_GEOMETRY_SETTINGS = {
@@ -251,7 +256,8 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'calculate_rmscd': calculate_rmscd,
     }
 
-    if st.button("💾 Save Geometry Optimization Defaults", key="save_geom_defaults"):
+    if st.button("💾 Save Geometry Optimization Defaults", key="save_geom_defaults",
+                 disabled=ONLINE_MODE):
         success = save_geometry_settings(
             st.session_state.default_settings,
             optimization_params,

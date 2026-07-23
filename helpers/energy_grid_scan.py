@@ -13,11 +13,15 @@ shape of the output array is preserved.
 """
 
 import io
+import os
 from datetime import datetime
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+# Mirror the main app's online-demo flag (set by online_app.py).
+ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
 try:
     from scipy.ndimage import gaussian_filter, zoom as ndi_zoom
@@ -1174,7 +1178,10 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
         "region_length_mode": length_mode,
     }
 
-    if save_settings_function is not None and default_settings is not None:
+    # Unlike the other panels this one persists on every rerun instead of behind
+    # a button, so it needs the same online guard: the settings file lives on the
+    # server and is shared by every visitor.
+    if save_settings_function is not None and default_settings is not None and not ONLINE_MODE:
         default_settings["energy_grid_scan"] = params
         try:
             save_settings_function(default_settings)
