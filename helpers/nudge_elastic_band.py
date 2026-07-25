@@ -25,7 +25,7 @@ def setup_neb_parameters_ui():
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         neb_params['n_images'] = st.number_input(
-            "Number of Images", min_value=3, max_value=20, value=7, step=1,
+            "Number of Images", min_value=3, max_value=30, value=7, step=1,
             help="Number of intermediate images (endpoints are NOT counted)")
     with col2:
         neb_params['spring_constant'] = st.number_input(
