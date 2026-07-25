@@ -10,7 +10,7 @@ py3Dmol==2.5.0
 
 psutil
 gputil
-upet==0.2.1
+upet==0.2.5 # updated from 0.2.1
 torch-dftd #For dispersion correction
 
 seekpath==2.2.1
