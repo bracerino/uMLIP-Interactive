@@ -11,7 +11,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           mace_head=None,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
                           custom_mace_path=None, custom_upet_path=None,
-                          polar_settings=None):
+                          polar_settings=None, custom_sevennet_path=None):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -26,6 +26,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             mace_head, mace_dispersion, mace_dispersion_xc,
             custom_mace_path, custom_upet_path,
             polar_settings=polar_settings,
+            custom_sevennet_path=custom_sevennet_path,
         )
         effective_model_label = selected_model or model_size
 
@@ -96,7 +97,7 @@ def _fairchem_calculator_snippet(md_params, device):
 def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
                         custom_mace_path, custom_upet_path,
-                        polar_settings=None):
+                        polar_settings=None, custom_sevennet_path=None):
 
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
@@ -175,6 +176,23 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
             f'from chgnet.model.dynamics import CHGNetCalculator\n'
             f'chgnet = CHGNet.load(model_name="{ver}", use_device="{device}")\n'
             f'calculator = CHGNetCalculator(model=chgnet, use_device="{device}")'
+        )
+
+    if "SevenNet" in (selected_model or "") and (model_size == "7net:custom" or custom_sevennet_path):
+        # Custom / fine-tuned SevenNet checkpoint (.pth): explicit path, or a
+        # *.pth auto-discovered next to the generated script.
+        if custom_sevennet_path:
+            model_expr = f'model=r"{custom_sevennet_path}"'
+        else:
+            model_expr = (
+                'model=sorted(glob.glob(os.path.join('
+                'os.path.dirname(os.path.abspath(__file__)), "*.pth")))[0]'
+            )
+        return (
+            f'import os, glob\n'
+            f'torch.serialization.add_safe_globals([slice])\n'
+            f'from sevenn.calculator import SevenNetCalculator\n'
+            f'calculator = SevenNetCalculator({model_expr}, device="{device}")'
         )
 
     if "SevenNet" in (selected_model or ""):

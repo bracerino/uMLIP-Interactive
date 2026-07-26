@@ -133,7 +133,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                           custom_mace_path=None, custom_upet_path=None, polar_settings=None):
+                           custom_mace_path=None, custom_upet_path=None, polar_settings=None,
+                           custom_sevennet_path=None):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
@@ -145,6 +146,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         custom_mace_path=custom_mace_path,
         custom_upet_path=custom_upet_path,
         polar_settings=polar_settings,
+        custom_sevennet_path=custom_sevennet_path,
     )
 
     if calc_type == "Energy Only":
@@ -289,7 +291,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
-                                       custom_mace_path=None,custom_upet_path=None, polar_settings=None):
+                                       custom_mace_path=None,custom_upet_path=None, polar_settings=None,
+                                       custom_sevennet_path=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -304,6 +307,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         custom_mace_path=custom_mace_path,
         custom_upet_path=custom_upet_path,
         polar_settings=polar_settings,
+        custom_sevennet_path=custom_sevennet_path,
     )
 
     if calc_type == "Energy Only":
@@ -1886,7 +1890,7 @@ def _generate_structure_creation_code(structures):
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                     custom_mace_path=None, custom_upet_path=None,
-                                    polar_settings=None
+                                    polar_settings=None, custom_sevennet_path=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
     # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
@@ -2018,6 +2022,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     is_petmad = selected_model_key is not None and "PET-MAD" in selected_model_key
     is_chgnet = selected_model_key is not None and "CHGNet" in selected_model_key
     is_sevennet = selected_model_key is not None and "SevenNet" in selected_model_key
+    is_custom_sevennet = is_sevennet and (model_size == "7net:custom" or bool(custom_sevennet_path))
     is_nequix = selected_model_key is not None and "Nequix" in selected_model_key
     is_mattersim = selected_model_key is not None and "MatterSim" in selected_model_key
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
@@ -2454,6 +2459,53 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")
                 raise cpu_error
+        else:
+            raise e'''
+
+    elif is_custom_sevennet:
+        # Custom / fine-tuned SevenNet checkpoint (.pth).
+        #  * If an explicit path was provided in the app, it is used directly.
+        #  * Otherwise the script auto-discovers a single *.pth file sitting in
+        #    the SAME folder as the generated script.
+        _csp = custom_sevennet_path or ""
+        calc_code = f'''    import glob
+    device = "{device}"
+    print(f"🔧 Initializing custom SevenNet calculator on {{device}}...")
+    from sevenn.calculator import SevenNetCalculator
+
+    _explicit_path = r"{_csp}".strip()
+    if _explicit_path:
+        model_path = _explicit_path
+        print(f"📁 Using explicit SevenNet checkpoint path: {{model_path}}")
+    else:
+        # No explicit path: look for a *.pth checkpoint next to this script.
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        pth_files = sorted(glob.glob(os.path.join(script_dir, "*.pth")))
+        if not pth_files:
+            raise FileNotFoundError(
+                "No SevenNet '.pth' checkpoint found next to this script "
+                f"({{script_dir}}). Place your fine-tuned checkpoint here, or set "
+                "an explicit path in the app."
+            )
+        if len(pth_files) > 1:
+            print(f"⚠️ Multiple .pth files found in {{script_dir}}; using the first:")
+            for _p in pth_files:
+                print(f"     - {{os.path.basename(_p)}}")
+        model_path = pth_files[0]
+        print(f"📁 Auto-discovered SevenNet checkpoint: {{model_path}}")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"SevenNet checkpoint not found: {{model_path}}")
+
+    try:
+        calculator = SevenNetCalculator(model=model_path, device=device)
+        print(f"✅ Custom SevenNet initialized successfully on {{device}}")
+    except Exception as e:
+        print(f"❌ Custom SevenNet initialization failed on {{device}}: {{e}}")
+        if device == "cuda":
+            print("⚠️ GPU initialization failed, falling back to CPU...")
+            calculator = SevenNetCalculator(model=model_path, device="cpu")
+            print("✅ Custom SevenNet initialized successfully on CPU (fallback)")
         else:
             raise e'''
 

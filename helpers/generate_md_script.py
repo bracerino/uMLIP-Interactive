@@ -11,7 +11,7 @@ from helpers.quantum_espresso import (
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                               custom_mace_path=None, custom_upet_path=None,
-                              polar_settings=None):
+                              polar_settings=None, custom_sevennet_path=None):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -516,7 +516,53 @@ except ImportError:
     print("Error: SevenNet not found. Please install with: pip install sevenn")
     exit()
 """
-        calculator_setup_str = f"""
+        _is_custom_sevennet = (actual_model_size == "7net:custom") or bool(custom_sevennet_path)
+        if _is_custom_sevennet:
+            # Custom / fine-tuned SevenNet checkpoint (.pth): explicit path, or a
+            # single *.pth auto-discovered next to this generated script.
+            _csp = custom_sevennet_path or ""
+            calculator_setup_str = f"""
+import glob
+print("Setting up custom SevenNet calculator...")
+_explicit_path = r"{_csp}".strip()
+if _explicit_path:
+    _model_path = _explicit_path
+    print(f"📁 Using explicit SevenNet checkpoint path: {{_model_path}}")
+else:
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _pth_files = sorted(glob.glob(os.path.join(_script_dir, "*.pth")))
+    if not _pth_files:
+        raise FileNotFoundError(
+            "No SevenNet '.pth' checkpoint found next to this script (" + _script_dir + "). "
+            "Place your fine-tuned checkpoint here or set an explicit path in the app."
+        )
+    if len(_pth_files) > 1:
+        print("⚠️ Multiple .pth files found; using the first: " + os.path.basename(_pth_files[0]))
+    _model_path = _pth_files[0]
+    print(f"📁 Auto-discovered SevenNet checkpoint: {{_model_path}}")
+
+if not os.path.exists(_model_path):
+    raise FileNotFoundError("SevenNet checkpoint not found: " + _model_path)
+
+original_dtype = torch.get_default_dtype()
+torch.set_default_dtype(torch.float32)
+try:
+    calculator = SevenNetCalculator(model=_model_path, device="{device}")
+    torch.set_default_dtype(original_dtype)
+    print(f"✅ Custom SevenNet initialized on {device}")
+except Exception as e:
+    print(f"❌ Custom SevenNet initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = SevenNetCalculator(model=_model_path, device="cpu")
+        torch.set_default_dtype(original_dtype)
+        print("✅ Custom SevenNet initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ SevenNet CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+        else:
+            calculator_setup_str = f"""
 print("Setting up SevenNet calculator...")
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)

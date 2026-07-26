@@ -2628,6 +2628,7 @@ MODEL_FAMILIES = {
         "SevenNet-Omni (pet_mad) - PBEsol": "7net-omni-pet_mad",
         "SevenNet-Omni (mp_r2scan) - r²SCAN": "7net-omni-mp_r2scan",
         "SevenNet-Omni (matpes_r2scan) - r²SCAN": "7net-omni-matpes_r2scan",
+        "Custom SevenNet Model (.pth) 🔧": "7net:custom",
     },
     "MatterSim": {
         "MatterSim-v1.0.0-1M (Fast Universal)": "mattersim-1m",
@@ -3347,7 +3348,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                          custom_upet_path=None,
-                         polar_settings=None, eos_params=None):
+                         polar_settings=None, eos_params=None, custom_sevennet_path=None):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3365,7 +3366,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
         is_qe = is_qe_model(selected_model, model_size)
         is_chgnet = model_size.startswith("chgnet")
-        is_sevennet = selected_model.startswith("SevenNet")
+        is_sevennet = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")
         is_mattersim = selected_model.startswith("MatterSim")
         is_orbmol = is_orbmol_model(selected_model, model_size)
         is_orb = selected_model.startswith("ORB") or is_orbmol
@@ -3708,6 +3709,18 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put(f"Selected model: {selected_model}")
             log_queue.put(f"Device: {device}")
             log_queue.put("Note: SevenNet requires float32 precision")
+
+            # Custom / fine-tuned SevenNet checkpoint: resolve to the explicit path.
+            # (Auto-discovery from the script folder only applies to generated
+            #  standalone scripts, not to a live in-app run.)
+            if model_size == "7net:custom":
+                if not custom_sevennet_path or not os.path.exists(custom_sevennet_path):
+                    log_queue.put("❌ Custom SevenNet selected but no valid checkpoint path was provided.")
+                    log_queue.put("   Please set an explicit path to your .pth file in the sidebar for a live run.")
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
+                model_size = custom_sevennet_path
+                log_queue.put(f"📁 Using custom SevenNet checkpoint: {model_size}")
 
             try:
                 original_dtype = torch.get_default_dtype()
@@ -5122,10 +5135,62 @@ with st.sidebar:
                 st.error("❌ File not found at this path")
         else:
             st.warning("⚠️ Please provide a path to your custom UPET .ckpt file")
+
+    is_custom_sevennet = (not use_qe) and (selected_model == "Custom SevenNet Model (.pth) 🔧")
+    custom_sevennet_path = None
+
+    if is_custom_sevennet:
+        st.markdown("---")
+        st.markdown("### 🔧 Custom SevenNet Model Configuration")
+
+        custom_sevennet_path = st.text_input(
+            "Path to fine-tuned .pth checkpoint (optional)",
+            value="",
+            placeholder="/path/to/checkpoint_best.pth  (leave empty to auto-detect)",
+            help=(
+                "Provide the full path to a SevenNet checkpoint (e.g. a fine-tuned "
+                "checkpoint_best.pth). Leave EMPTY to have the generated standalone "
+                "script automatically load the single .pth file placed in the same "
+                "folder as the script."
+            ),
+        ).strip()
+
+        if custom_sevennet_path:
+            if os.path.exists(custom_sevennet_path):
+                if os.path.isfile(custom_sevennet_path):
+                    if custom_sevennet_path.endswith('.pth'):
+                        st.success("✅ Checkpoint file found")
+                        st.info(
+                            f"**Name:** `{os.path.basename(custom_sevennet_path)}`\n\n"
+                            f"**Path:** `{os.path.dirname(custom_sevennet_path)}`"
+                        )
+                    else:
+                        st.warning("⚠️ File should have a .pth extension")
+                elif os.path.isdir(custom_sevennet_path):
+                    st.error("❌ This is a directory. Please provide the full path to the .pth file.")
+                    try:
+                        pths = [f for f in os.listdir(custom_sevennet_path) if f.endswith('.pth')]
+                        if pths:
+                            st.info(f"Found {len(pths)} .pth file(s) in this directory:")
+                            for pf in pths[:5]:
+                                st.code(os.path.join(custom_sevennet_path, pf))
+                    except Exception:
+                        pass
+                else:
+                    st.error("❌ Path exists but is not a regular file")
+            else:
+                st.error("❌ File not found at this path")
+        else:
+            st.info(
+                "ℹ️ No path set — the generated standalone script will look for a "
+                "single `.pth` checkpoint in its own folder at run time. "
+                "For a **live** run in this app, please set an explicit path above."
+            )
+
     is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
-    is_sevennet = selected_model.startswith("SevenNet")
+    is_sevennet = selected_model.startswith("SevenNet") or is_custom_sevennet
 
     is_mattersim = selected_model.startswith("MatterSim")
     is_nequix = selected_model.startswith("Nequix")
@@ -5784,6 +5849,7 @@ with tab1:
                             custom_mace_path=custom_mace_path,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
+                            custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                         )
                         st.session_state.generated_md_script = generated_script
                         st.success("✅ MD script generated successfully!")
@@ -6097,6 +6163,7 @@ with tab1:
                 mace_dispersion=mace_dispersion,
                 mace_dispersion_xc=mace_dispersion_xc,
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
+                custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
             )
         if calc_type == "Selected postprocessing scripts":
             render_postprocessing_panel()
@@ -7996,6 +8063,7 @@ with tab_st:
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings'),
+                custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
             )
 
         if st.session_state.get('core_preview_code'):
@@ -8106,6 +8174,7 @@ with tab_st:
                 custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
+                custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
@@ -8198,6 +8267,7 @@ with tab_st:
                 #custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
+                custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -8271,7 +8341,8 @@ with tab_st:
                       phonon_params, elastic_params, calculate_formation_energy_flag, st.session_state.log_queue,
                       st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass,
                       neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
-                      custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,)
+                      custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,
+                      custom_sevennet_path if is_custom_sevennet else None,)
             )
             thread.start()
             st.rerun()

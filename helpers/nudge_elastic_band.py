@@ -164,7 +164,7 @@ def _neb_force_norms(neb_obj, n_inner, natoms):
 
 def _calc_block(selected_model, model_size, device, dtype,
                 mace_head=None, mace_dispersion=False, mace_dispersion_xc='pbe',
-                custom_mace_path=None, indent="    "):
+                custom_mace_path=None, indent="    ", custom_sevennet_path=None):
     """Return Python source-code string that creates `calculator`."""
     i = indent
     if is_qe_model(selected_model, model_size):
@@ -172,11 +172,13 @@ def _calc_block(selected_model, model_size, device, dtype,
         return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
 
     is_chgnet    = selected_model.startswith("CHGNet")
-    is_sevennet  = selected_model.startswith("SevenNet")
+    is_sevennet  = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")
+    is_custom_sevennet = is_sevennet and (model_size == "7net:custom" or bool(custom_sevennet_path))
     is_mattersim = selected_model.startswith("MatterSim")
     is_orb       = selected_model.startswith("ORB")
     is_nequix    = selected_model.startswith("Nequix")
     is_allegro   = selected_model.startswith(("Allegro", "NequIP"))
+    is_grace     = selected_model.startswith("GRACE")
     is_mace_off  = "OFF" in selected_model
     is_upet      = model_size.startswith("upet:")
     is_petmad    = selected_model.startswith("PET-MAD")
@@ -189,6 +191,29 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}chgnet = CHGNet.load(model_name='{ver}', use_device='{device}', verbose=False)\n"
                 f"{i}calculator = CHGNetCalculator(model=chgnet, use_device='{device}')\n"
                 f"{i}print('CHGNet {ver} ready')\n")
+    if is_custom_sevennet:
+        # Custom / fine-tuned SevenNet checkpoint (.pth): explicit path, or a
+        # single *.pth auto-discovered next to this generated script.
+        _csp = custom_sevennet_path or ""
+        if _csp:
+            model_expr = f"r'{_csp}'"
+            discover = ""
+        else:
+            model_expr = "_model_path"
+            discover = (
+                f"{i}import glob\n"
+                f"{i}_here = os.path.dirname(os.path.abspath(__file__))\n"
+                f"{i}_pths = sorted(glob.glob(os.path.join(_here, '*.pth')))\n"
+                f"{i}if not _pths:\n"
+                f"{i}    raise FileNotFoundError('No SevenNet .pth checkpoint found next to this script: ' + _here)\n"
+                f"{i}_model_path = _pths[0]\n"
+                f"{i}print('Using SevenNet checkpoint: ' + _model_path)\n"
+            )
+        return (f"{i}import os, torch; torch.serialization.add_safe_globals([slice])\n"
+                f"{discover}"
+                f"{i}from sevenn.calculator import SevenNetCalculator\n"
+                f"{i}calculator = SevenNetCalculator(model={model_expr}, device='{device}')\n"
+                f"{i}print('Custom SevenNet ready')\n")
     if is_sevennet:
         return (f"{i}import torch; torch.serialization.add_safe_globals([slice])\n"
                 f"{i}from sevenn.calculator import SevenNetCalculator\n"
@@ -270,6 +295,10 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}calculator = mace_off(model='{model_size}', "
                 f"default_dtype='{dtype}', device='{device}')\n"
                 f"{i}print('MACE-OFF ready')\n")
+    if is_grace:
+        return (f"{i}from tensorpotential.calculator.foundation_models import grace_fm\n"
+                f"{i}calculator = grace_fm('{model_size}')\n"
+                f"{i}print('GRACE {model_size} ready')\n")
 
     disp = (f", dispersion=True, dispersion_xc='{mace_dispersion_xc}'"
             if mace_dispersion else ", dispersion=False")
@@ -692,11 +721,11 @@ def display_neb_results(neb_results, structure_name, use_distance=False):
 def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
-                        custom_mace_path=None):
+                        custom_mace_path=None, custom_sevennet_path=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1158,11 +1187,11 @@ if __name__ == "__main__":
 def generate_neb_script_minimal(neb_params, selected_model, model_size, device, dtype,
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',
-                                 custom_mace_path=None):
+                                 custom_mace_path=None, custom_sevennet_path=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1420,7 +1449,7 @@ if __name__ == "__main__":
 def render_neb_script_button(neb_params, selected_model, model_size, device, dtype,
                               thread_count=4, mace_head=None,
                               mace_dispersion=False, mace_dispersion_xc='pbe',
-                              custom_mace_path=None):
+                              custom_mace_path=None, custom_sevennet_path=None):
     st.markdown("---")
     st.subheader("📝 Generate Standalone NEB Scripts")
     st.info(
@@ -1431,7 +1460,7 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
               model_size=model_size, device=device, dtype=dtype,
               thread_count=thread_count, mace_head=mace_head,
               mace_dispersion=mace_dispersion, mace_dispersion_xc=mace_dispersion_xc,
-              custom_mace_path=custom_mace_path)
+              custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path)
 
     col_a, col_b = st.columns(2)
 
