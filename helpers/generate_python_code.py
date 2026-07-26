@@ -134,7 +134,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                            custom_mace_path=None, custom_upet_path=None, polar_settings=None,
-                           custom_sevennet_path=None):
+                           custom_sevennet_path=None, custom_grace_path=None):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
@@ -147,6 +147,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         custom_upet_path=custom_upet_path,
         polar_settings=polar_settings,
         custom_sevennet_path=custom_sevennet_path,
+        custom_grace_path=custom_grace_path,
     )
 
     if calc_type == "Energy Only":
@@ -292,7 +293,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                        custom_mace_path=None,custom_upet_path=None, polar_settings=None,
-                                       custom_sevennet_path=None):
+                                       custom_sevennet_path=None, custom_grace_path=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -308,6 +309,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         custom_upet_path=custom_upet_path,
         polar_settings=polar_settings,
         custom_sevennet_path=custom_sevennet_path,
+        custom_grace_path=custom_grace_path,
     )
 
     if calc_type == "Energy Only":
@@ -1890,7 +1892,7 @@ def _generate_structure_creation_code(structures):
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                     custom_mace_path=None, custom_upet_path=None,
-                                    polar_settings=None, custom_sevennet_path=None
+                                    polar_settings=None, custom_sevennet_path=None, custom_grace_path=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
     # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
@@ -2033,6 +2035,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             "http://" in model_size or "https://" in model_size)
     is_upet = selected_model_key is not None and "UPET" in selected_model_key
     is_grace = selected_model_key is not None and "GRACE" in selected_model_key
+    is_custom_grace = is_grace and (model_size == "grace:custom" or bool(custom_grace_path))
     is_allegro = selected_model_key is not None and selected_model_key.startswith(("Allegro", "NequIP"))
 
     if is_allegro:
@@ -2088,6 +2091,49 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     except Exception as e:
         print(f"❌ Nequix initialization failed: {{e}}")
         raise e'''
+    elif is_custom_grace:
+        # Local / fine-tuned GRACE saved-model directory (contains saved_model.pb).
+        #  * explicit path, or
+        #  * a saved-model auto-discovered next to the generated script.
+        _cgp = custom_grace_path or ""
+        calc_code = f'''    import glob
+    print(f"🔧 Initializing custom GRACE calculator...")
+    from tensorpotential.calculator import TPCalculator
+
+    def _is_complete_grace_model(d):
+        # A GRACE/TF saved-model is a FOLDER: saved_model.pb + variables/ (+ assets/).
+        return (os.path.exists(os.path.join(d, "saved_model.pb"))
+                and os.path.isdir(os.path.join(d, "variables")))
+
+    model_dir = r"{_cgp}".strip()
+    if not model_dir:
+        # No explicit path: find a COMPLETE GRACE saved-model next to this script.
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _dirs = sorted({{os.path.dirname(p) for p in
+                        glob.glob(os.path.join(_here, "**", "saved_model.pb"), recursive=True)}})
+        _dirs = [d for d in _dirs if _is_complete_grace_model(d)]
+        if not _dirs:
+            raise FileNotFoundError(
+                "No complete GRACE saved-model found next to this script "
+                f"({{_here}}). A GRACE model is a FOLDER containing 'saved_model.pb' "
+                "AND a 'variables/' sub-folder (plus 'assets/') — copy the whole "
+                "model directory (e.g. '.../final_model'), not just saved_model.pb."
+            )
+        model_dir = _dirs[0]
+        print(f"📁 Auto-discovered GRACE model: {{model_dir}}")
+    else:
+        print(f"📁 Using GRACE model: {{model_dir}}")
+
+    if not _is_complete_grace_model(model_dir):
+        raise FileNotFoundError(
+            f"'{{model_dir}}' is not a complete GRACE saved-model. It must be the "
+            "FOLDER that contains both 'saved_model.pb' and a 'variables/' sub-folder "
+            "(plus 'assets/'). Copy the entire model directory, not just saved_model.pb."
+        )
+
+    calculator = TPCalculator(model=model_dir)
+    print("✅ Custom GRACE model initialized successfully")'''
+
     elif is_grace:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing GRACE calculator...")

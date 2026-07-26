@@ -11,7 +11,8 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           mace_head=None,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
                           custom_mace_path=None, custom_upet_path=None,
-                          polar_settings=None, custom_sevennet_path=None):
+                          polar_settings=None, custom_sevennet_path=None,
+                          custom_grace_path=None):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -27,6 +28,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             custom_mace_path, custom_upet_path,
             polar_settings=polar_settings,
             custom_sevennet_path=custom_sevennet_path,
+            custom_grace_path=custom_grace_path,
         )
         effective_model_label = selected_model or model_size
 
@@ -97,7 +99,8 @@ def _fairchem_calculator_snippet(md_params, device):
 def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
                         custom_mace_path, custom_upet_path,
-                        polar_settings=None, custom_sevennet_path=None):
+                        polar_settings=None, custom_sevennet_path=None,
+                        custom_grace_path=None):
 
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
@@ -135,6 +138,24 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                 f'calculator = SumCalculator([calculator, dft_d3])'
             )
         return base
+
+    if "GRACE" in (selected_model or "") and (model_size == "grace:custom" or custom_grace_path):
+        # Local / fine-tuned GRACE saved-model dir: explicit path, or auto-discovered.
+        if custom_grace_path:
+            dir_line = f'model_dir = r"{custom_grace_path}"'
+        else:
+            dir_line = (
+                '_c = lambda d: os.path.exists(os.path.join(d, "saved_model.pb")) and os.path.isdir(os.path.join(d, "variables"))\n'
+                '_d = [os.path.dirname(p) for p in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "**", "saved_model.pb"), recursive=True)]\n'
+                '_d = [d for d in _d if _c(d)]  # a GRACE model is a FOLDER with saved_model.pb + variables/\n'
+                'model_dir = sorted(_d)[0]'
+            )
+        return (
+            f'import os, glob\n'
+            f'from tensorpotential.calculator import TPCalculator\n'
+            f'{dir_line}\n'
+            f'calculator = TPCalculator(model=model_dir)'
+        )
 
     if "GRACE" in (selected_model or ""):
         return (

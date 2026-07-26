@@ -164,7 +164,7 @@ def _neb_force_norms(neb_obj, n_inner, natoms):
 
 def _calc_block(selected_model, model_size, device, dtype,
                 mace_head=None, mace_dispersion=False, mace_dispersion_xc='pbe',
-                custom_mace_path=None, indent="    ", custom_sevennet_path=None):
+                custom_mace_path=None, indent="    ", custom_sevennet_path=None, custom_grace_path=None):
     """Return Python source-code string that creates `calculator`."""
     i = indent
     if is_qe_model(selected_model, model_size):
@@ -178,7 +178,8 @@ def _calc_block(selected_model, model_size, device, dtype,
     is_orb       = selected_model.startswith("ORB")
     is_nequix    = selected_model.startswith("Nequix")
     is_allegro   = selected_model.startswith(("Allegro", "NequIP"))
-    is_grace     = selected_model.startswith("GRACE")
+    is_grace     = selected_model.startswith("GRACE") or str(model_size) == "grace:custom"
+    is_custom_grace = is_grace and (str(model_size) == "grace:custom" or bool(custom_grace_path))
     is_mace_off  = "OFF" in selected_model
     is_upet      = model_size.startswith("upet:")
     is_petmad    = selected_model.startswith("PET-MAD")
@@ -295,6 +296,31 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}calculator = mace_off(model='{model_size}', "
                 f"default_dtype='{dtype}', device='{device}')\n"
                 f"{i}print('MACE-OFF ready')\n")
+    if is_custom_grace:
+        # Local / fine-tuned GRACE saved-model dir: explicit path or auto-discovered.
+        _cgp = custom_grace_path or ""
+        chk = (f"{i}_ok = lambda d: os.path.exists(os.path.join(d, 'saved_model.pb')) "
+               f"and os.path.isdir(os.path.join(d, 'variables'))\n")
+        if _cgp:
+            dir_src = f"{i}model_dir = r'{_cgp}'\n"
+        else:
+            dir_src = (
+                f"{i}_here = os.path.dirname(os.path.abspath(__file__))\n"
+                f"{i}_dirs = sorted({{os.path.dirname(p) for p in glob.glob(os.path.join(_here, '**', 'saved_model.pb'), recursive=True)}})\n"
+                f"{i}_dirs = [d for d in _dirs if _ok(d)]\n"
+                f"{i}if not _dirs:\n"
+                f"{i}    raise FileNotFoundError('No complete GRACE saved-model (folder with saved_model.pb + variables/) found next to this script: ' + _here)\n"
+                f"{i}model_dir = _dirs[0]\n"
+                f"{i}print('Using GRACE model: ' + model_dir)\n"
+            )
+        return (f"{i}import os, glob\n"
+                f"{i}from tensorpotential.calculator import TPCalculator\n"
+                f"{chk}"
+                f"{dir_src}"
+                f"{i}if not _ok(model_dir):\n"
+                f"{i}    raise FileNotFoundError(model_dir + ' is not a complete GRACE saved-model (needs saved_model.pb + variables/). Copy the whole model folder.')\n"
+                f"{i}calculator = TPCalculator(model=model_dir)\n"
+                f"{i}print('Custom GRACE ready')\n")
     if is_grace:
         return (f"{i}from tensorpotential.calculator.foundation_models import grace_fm\n"
                 f"{i}calculator = grace_fm('{model_size}')\n"
@@ -721,11 +747,11 @@ def display_neb_results(neb_results, structure_name, use_distance=False):
 def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
-                        custom_mace_path=None, custom_sevennet_path=None):
+                        custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path, custom_sevennet_path=custom_sevennet_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1187,11 +1213,11 @@ if __name__ == "__main__":
 def generate_neb_script_minimal(neb_params, selected_model, model_size, device, dtype,
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',
-                                 custom_mace_path=None, custom_sevennet_path=None):
+                                 custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path, custom_sevennet_path=custom_sevennet_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1449,7 +1475,7 @@ if __name__ == "__main__":
 def render_neb_script_button(neb_params, selected_model, model_size, device, dtype,
                               thread_count=4, mace_head=None,
                               mace_dispersion=False, mace_dispersion_xc='pbe',
-                              custom_mace_path=None, custom_sevennet_path=None):
+                              custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
     st.markdown("---")
     st.subheader("📝 Generate Standalone NEB Scripts")
     st.info(
@@ -1460,7 +1486,7 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
               model_size=model_size, device=device, dtype=dtype,
               thread_count=thread_count, mace_head=mace_head,
               mace_dispersion=mace_dispersion, mace_dispersion_xc=mace_dispersion_xc,
-              custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path)
+              custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
 
     col_a, col_b = st.columns(2)
 

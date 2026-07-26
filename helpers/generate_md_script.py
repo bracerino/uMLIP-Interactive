@@ -11,7 +11,8 @@ from helpers.quantum_espresso import (
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                               custom_mace_path=None, custom_upet_path=None,
-                              polar_settings=None, custom_sevennet_path=None):
+                              polar_settings=None, custom_sevennet_path=None,
+                              custom_grace_path=None):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -738,14 +739,46 @@ except Exception as e:
     exit()
 """
     elif "GRACE" in actual_selected_model:
-        imports_str += """
+        _is_custom_grace = (actual_model_size == "grace:custom") or bool(custom_grace_path)
+        if _is_custom_grace:
+            _cgp = custom_grace_path or ""
+            imports_str += """
+try:
+    from tensorpotential.calculator import TPCalculator
+except ImportError:
+    print("Error: GRACE (tensorpotential) not found. Please install with: pip install grace-tensorpotential")
+    exit()
+"""
+            calculator_setup_str = f"""
+import glob
+print("Setting up custom GRACE calculator...")
+def _complete_grace(d):
+    return os.path.exists(os.path.join(d, "saved_model.pb")) and os.path.isdir(os.path.join(d, "variables"))
+model_dir = r"{_cgp}".strip()
+if not model_dir:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _dirs = sorted({{os.path.dirname(p) for p in glob.glob(os.path.join(_here, "**", "saved_model.pb"), recursive=True)}})
+    _dirs = [d for d in _dirs if _complete_grace(d)]
+    if not _dirs:
+        raise FileNotFoundError("No complete GRACE saved-model found next to this script (" + _here + "). A GRACE model is a FOLDER with saved_model.pb AND variables/ - copy the whole model directory, not just saved_model.pb.")
+    model_dir = _dirs[0]
+    print("Auto-discovered GRACE model: " + model_dir)
+else:
+    print("Using GRACE model: " + model_dir)
+if not _complete_grace(model_dir):
+    raise FileNotFoundError("'" + model_dir + "' is not a complete GRACE saved-model (needs saved_model.pb + variables/). Copy the entire model folder, not just saved_model.pb.")
+calculator = TPCalculator(model=model_dir)
+print("✅ Custom GRACE model initialized successfully")
+"""
+        else:
+            imports_str += """
 try:
     from tensorpotential.calculator.foundation_models import grace_fm
 except ImportError:
     print("Error: GRACE (tensorpotential) not found. Please install with: pip install grace-tensorpotential")
     exit()
 """
-        calculator_setup_str = f"""
+            calculator_setup_str = f"""
 print("Setting up GRACE calculator...")
 print(f"Model: {actual_model_size}")
 print("Note: GRACE uses TensorFlow and auto-detects GPU.")

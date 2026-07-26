@@ -2702,6 +2702,7 @@ MODEL_FAMILIES = {
         "GRACE-1L-MP-r6 (MPtraj, 6Å cutoff)": "GRACE-1L-MP-r6",
         "GRACE-2L-MP-r5 (MPtraj, 5Å cutoff)": "GRACE-2L-MP-r5",
         "GRACE-2L-MP-r6 (MPtraj, 6Å cutoff)": "GRACE-2L-MP-r6",
+        "Custom GRACE Model (local) 🔧": "grace:custom",
     },
 }
 
@@ -3348,7 +3349,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          elastic_params, calc_formation_energy, log_queue, stop_event, substitutions=None,
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                          custom_upet_path=None,
-                         polar_settings=None, eos_params=None, custom_sevennet_path=None):
+                         polar_settings=None, eos_params=None, custom_sevennet_path=None,
+                         custom_grace_path=None):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3376,7 +3378,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_alignn = selected_model.startswith("AlignN")
 
         #GRACE
-        is_grace = selected_model.startswith("GRACE")
+        is_grace = selected_model.startswith("GRACE") or model_size == "grace:custom"
         #PET-MAD
         is_upet = model_size.startswith("upet:")
         is_custom_upet_model = (model_size == "upet:custom")
@@ -3521,11 +3523,27 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 return
 
             try:
-                calculator = grace_fm(model_size)
-                log_queue.put(f"✅ GRACE {model_size} initialized successfully")
+                if model_size == "grace:custom":
+                    # Local fine-tuned GRACE saved-model directory (folder with
+                    # saved_model.pb AND variables/, e.g. gracemaker '.../final_model').
+                    _complete = (custom_grace_path and os.path.isdir(custom_grace_path)
+                                 and os.path.exists(os.path.join(custom_grace_path, "saved_model.pb"))
+                                 and os.path.isdir(os.path.join(custom_grace_path, "variables")))
+                    if not _complete:
+                        log_queue.put("❌ Custom GRACE: the path is not a complete GRACE saved-model folder.")
+                        log_queue.put("   It must be the FOLDER containing 'saved_model.pb' AND a 'variables/' sub-folder")
+                        log_queue.put("   (plus 'assets/') — e.g. '.../seed/1/final_model'. Copy the whole folder, not just saved_model.pb.")
+                        log_queue.put("CALCULATION_FINISHED")
+                        return
+                    from tensorpotential.calculator import TPCalculator
+                    calculator = TPCalculator(model=custom_grace_path)
+                    log_queue.put(f"✅ Custom GRACE model initialized from {custom_grace_path}")
+                else:
+                    calculator = grace_fm(model_size)
+                    log_queue.put(f"✅ GRACE {model_size} initialized successfully")
             except Exception as e:
                 log_queue.put(f"❌ GRACE initialization failed: {str(e)}")
-                log_queue.put("   Make sure the model name is correct.")
+                log_queue.put("   Make sure the model name / path is correct.")
                 log_queue.put("   Available models: run 'grace_models list' in your terminal.")
                 log_queue.put("CALCULATION_FINISHED")
                 return
@@ -5187,6 +5205,64 @@ with st.sidebar:
                 "For a **live** run in this app, please set an explicit path above."
             )
 
+    is_custom_grace = (not use_qe) and (selected_model == "Custom GRACE Model (local) 🔧")
+    custom_grace_path = None
+
+    if is_custom_grace:
+        st.markdown("---")
+        st.markdown("### 🔧 Custom GRACE Model Configuration")
+
+        custom_grace_path = st.text_input(
+            "Path to a fine-tuned GRACE saved-model folder (optional)",
+            value="",
+            placeholder="/path/to/seed/1/final_model   (leave empty to auto-detect)",
+            help=(
+                "Provide the path to a GRACE saved-model directory (the folder that "
+                "contains 'saved_model.pb', e.g. a gracemaker '.../final_model'). "
+                "Leave EMPTY to have the generated standalone script auto-detect a "
+                "GRACE saved-model located in the same folder as the script."
+            ),
+        ).strip()
+
+        if custom_grace_path:
+            if os.path.isdir(custom_grace_path):
+                _has_pb = os.path.exists(os.path.join(custom_grace_path, "saved_model.pb"))
+                _has_vars = os.path.isdir(os.path.join(custom_grace_path, "variables"))
+                if _has_pb and _has_vars:
+                    st.success("✅ Complete GRACE saved-model folder found")
+                    st.info(f"**Path:** `{custom_grace_path}`")
+                elif _has_pb and not _has_vars:
+                    st.error(
+                        "❌ Incomplete model: `saved_model.pb` is here but the "
+                        "`variables/` sub-folder is missing. A GRACE model is a whole "
+                        "**folder** — copy the entire `final_model/` (with `variables/` "
+                        "and `assets/`), not just `saved_model.pb`."
+                    )
+                else:
+                    st.warning(
+                        "⚠️ This folder has no `saved_model.pb`. Point to the model "
+                        "directory itself (e.g. `.../final_model`)."
+                    )
+                    try:
+                        subs = [d for d in os.listdir(custom_grace_path)
+                                if os.path.exists(os.path.join(custom_grace_path, d, "saved_model.pb"))]
+                        if subs:
+                            st.info("Found saved-model(s) in sub-folders:")
+                            for s in subs[:5]:
+                                st.code(os.path.join(custom_grace_path, s))
+                    except Exception:
+                        pass
+            elif os.path.isfile(custom_grace_path):
+                st.error("❌ This is a file. GRACE models are folders — point to the saved-model directory.")
+            else:
+                st.error("❌ Folder not found at this path")
+        else:
+            st.info(
+                "ℹ️ No path set — the generated standalone script will auto-detect a "
+                "GRACE saved-model (a folder containing `saved_model.pb`) next to the "
+                "script. For a **live** run in this app, please set an explicit path above."
+            )
+
     is_petmad = selected_model.startswith("PET-MAD")
     is_chgnet = selected_model.startswith("CHGNet")
 
@@ -5850,6 +5926,7 @@ with tab1:
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
                             custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
                         )
                         st.session_state.generated_md_script = generated_script
                         st.success("✅ MD script generated successfully!")
@@ -6164,6 +6241,7 @@ with tab1:
                 mace_dispersion_xc=mace_dispersion_xc,
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
             )
         if calc_type == "Selected postprocessing scripts":
             render_postprocessing_panel()
@@ -8064,6 +8142,7 @@ with tab_st:
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings'),
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
             )
 
         if st.session_state.get('core_preview_code'):
@@ -8175,6 +8254,7 @@ with tab_st:
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
             )
 
             local_script_key = f"local_script_{hash(local_script_content) % 10000}"
@@ -8268,6 +8348,7 @@ with tab_st:
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
             )
 
             script_key = f"script_{hash(script_content) % 10000}"
@@ -8342,7 +8423,8 @@ with tab_st:
                       st.session_state.stop_event, substitutions, ga_params, neb_initial_to_pass,
                       neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
                       custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,
-                      custom_sevennet_path if is_custom_sevennet else None,)
+                      custom_sevennet_path if is_custom_sevennet else None,
+                      custom_grace_path if is_custom_grace else None,)
             )
             thread.start()
             st.rerun()
