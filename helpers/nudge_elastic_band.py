@@ -14,6 +14,9 @@ import json
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.custom_model_paths import (
+    mace_model_resolution_code, is_custom_mace_model,
+)
 from datetime import datetime
 
 
@@ -269,12 +272,15 @@ def _calc_block(selected_model, model_size, device, dtype,
         return (f"{i}from upet.calculator import UPETCalculator\n"
                 f"{i}calculator = UPETCalculator(model='{mn}', version='{mv}', device='{device}')\n"
                 f"{i}print('UPET ready')\n")
-    if custom_mace_path:
+    if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
+                            custom_mace_path=custom_mace_path):
+        # Explicit path, or a *.model file sitting next to the generated script.
         hl = f", head='{mace_head}'" if mace_head else ""
-        return (f"{i}from mace.calculators import mace_mp\n"
-                f"{i}calculator = mace_mp(model='{custom_mace_path}', device='{device}', "
-                f"default_dtype='{dtype}'{hl})\n"
-                f"{i}print('Custom MACE ready')\n")
+        return (mace_model_resolution_code(custom_mace_path, indent=i)
+                + f"{i}from mace.calculators import mace_mp\n"
+                + f"{i}calculator = mace_mp(model=_mace_model_path, device='{device}', "
+                + f"default_dtype='{dtype}'{hl})\n"
+                + f"{i}print('Custom MACE ready')\n")
     if is_url:
         hl   = f", head='{mace_head}'" if mace_head else ""
         disp = (f", dispersion=True, dispersion_xc='{mace_dispersion_xc}'"

@@ -3350,7 +3350,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                          custom_upet_path=None,
                          polar_settings=None, eos_params=None, custom_sevennet_path=None,
-                         custom_grace_path=None):
+                         custom_grace_path=None, custom_mace_path=None):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3822,6 +3822,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         else:
             log_queue.put("Setting up MACE calculator...")
             log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
+
+            # Custom / fine-tuned MACE .model file: resolve to the explicit path.
+            # (Auto-discovery from the script folder only applies to generated
+            #  standalone scripts, not to a live in-app run.)
+            if model_size == "custom":
+                if not custom_mace_path or not os.path.exists(custom_mace_path):
+                    log_queue.put("❌ Custom MACE selected but no valid .model path was provided.")
+                    log_queue.put("   Please set an explicit path to your .model file in the sidebar for a live run.")
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
+                model_size = custom_mace_path
+                log_queue.put(f"📁 Using custom MACE model: {model_size}")
+
             log_queue.put(f"Model identifier: {model_size}")
             log_queue.put(f"Device: {device}")
 
@@ -5123,7 +5136,11 @@ with st.sidebar:
             else:
                 st.error("❌ File not found at this path")
         else:
-            st.warning("⚠️ Please provide a path to your custom .model file")
+            st.info(
+                "ℹ️ No path set — the generated standalone script will look for a "
+                "single `.model` file in its own folder at run time. "
+                "For a **live** run in this app, please set an explicit path above."
+            )
     is_custom_upet = (not use_qe) and (selected_model == "Custom UPET Model (.ckpt) 🔧")
     custom_upet_path = None
 
@@ -5926,7 +5943,7 @@ with tab1:
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
                             custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
-                custom_grace_path=custom_grace_path if is_custom_grace else None,
+                            custom_grace_path=custom_grace_path if is_custom_grace else None,
                         )
                         st.session_state.generated_md_script = generated_script
                         st.success("✅ MD script generated successfully!")
@@ -6115,7 +6132,10 @@ with tab1:
                         current_model_size,
                         current_device,
                         current_dtype,
-                        current_thread_count
+                        current_thread_count,
+                        custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                        custom_grace_path=custom_grace_path if is_custom_grace else None,
+                        custom_mace_path=custom_mace_path if is_custom_mace else None,
                     )
                     st.session_state.generated_tensile_script = generated_script
                     st.success("✅ Tensile test script generated successfully!")
@@ -6187,6 +6207,8 @@ with tab1:
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get("polar_settings", {}),
+                            custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                            custom_grace_path=custom_grace_path if is_custom_grace else None,
                         )
                         st.session_state.generated_energy_grid_script = generated_script
                         st.success("✅ Energy grid scan script generated successfully!")
@@ -6305,6 +6327,8 @@ with tab1:
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                         custom_upet_path=custom_upet_path if is_custom_upet else None,
                         polar_settings=st.session_state.get('polar_settings', {}),
+                        custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                        custom_grace_path=custom_grace_path if is_custom_grace else None,
                     )
                     st.success("✅ EOS script generated successfully!")
                 except Exception as exc:
@@ -8176,6 +8200,8 @@ with tab_st:
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
+                custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                custom_grace_path=custom_grace_path if is_custom_grace else None,
             )
             st.download_button(
                 label="💾 Download Birch–Murnaghan EOS Script",
@@ -8230,8 +8256,10 @@ with tab_st:
 
             custom_mace_path_for_script = custom_mace_path if is_custom_mace else None
             if is_custom_mace and not custom_mace_path:
-                st.error("❌ Please provide a path to your custom MACE model")
-                st.stop()
+                st.info(
+                    "ℹ️ No explicit MACE model path — the generated script will look for a "
+                    "single `.model` file in its own folder at run time."
+                )
 
             local_script_content = generate_python_script_local_files(
                 calc_type=calc_type,
@@ -8424,7 +8452,8 @@ with tab_st:
                       neb_finals_to_pass, mace_head, mace_dispersion, mace_dispersion_xc,
                       custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,
                       custom_sevennet_path if is_custom_sevennet else None,
-                      custom_grace_path if is_custom_grace else None,)
+                      custom_grace_path if is_custom_grace else None,
+                      custom_mace_path if is_custom_mace else None,)
             )
             thread.start()
             st.rerun()

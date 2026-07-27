@@ -1,6 +1,9 @@
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.custom_model_paths import (
+    mace_model_resolution_code, is_custom_mace_model,
+)
 
 
 def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
@@ -106,14 +109,18 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent="")
 
-    if custom_mace_path:
-        args = [f'model="{custom_mace_path}"']
+    if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
+                            custom_mace_path=custom_mace_path):
+        # Explicit path, or a *.model file sitting next to the generated script.
+        args = ['model=_mace_model_path']
         if mace_head:
             args.append(f'head="{mace_head}"')
         if mace_dispersion:
             args += [f'dispersion=True', f'dispersion_xc="{mace_dispersion_xc}"']
         args += [f'default_dtype="{dtype}"', f'device="{device}"']
-        return "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    " + ",\n    ".join(args) + "\n)"
+        return (mace_model_resolution_code(custom_mace_path)
+                + "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    "
+                + ",\n    ".join(args) + "\n)")
 
     if model_size.startswith("upet:"):
         if model_size == "upet:custom":

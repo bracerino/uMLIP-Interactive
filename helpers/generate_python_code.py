@@ -1,6 +1,9 @@
 import json
 from datetime import datetime
 
+from helpers.custom_model_paths import (
+    mace_model_resolution_code, is_custom_mace_model,
+)
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
@@ -1945,10 +1948,12 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             raise e'''
         return calc_code
 
-    if custom_mace_path:
-        # Custom MACE model setup
+    if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model_key,
+                            custom_mace_path=custom_mace_path):
+        # Custom MACE model: explicit path, or a *.model file auto-discovered next
+        # to the generated script.
         mace_args = []
-        mace_args.append(f'model="{custom_mace_path}"')
+        mace_args.append(f'model=_mace_model_path')
 
         if mace_head:
             mace_args.append(f'head="{mace_head}"')
@@ -1964,14 +1969,8 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE calculator with custom model...")
-    print(f"📁 Custom model path: {custom_mace_path}")
 
-
-    if not os.path.exists("{custom_mace_path}"):
-        print(f"❌ Custom model file not found: {custom_mace_path}")
-        print(f"Please ensure the model file exists at the specified path.")
-        raise FileNotFoundError(f"Model file not found: {custom_mace_path}")
-
+{mace_model_resolution_code(custom_mace_path, indent="    ")}
     try:
         from mace.calculators import mace_mp
 

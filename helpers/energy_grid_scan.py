@@ -1207,6 +1207,8 @@ def generate_energy_grid_scan_script(
     custom_mace_path=None,
     custom_upet_path=None,
     polar_settings=None,
+    custom_sevennet_path=None,
+    custom_grace_path=None,
 ):
     """Build a fully self-contained Python script as a string.
 
@@ -1248,6 +1250,8 @@ def generate_energy_grid_scan_script(
         custom_mace_path=custom_mace_path,
         custom_upet_path=custom_upet_path,
         polar_settings=polar_settings,
+        custom_sevennet_path=custom_sevennet_path,
+        custom_grace_path=custom_grace_path,
     )
     mlip_imports_code = _generate_mlip_imports()
 

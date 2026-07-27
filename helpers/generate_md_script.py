@@ -6,6 +6,9 @@ import copy  # Import copy
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.custom_model_paths import (
+    mace_model_resolution_code, is_custom_mace_model,
+)
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
@@ -321,25 +324,18 @@ except ImportError:
     exit()
 """
     # Check if this is a custom/local model
-        is_custom_model = custom_mace_path is not None and custom_mace_path.strip() != ""
+        is_custom_model = is_custom_mace_model(
+            model_size=actual_model_size, selected_model_key=actual_selected_model,
+            custom_mace_path=custom_mace_path)
         is_url_model = model_size.startswith("http://") or model_size.startswith("https://")
-        print("SSSS")
-        print(custom_mace_path)
-        print("SS")
 
         if is_custom_model:
-            print("HE")
-            # Custom local model path
+            # Custom local model: explicit path, or a *.model file auto-discovered
+            # next to this generated script.
             calculator_setup_str = f"""
 print("Setting up MACE calculator from local model...")
 
-custom_model_path = "{custom_mace_path}"
-print(f"Loading custom model from: {{custom_model_path}}")
-
-if not os.path.exists(custom_model_path):
-    print(f"❌ Model file not found at: {{custom_model_path}}")
-    exit()
-
+{mace_model_resolution_code(custom_mace_path, var="custom_model_path")}
 print(f"⚙️  Device: {device}")
 print(f"⚙️  Dtype: {dtype}")"""
 
