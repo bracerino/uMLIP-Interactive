@@ -9,12 +9,18 @@ from helpers.quantum_espresso import (
 )
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
+    mace_cueq_preamble, mace_cueq_arg,
 )
 
 
 def generate_tensile_test_python_script(tensile_params, selected_model, model_size, device, dtype, thread_count,
                                         custom_sevennet_path=None, custom_grace_path=None,
-                                        custom_mace_path=None):
+                                        custom_mace_path=None, mace_enable_cueq=False):
+
+    # cuEquivariance (MACE + CUDA only).
+    _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
+    _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
+    _cq = f", {_cq_kw}" if _cq_kw else ""
 
     is_custom_mace = ("MACE" in selected_model and "OFF" not in selected_model
                       and is_custom_mace_model(model_size=model_size,
@@ -141,9 +147,9 @@ except ImportError:
 """
         calculator_setup_str = f"""
 print("Setting up MACE-OFF calculator...")
-try:
+{_cq_pre}try:
     calculator = mace_off(
-        model="{model_size}", default_dtype="{dtype}", device="{device}"
+        model="{model_size}", default_dtype="{dtype}", device="{device}"{_cq}
     )
     print(f"✅ MACE-OFF {model_size} initialized on {device}")
 except Exception as e:
@@ -172,9 +178,9 @@ except ImportError:
             calculator_setup_str = f"""
 print("Setting up custom MACE calculator...")
 {mace_model_resolution_code(custom_mace_path)}
-try:
+{_cq_pre}try:
     calculator = mace_mp(
-        model=_mace_model_path, dispersion=False, default_dtype="{dtype}", device="{device}"
+        model=_mace_model_path, dispersion=False, default_dtype="{dtype}", device="{device}"{_cq}
     )
     print(f"✅ Custom MACE model initialized on {device}")
 except Exception as e:
@@ -192,9 +198,9 @@ except Exception as e:
         else:
             calculator_setup_str = f"""
 print("Setting up MACE calculator...")
-try:
+{_cq_pre}try:
     calculator = mace_mp(
-        model="{model_size}", dispersion=False, default_dtype="{dtype}", device="{device}"
+        model="{model_size}", dispersion=False, default_dtype="{dtype}", device="{device}"{_cq}
     )
     print(f"✅ MACE {model_size} initialized on {device}")
 except Exception as e:

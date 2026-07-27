@@ -3,6 +3,7 @@ from datetime import datetime
 
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
+    mace_cueq_preamble, mace_cueq_arg,
 )
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
@@ -137,7 +138,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                            custom_mace_path=None, custom_upet_path=None, polar_settings=None,
-                           custom_sevennet_path=None, custom_grace_path=None):
+                           custom_sevennet_path=None, custom_grace_path=None,
+                           mace_enable_cueq=False):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
@@ -151,6 +153,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         polar_settings=polar_settings,
         custom_sevennet_path=custom_sevennet_path,
         custom_grace_path=custom_grace_path,
+        mace_enable_cueq=mace_enable_cueq,
     )
 
     if calc_type == "Energy Only":
@@ -296,7 +299,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                        custom_mace_path=None,custom_upet_path=None, polar_settings=None,
-                                       custom_sevennet_path=None, custom_grace_path=None):
+                                       custom_sevennet_path=None, custom_grace_path=None,
+                                       mace_enable_cueq=False):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -313,6 +317,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         polar_settings=polar_settings,
         custom_sevennet_path=custom_sevennet_path,
         custom_grace_path=custom_grace_path,
+        mace_enable_cueq=mace_enable_cueq,
     )
 
     if calc_type == "Energy Only":
@@ -1895,9 +1900,15 @@ def _generate_structure_creation_code(structures):
 def _generate_calculator_setup_code(model_size, device, selected_model_key=None, dtype="float64",
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                     custom_mace_path=None, custom_upet_path=None,
-                                    polar_settings=None, custom_sevennet_path=None, custom_grace_path=None
+                                    polar_settings=None, custom_sevennet_path=None, custom_grace_path=None,
+                                    mace_enable_cueq=False
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
+    # cuEquivariance (MACE + CUDA only); '' / None when it does not apply.
+    _cueq_pre_i4 = mace_cueq_preamble(mace_enable_cueq, device, indent="    ")
+    _cueq_arg = mace_cueq_arg(mace_enable_cueq, device)
+    _cueq_off_arg = f", {_cueq_arg}" if _cueq_arg else ""
+
     # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
     # short-circuits the whole model-detection chain below.
     if is_qe_model(selected_model_key, model_size):
@@ -1965,11 +1976,16 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         mace_args.append(f'default_dtype="{dtype}"')
         mace_args.append(f'device=device')
 
+        if _cueq_arg:
+            mace_args.append(_cueq_arg)
         mace_args_str = ',\n        '.join(mace_args)
+        mace_args_cpu_str = ',\n        '.join(
+            a for a in mace_args if not a.startswith("enable_cueq")
+        ).replace('device=device', 'device="cpu"')
 
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE calculator with custom model...")
-
+{_cueq_pre_i4}
 {mace_model_resolution_code(custom_mace_path, indent="    ")}
     try:
         from mace.calculators import mace_mp
@@ -1998,7 +2014,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = mace_mp(
-                    {mace_args_str.replace('device=device', 'device="cpu"')}
+                    {mace_args_cpu_str}
                 )
                 print("✅ Custom MACE initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
@@ -2630,11 +2646,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         # MACE-OFF setup
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE-OFF calculator on {{device}}...")
-    try:
+{_cueq_pre_i4}    try:
         from mace.calculators import mace_off
 
         calculator = mace_off(
-            model="{model_size}", default_dtype="{dtype}", device=device)
+            model="{model_size}", default_dtype="{dtype}", device=device{_cueq_off_arg})
         print(f"✅ MACE-OFF calculator initialized successfully on {{device}}")
 
     except Exception as e:
@@ -2668,7 +2684,12 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             mace_args.append(f'dispersion=True')
             mace_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
 
+        if _cueq_arg:
+            mace_args.append(_cueq_arg)
         mace_args_str = ',\n        '.join(mace_args)
+        mace_args_cpu_str = ',\n        '.join(
+            a for a in mace_args if not a.startswith("enable_cueq")
+        ).replace('device=device', 'device="cpu"')
 
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing MACE foundation model from URL...")
@@ -2698,7 +2719,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 model_path.unlink()
             raise
 
-    try:
+{_cueq_pre_i4}    try:
         from mace.calculators import mace_mp
 
         model_url = "{model_size}"
@@ -2729,7 +2750,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = mace_mp(
-                    {mace_args_str.replace('device=device', 'device="cpu"')}
+                    {mace_args_cpu_str}
                 )
                 print("✅ MACE initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
@@ -2752,10 +2773,16 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         mace_args.append(f'default_dtype="{dtype}"')
         mace_args.append(f'device=device')
 
+        if _cueq_arg:
+            mace_args.append(_cueq_arg)
         mace_args_str = ', '.join(mace_args)
+        mace_args_cpu_str = ', '.join(
+            a for a in mace_args if not a.startswith("enable_cueq")
+        ).replace('device=device', 'device="cpu"')
 
         calc_code = f'''    device = "{device}"
-    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")'''
+    print(f"🔧 Initializing MACE-MP calculator on {{device}}...")
+{_cueq_pre_i4}'''
 
         if mace_dispersion:
             calc_code += f'''
@@ -2773,7 +2800,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         if device == "cuda":
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
-                calculator = mace_mp({mace_args_str.replace('device=device', 'device="cpu"')})
+                calculator = mace_mp({mace_args_cpu_str})
                 print("✅ MACE-MP calculator initialized successfully on CPU (fallback)")
             except Exception as cpu_error:
                 print(f"❌ CPU fallback also failed: {{cpu_error}}")

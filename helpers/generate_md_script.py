@@ -8,6 +8,7 @@ from helpers.quantum_espresso import (
 )
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
+    mace_cueq_preamble, mace_cueq_arg,
 )
 
 
@@ -15,7 +16,7 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                               custom_mace_path=None, custom_upet_path=None,
                               polar_settings=None, custom_sevennet_path=None,
-                              custom_grace_path=None):
+                              custom_grace_path=None, mace_enable_cueq=False):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -37,6 +38,11 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
     _polar_charge = (polar_settings or {}).get("charge", 0)
     _polar_spin = (polar_settings or {}).get("spin", 1)
     _polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
+
+    # cuEquivariance (MACE + CUDA only); '' / None when it does not apply.
+    _cueq_pre = mace_cueq_preamble(mace_enable_cueq, device)
+    _cueq_pre_i4 = mace_cueq_preamble(mace_enable_cueq, device, indent="    ")
+    _cueq_arg = mace_cueq_arg(mace_enable_cueq, device)
 
     calculator_setup_str = ""
     imports_str = f"""
@@ -288,6 +294,7 @@ except Exception as e:
 """
 
     elif "MACE-OFF" in actual_selected_model:
+        _cueq_off_arg = f", {_cueq_arg}" if _cueq_arg else ""
         imports_str += """
 try:
     from mace.calculators import mace_off
@@ -297,9 +304,9 @@ except ImportError:
 """
         calculator_setup_str = f"""
 print("Setting up MACE-OFF calculator...")
-try:
+{_cueq_pre}try:
     calculator = mace_off(
-        model="{actual_model_size}", default_dtype="{dtype}", device="{device}"
+        model="{actual_model_size}", default_dtype="{dtype}", device="{device}"{_cueq_off_arg}
     )
     print(f"✅ MACE-OFF {actual_model_size} initialized on {device}")
 except Exception as e:
@@ -361,10 +368,15 @@ print(f"🔬 Dispersion: D3-{mace_dispersion_xc}")"""
                 calc_args.append(f'dispersion=True')
                 calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
 
+            if _cueq_arg:
+                calc_args.append(_cueq_arg)
             calc_args_str = ',\n        '.join(calc_args)
+            calc_args_cpu_str = ',\n        '.join(
+                a for a in calc_args if not a.startswith("enable_cueq")
+            ).replace(f'device="{device}"', 'device="cpu"')
 
             calculator_setup_str += f"""
-try:
+{_cueq_pre}try:
     calculator = mace_mp(
         {calc_args_str}
     )
@@ -374,7 +386,7 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+            {calc_args_cpu_str}
         )
         print("✅ Custom MACE initialized on CPU (fallback)")
     except Exception as cpu_e:
@@ -441,11 +453,16 @@ try:
                 calc_args.append(f'dispersion=True')
                 calc_args.append(f'dispersion_xc="{mace_dispersion_xc}"')
 
+            if _cueq_arg:
+                calc_args.append(_cueq_arg)
             calc_args_str = ',\n        '.join(calc_args)
+            calc_args_cpu_str = ',\n        '.join(
+                a for a in calc_args if not a.startswith("enable_cueq")
+            ).replace(f'device="{device}"', 'device="cpu"')
 
             calculator_setup_str += f"""
 
-    calculator = mace_mp(
+{_cueq_pre_i4}    calculator = mace_mp(
         {calc_args_str}
     )
     print(f"✅ MACE foundation model initialized on {device}")
@@ -455,7 +472,7 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+            {calc_args_cpu_str}
         )
         print("✅ MACE initialized on CPU (fallback)")
     except Exception as cpu_e:
@@ -463,7 +480,6 @@ except Exception as e:
         exit()
 """
         else:
-            print("ALSO_")
             # Standard MACE-MP model
             calc_args = [
                 f'model="{actual_model_size}"',
@@ -477,11 +493,16 @@ except Exception as e:
             else:
                 calc_args.append(f'dispersion=False')
 
+            if _cueq_arg:
+                calc_args.append(_cueq_arg)
             calc_args_str = ',\n        '.join(calc_args)
+            calc_args_cpu_str = ',\n        '.join(
+                a for a in calc_args if not a.startswith("enable_cueq")
+            ).replace(f'device="{device}"', 'device="cpu"')
 
             calculator_setup_str = f"""
 print("Setting up MACE calculator...")
-try:
+{_cueq_pre}try:
     calculator = mace_mp(
         {calc_args_str}
     )
@@ -491,7 +512,7 @@ except Exception as e:
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            {calc_args_str.replace('device="' + device + '"', 'device="cpu"')}
+            {calc_args_cpu_str}
         )
         print("✅ MACE initialized on CPU (fallback)")
     except Exception as cpu_e:

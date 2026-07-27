@@ -3,6 +3,7 @@ from helpers.quantum_espresso import (
 )
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
+    mace_cueq_preamble, mace_cueq_arg,
 )
 
 
@@ -15,7 +16,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
                           custom_mace_path=None, custom_upet_path=None,
                           polar_settings=None, custom_sevennet_path=None,
-                          custom_grace_path=None):
+                          custom_grace_path=None, mace_enable_cueq=False):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -32,6 +33,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             polar_settings=polar_settings,
             custom_sevennet_path=custom_sevennet_path,
             custom_grace_path=custom_grace_path,
+            mace_enable_cueq=mace_enable_cueq,
         )
         effective_model_label = selected_model or model_size
 
@@ -103,7 +105,11 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
                         custom_mace_path, custom_upet_path,
                         polar_settings=None, custom_sevennet_path=None,
-                        custom_grace_path=None):
+                        custom_grace_path=None, mace_enable_cueq=False):
+
+    # cuEquivariance (MACE + CUDA only).
+    _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
+    _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
 
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
@@ -118,7 +124,9 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         if mace_dispersion:
             args += [f'dispersion=True', f'dispersion_xc="{mace_dispersion_xc}"']
         args += [f'default_dtype="{dtype}"', f'device="{device}"']
-        return (mace_model_resolution_code(custom_mace_path)
+        if _cq_kw:
+            args.append(_cq_kw)
+        return (mace_model_resolution_code(custom_mace_path) + _cq_pre
                 + "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    "
                 + ",\n    ".join(args) + "\n)")
 
@@ -302,7 +310,9 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
     if "OFF" in (selected_model or ""):
         return (
             f'from mace.calculators import mace_off\n'
-            f'calculator = mace_off(model="{model_size}", default_dtype="{dtype}", device="{device}")'
+            + _cq_pre
+            + f'calculator = mace_off(model="{model_size}", default_dtype="{dtype}", device="{device}"'
+            + (f", {_cq_kw})" if _cq_kw else ")")
         )
 
     if isinstance(model_size, str) and model_size.startswith("http"):
@@ -312,13 +322,19 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         if mace_dispersion:
             args += ['dispersion=True', f'dispersion_xc="{mace_dispersion_xc}"']
         args += [f'default_dtype="{dtype}"', f'device="{device}"']
-        return "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    " + ",\n    ".join(args) + "\n)"
+        if _cq_kw:
+            args.append(_cq_kw)
+        return (_cq_pre + "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    "
+                + ",\n    ".join(args) + "\n)")
 
     args = [f'model="{model_size}"']
     if mace_dispersion:
         args += ['dispersion=True', f'dispersion_xc="{mace_dispersion_xc}"']
     args += [f'default_dtype="{dtype}"', f'device="{device}"']
-    return "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    " + ",\n    ".join(args) + "\n)"
+    if _cq_kw:
+        args.append(_cq_kw)
+    return (_cq_pre + "from mace.calculators import mace_mp\ncalculator = mace_mp(\n    "
+            + ",\n    ".join(args) + "\n)")
 
 
 def _energy_only():

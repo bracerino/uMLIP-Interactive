@@ -16,6 +16,7 @@ from helpers.quantum_espresso import (
 )
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
+    mace_cueq_preamble, mace_cueq_arg,
 )
 from datetime import datetime
 
@@ -167,9 +168,14 @@ def _neb_force_norms(neb_obj, n_inner, natoms):
 
 def _calc_block(selected_model, model_size, device, dtype,
                 mace_head=None, mace_dispersion=False, mace_dispersion_xc='pbe',
-                custom_mace_path=None, indent="    ", custom_sevennet_path=None, custom_grace_path=None):
+                custom_mace_path=None, indent="    ", custom_sevennet_path=None, custom_grace_path=None,
+                mace_enable_cueq=False):
     """Return Python source-code string that creates `calculator`."""
     i = indent
+    # cuEquivariance (MACE + CUDA only).
+    _cq_pre = mace_cueq_preamble(mace_enable_cueq, device, indent=i)
+    _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
+    _cq = f", {_cq_kw}" if _cq_kw else ""
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
@@ -277,15 +283,17 @@ def _calc_block(selected_model, model_size, device, dtype,
         # Explicit path, or a *.model file sitting next to the generated script.
         hl = f", head='{mace_head}'" if mace_head else ""
         return (mace_model_resolution_code(custom_mace_path, indent=i)
+                + _cq_pre
                 + f"{i}from mace.calculators import mace_mp\n"
                 + f"{i}calculator = mace_mp(model=_mace_model_path, device='{device}', "
-                + f"default_dtype='{dtype}'{hl})\n"
+                + f"default_dtype='{dtype}'{hl}{_cq})\n"
                 + f"{i}print('Custom MACE ready')\n")
     if is_url:
         hl   = f", head='{mace_head}'" if mace_head else ""
         disp = (f", dispersion=True, dispersion_xc='{mace_dispersion_xc}'"
                 if mace_dispersion else "")
-        return (f"{i}import urllib.request; from pathlib import Path\n"
+        return (_cq_pre
+                + f"{i}import urllib.request; from pathlib import Path\n"
                 f"{i}from mace.calculators import mace_mp\n"
                 f"{i}_url = '{model_size}'\n"
                 f"{i}_name = _url.split('/')[-1]\n"
@@ -295,12 +303,13 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}    print(f'Downloading {{_name}} ...')\n"
                 f"{i}    urllib.request.urlretrieve(_url, str(_cache))\n"
                 f"{i}calculator = mace_mp(model=str(_cache), device='{device}', "
-                f"default_dtype='{dtype}'{hl}{disp})\n"
+                f"default_dtype='{dtype}'{hl}{disp}{_cq})\n"
                 f"{i}print('MACE foundation model ready')\n")
     if is_mace_off:
-        return (f"{i}from mace.calculators import mace_off\n"
+        return (_cq_pre
+                + f"{i}from mace.calculators import mace_off\n"
                 f"{i}calculator = mace_off(model='{model_size}', "
-                f"default_dtype='{dtype}', device='{device}')\n"
+                f"default_dtype='{dtype}', device='{device}'{_cq})\n"
                 f"{i}print('MACE-OFF ready')\n")
     if is_custom_grace:
         # Local / fine-tuned GRACE saved-model dir: explicit path or auto-discovered.
@@ -334,9 +343,10 @@ def _calc_block(selected_model, model_size, device, dtype,
 
     disp = (f", dispersion=True, dispersion_xc='{mace_dispersion_xc}'"
             if mace_dispersion else ", dispersion=False")
-    return (f"{i}from mace.calculators import mace_mp\n"
+    return (_cq_pre
+            + f"{i}from mace.calculators import mace_mp\n"
             f"{i}calculator = mace_mp(model='{model_size}', "
-            f"default_dtype='{dtype}', device='{device}'{disp})\n"
+            f"default_dtype='{dtype}', device='{device}'{disp}{_cq})\n"
             f"{i}print('MACE-MP ready')\n")
 
 
@@ -753,11 +763,13 @@ def display_neb_results(neb_results, structure_name, use_distance=False):
 def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
-                        custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
+                        custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
+                        mace_enable_cueq=False):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path,
+                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1219,11 +1231,13 @@ if __name__ == "__main__":
 def generate_neb_script_minimal(neb_params, selected_model, model_size, device, dtype,
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',
-                                 custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
+                                 custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
+                                 mace_enable_cueq=False):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
-                               custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
+                               custom_mace_path, custom_sevennet_path=custom_sevennet_path,
+                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1481,7 +1495,8 @@ if __name__ == "__main__":
 def render_neb_script_button(neb_params, selected_model, model_size, device, dtype,
                               thread_count=4, mace_head=None,
                               mace_dispersion=False, mace_dispersion_xc='pbe',
-                              custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None):
+                              custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
+                              mace_enable_cueq=False):
     st.markdown("---")
     st.subheader("📝 Generate Standalone NEB Scripts")
     st.info(
@@ -1492,7 +1507,8 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
               model_size=model_size, device=device, dtype=dtype,
               thread_count=thread_count, mace_head=mace_head,
               mace_dispersion=mace_dispersion, mace_dispersion_xc=mace_dispersion_xc,
-              custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path, custom_grace_path=custom_grace_path)
+              custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path,
+              custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
 
     col_a, col_b = st.columns(2)
 

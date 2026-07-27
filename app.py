@@ -3350,7 +3350,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          ga_params=None,  neb_initial=None, neb_finals=None,mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                          custom_upet_path=None,
                          polar_settings=None, eos_params=None, custom_sevennet_path=None,
-                         custom_grace_path=None, custom_mace_path=None):
+                         custom_grace_path=None, custom_mace_path=None,
+                         mace_enable_cueq=False):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3823,6 +3824,23 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put("Setting up MACE calculator...")
             log_queue.put(f"Using import method: {MACE_IMPORT_METHOD}")
 
+            # cuEquivariance acceleration: CUDA-only. If it was requested but the
+            # package is missing, stop rather than quietly running without it.
+            _cueq = {}
+            if mace_enable_cueq and device == "cuda":
+                try:
+                    import cuequivariance  # noqa: F401
+                except ImportError:
+                    log_queue.put("❌ cuEquivariance acceleration is enabled, but the "
+                                  "'cuequivariance' package is not installed.")
+                    log_queue.put("   Install it with: pip install cuequivariance "
+                                  "cuequivariance-torch cuequivariance-ops-torch-cu12")
+                    log_queue.put("   ...or untick '⚡ cuEquivariance acceleration' in the sidebar.")
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
+                _cueq = {'enable_cueq': True}
+                log_queue.put("⚡ cuEquivariance acceleration enabled")
+
             # Custom / fine-tuned MACE .model file: resolve to the explicit path.
             # (Auto-discovery from the script folder only applies to generated
             #  standalone scripts, not to a live in-app run.)
@@ -3891,7 +3909,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 calc_kwargs['dispersion_xc'] = mace_dispersion_xc
                                 log_queue.put(f"Using D3 dispersion: {mace_dispersion_xc}")
 
-                            calculator = mace_mp(**calc_kwargs)
+                            calculator = mace_mp(**calc_kwargs, **_cueq)
                             log_queue.put(f"✅ MACE calculator initialized from downloaded model on {device}")
 
                         except Exception as e:
@@ -3922,7 +3940,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         log_queue.put(
                             f"Initializing MACE-OFF calculator on {device}...")
                         calculator = mace_off(
-                            model=model_size, default_dtype=dtype, device=device)
+                            model=model_size, default_dtype=dtype, device=device, **_cueq)
                         log_queue.put(
                             f"✅ MACE-OFF calculator initialized successfully on {device}")
                     else:
@@ -3933,7 +3951,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             dispersion=mace_dispersion,
                             dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
                             default_dtype=dtype,
-                            device=device
+                            device=device,
+                            **_cueq
                         )
                         log_queue.put(
                             f"✅ MACE-MP calculator initialized successfully on {device}")
@@ -3977,7 +3996,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         dispersion=mace_dispersion,
                         dispersion_xc=mace_dispersion_xc if mace_dispersion else None,
                         default_dtype=dtype,
-                        device=device
+                        device=device,
+                        **_cueq
                     )
                     log_queue.put(
                         f"✅ mace_mp calculator initialized successfully on {device}")
@@ -5338,6 +5358,37 @@ with st.sidebar:
         mace_dispersion = False
         mace_dispersion_xc = "pbe"
 
+    # cuEquivariance acceleration (enable_cueq): MACE-only and GPU-only. Same model
+    # and weights, faster equivariant kernels — so it is on by default when a GPU is
+    # selected. MACE-POLAR is excluded (polarisable heads are not covered).
+    mace_enable_cueq = False
+    is_mace_family = ((not use_qe) and "MACE" in selected_model
+                      and "POLAR" not in selected_model.upper())
+    if is_mace_family and device == "cuda":
+        mace_enable_cueq = st.checkbox(
+            "⚡ cuEquivariance acceleration (enable_cueq)",
+            value=True,
+            key="mace_enable_cueq",
+            help=(
+                "Runs MACE with the cuEquivariance CUDA kernels — same model and "
+                "weights, typically ~2x faster on GPU. Requires the 'cuequivariance' "
+                "packages (pip install cuequivariance cuequivariance-torch "
+                "cuequivariance-ops-torch-cu12). If they are missing, the run stops "
+                "with an error instead of silently continuing without acceleration."
+            ),
+        )
+        if mace_enable_cueq:
+            import importlib.util as _ilu
+            if _ilu.find_spec("cuequivariance") is None:
+                st.error(
+                    "❌ **cuequivariance is not installed** in this environment — the "
+                    "calculation will stop when it starts.\n\n"
+                    "Install it with:\n"
+                    "```\npip install cuequivariance cuequivariance-torch "
+                    "cuequivariance-ops-torch-cu12\n```\n"
+                    "or untick the box above to run without acceleration."
+                )
+
     col_mult1, col_mult2 = st.columns([1, 1])
     # Only show for MACE models (not other calculators)
 
@@ -5513,7 +5564,8 @@ with st.sidebar:
     st.session_state.mace_config = {
         'head': mace_head,
         'dispersion': mace_dispersion,
-        'dispersion_xc': mace_dispersion_xc
+        'dispersion_xc': mace_dispersion_xc,
+        'enable_cueq': mace_enable_cueq
     }
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
@@ -5939,6 +5991,7 @@ with tab1:
                             mace_head=mace_head_for_script,
                             mace_dispersion=mace_dispersion_for_script,
                             mace_dispersion_xc=mace_dispersion_xc_for_script,
+                            mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             custom_mace_path=custom_mace_path,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
@@ -6135,6 +6188,7 @@ with tab1:
                         current_thread_count,
                         custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                         custom_grace_path=custom_grace_path if is_custom_grace else None,
+                        mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                     )
                     st.session_state.generated_tensile_script = generated_script
@@ -6204,6 +6258,7 @@ with tab1:
                             mace_head=mace_config.get("head"),
                             mace_dispersion=mace_config.get("dispersion", False),
                             mace_dispersion_xc=mace_config.get("dispersion_xc", "pbe"),
+                            mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get("polar_settings", {}),
@@ -6261,6 +6316,7 @@ with tab1:
                 mace_head=mace_head,
                 mace_dispersion=mace_dispersion,
                 mace_dispersion_xc=mace_dispersion_xc,
+                mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                 custom_grace_path=custom_grace_path if is_custom_grace else None,
@@ -6324,6 +6380,7 @@ with tab1:
                         mace_head=mace_config.get('head'),
                         mace_dispersion=mace_config.get('dispersion', False),
                         mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
+                        mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                         custom_upet_path=custom_upet_path if is_custom_upet else None,
                         polar_settings=st.session_state.get('polar_settings', {}),
@@ -8162,6 +8219,7 @@ with tab_st:
                 mace_head=mace_cfg.get('head'),
                 mace_dispersion=mace_cfg.get('dispersion', False),
                 mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
+                mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings'),
@@ -8197,6 +8255,7 @@ with tab_st:
                 mace_head=mace_config.get('head'),
                 mace_dispersion=mace_config.get('dispersion', False),
                 mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
+                mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8278,6 +8337,7 @@ with tab_st:
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
+                mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8372,6 +8432,7 @@ with tab_st:
                 mace_head=mace_head_for_script,
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
+                mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 #custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8453,7 +8514,8 @@ with tab_st:
                       custom_upet_path,st.session_state.get('polar_settings', {}), eos_params,
                       custom_sevennet_path if is_custom_sevennet else None,
                       custom_grace_path if is_custom_grace else None,
-                      custom_mace_path if is_custom_mace else None,)
+                      custom_mace_path if is_custom_mace else None,
+                      st.session_state.get('mace_config', {}).get('enable_cueq', False),)
             )
             thread.start()
             st.rerun()
