@@ -490,10 +490,22 @@ class PhononCalculator:
 
 
         phonopy_atoms = _atoms_to_phonopy(atoms)
+
+        # A manual k-path is written in the basis of the cell the user supplied,
+        # but phonopy reads band q-points in the basis of `phonon.primitive`.
+        # With primitive_matrix="auto" spglib may re-derive/re-orient that cell,
+        # silently sending the path along different directions (and, for a
+        # non-primitive input, rescaling it). Pin the basis in that case.
+        # Mirrors the manual branch of `_build_kpath` below.
+        manual_kpath_selected = bool(p.manual_kpath)
+        if manual_kpath_selected:
+            self._log("  Manual k-path: pinning primitive_matrix=None so the "
+                      "q-points stay in the supplied cell's basis")
+
         phonon = Phonopy(
             phonopy_atoms,
             supercell_matrix=sc_mat,
-            primitive_matrix="auto",
+            primitive_matrix=None if manual_kpath_selected else "auto",
             log_level=0,
         )
 

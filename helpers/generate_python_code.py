@@ -6083,9 +6083,19 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             # structure is used as-is — no symmetry-driven displacement
             # reduction or refinement. The irreps block below uses its
             # OWN, looser symprec via IrReps(symprec=irreps_symprec).
+            #
+            # A manual k-path is written in the basis of the cell supplied here,
+            # but phonopy reads band q-points in the basis of `phonon.primitive`.
+            # With primitive_matrix="auto" spglib may re-derive/re-orient that
+            # cell, silently sending the path along different directions (and,
+            # for a non-primitive input, rescaling it). Pin the basis in that case.
+            _manual_kpath_selected = bool(manual_kpath_data) and not use_auto_kpath
+            if _manual_kpath_selected:
+                log("  Manual k-path: pinning primitive_matrix=None so the "
+                    "q-points stay in the supplied cell's basis")
             phonon = Phonopy(phonopy_atoms,
                              supercell_matrix=supercell_matrix,
-                             primitive_matrix="auto")
+                             primitive_matrix=None if _manual_kpath_selected else "auto")
 
             log(f"  Generating displacements (distance={{displacement_distance}} Å)...")
             phonon.generate_displacements(distance=displacement_distance)
