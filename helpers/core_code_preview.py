@@ -4,6 +4,7 @@ from helpers.quantum_espresso import (
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
+    sevennet_cueq_preamble, sevennet_cueq_arg,
 )
 
 
@@ -16,7 +17,8 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
                           custom_mace_path=None, custom_upet_path=None,
                           polar_settings=None, custom_sevennet_path=None,
-                          custom_grace_path=None, mace_enable_cueq=False):
+                          custom_grace_path=None, mace_enable_cueq=False,
+                          sevennet_enable_cueq=False):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -34,6 +36,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             custom_sevennet_path=custom_sevennet_path,
             custom_grace_path=custom_grace_path,
             mace_enable_cueq=mace_enable_cueq,
+            sevennet_enable_cueq=sevennet_enable_cueq,
         )
         effective_model_label = selected_model or model_size
 
@@ -105,11 +108,16 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                         mace_head, mace_dispersion, mace_dispersion_xc,
                         custom_mace_path, custom_upet_path,
                         polar_settings=None, custom_sevennet_path=None,
-                        custom_grace_path=None, mace_enable_cueq=False):
+                        custom_grace_path=None, mace_enable_cueq=False,
+                        sevennet_enable_cueq=False):
 
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
     _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
+    # SevenNet tensor product accelerator (SevenNet + CUDA only).
+    _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device)
+    _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
+    _7net = f", {_7net_arg}" if _7net_arg else ""
 
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
@@ -228,7 +236,8 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
             f'import os, glob\n'
             f'torch.serialization.add_safe_globals([slice])\n'
             f'from sevenn.calculator import SevenNetCalculator\n'
-            f'calculator = SevenNetCalculator({model_expr}, device="{device}")'
+            f'{_7net_pre}'
+            f'calculator = SevenNetCalculator({model_expr}, device="{device}"{_7net})'
         )
 
     if "SevenNet" in (selected_model or ""):
@@ -237,21 +246,25 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
             return (
                 f'torch.serialization.add_safe_globals([slice])\n'
                 f'from sevenn.calculator import SevenNetCalculator\n'
-                f'calculator = SevenNetCalculator(model="7net-omni", modal="{modal}", device="{device}")'
+                f'{_7net_pre}'
+                f'calculator = SevenNetCalculator(model="7net-omni", modal="{modal}", device="{device}"{_7net})'
             )
         if model_size == "7net-mf-ompa-mpa":
             return (
                 f'from sevenn.calculator import SevenNetCalculator\n'
-                f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="mpa", device="{device}")'
+                f'{_7net_pre}'
+                f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="mpa", device="{device}"{_7net})'
             )
         if model_size == "7net-mf-ompa-omat24":
             return (
                 f'from sevenn.calculator import SevenNetCalculator\n'
-                f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="omat24", device="{device}")'
+                f'{_7net_pre}'
+                f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="omat24", device="{device}"{_7net})'
             )
         return (
             f'from sevenn.calculator import SevenNetCalculator\n'
-            f'calculator = SevenNetCalculator(model="{model_size}", device="{device}")'
+            f'{_7net_pre}'
+            f'calculator = SevenNetCalculator(model="{model_size}", device="{device}"{_7net})'
         )
 
     if "MatterSim" in (selected_model or ""):

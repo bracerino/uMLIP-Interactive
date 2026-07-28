@@ -4,6 +4,7 @@ from datetime import datetime
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
+    sevennet_cueq_preamble, sevennet_cueq_arg,
 )
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
@@ -139,7 +140,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                            custom_mace_path=None, custom_upet_path=None, polar_settings=None,
                            custom_sevennet_path=None, custom_grace_path=None,
-                           mace_enable_cueq=False):
+                           mace_enable_cueq=False, sevennet_enable_cueq=False):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
@@ -154,6 +155,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         custom_sevennet_path=custom_sevennet_path,
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
+        sevennet_enable_cueq=sevennet_enable_cueq,
     )
 
     if calc_type == "Energy Only":
@@ -300,7 +302,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                        custom_mace_path=None,custom_upet_path=None, polar_settings=None,
                                        custom_sevennet_path=None, custom_grace_path=None,
-                                       mace_enable_cueq=False):
+                                       mace_enable_cueq=False, sevennet_enable_cueq=False):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -318,6 +320,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         custom_sevennet_path=custom_sevennet_path,
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
+        sevennet_enable_cueq=sevennet_enable_cueq,
     )
 
     if calc_type == "Energy Only":
@@ -1901,13 +1904,18 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                     custom_mace_path=None, custom_upet_path=None,
                                     polar_settings=None, custom_sevennet_path=None, custom_grace_path=None,
-                                    mace_enable_cueq=False
+                                    mace_enable_cueq=False, sevennet_enable_cueq=False
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
     # cuEquivariance (MACE + CUDA only); '' / None when it does not apply.
     _cueq_pre_i4 = mace_cueq_preamble(mace_enable_cueq, device, indent="    ")
     _cueq_arg = mace_cueq_arg(mace_enable_cueq, device)
     _cueq_off_arg = f", {_cueq_arg}" if _cueq_arg else ""
+
+    # SevenNet tensor product accelerator (SevenNet + CUDA only).
+    _7net_pre_i4 = sevennet_cueq_preamble(sevennet_enable_cueq, device, indent="    ")
+    _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
+    _7net_kw = f", {_7net_arg}" if _7net_arg else ""
 
     # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
     # short-circuits the whole model-detection chain below.
@@ -2533,6 +2541,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     device = "{device}"
     print(f"🔧 Initializing custom SevenNet calculator on {{device}}...")
     from sevenn.calculator import SevenNetCalculator
+{_7net_pre_i4}
 
     _explicit_path = r"{_csp}".strip()
     if _explicit_path:
@@ -2559,7 +2568,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         raise FileNotFoundError(f"SevenNet checkpoint not found: {{model_path}}")
 
     try:
-        calculator = SevenNetCalculator(model=model_path, device=device)
+        calculator = SevenNetCalculator(model=model_path, device=device{_7net_kw})
         print(f"✅ Custom SevenNet initialized successfully on {{device}}")
     except Exception as e:
         print(f"❌ Custom SevenNet initialization failed on {{device}}: {{e}}")
@@ -2573,6 +2582,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     elif is_sevennet:
         calc_code = f'''    device = "{device}"
     print(f"🔧 Initializing SevenNet calculator on {{device}}...")
+{_7net_pre_i4}
     try:
         from sevenn.calculator import SevenNetCalculator
 
@@ -2580,17 +2590,17 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         print(f"🎯 Model function: {model_size}")
 
         if "{model_size}" == "7net-mf-ompa-mpa":
-            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device{_7net_kw})
             print("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
         elif "{model_size}" == "7net-mf-ompa-omat24":
-            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+            calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device{_7net_kw})
             print("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
         elif "{model_size}".startswith("7net-omni-"):
             modal = "{model_size}".split("7net-omni-")[1]
-            calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device)
+            calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device{_7net_kw})
             print(f"✅ SevenNet-Omni ({{modal}}) initialized successfully on {{device}}")
         else:
-            calculator = SevenNetCalculator(model="{model_size}", device=device)
+            calculator = SevenNetCalculator(model="{model_size}", device=device{_7net_kw})
             print(f"✅ SevenNet {model_size} initialized successfully on {{device}}")
 
     except Exception as e:

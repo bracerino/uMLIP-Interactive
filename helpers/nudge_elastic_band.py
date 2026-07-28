@@ -17,6 +17,7 @@ from helpers.quantum_espresso import (
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
+    sevennet_cueq_preamble, sevennet_cueq_arg,
 )
 from datetime import datetime
 
@@ -169,13 +170,17 @@ def _neb_force_norms(neb_obj, n_inner, natoms):
 def _calc_block(selected_model, model_size, device, dtype,
                 mace_head=None, mace_dispersion=False, mace_dispersion_xc='pbe',
                 custom_mace_path=None, indent="    ", custom_sevennet_path=None, custom_grace_path=None,
-                mace_enable_cueq=False):
+                mace_enable_cueq=False, sevennet_enable_cueq=False):
     """Return Python source-code string that creates `calculator`."""
     i = indent
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device, indent=i)
     _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
     _cq = f", {_cq_kw}" if _cq_kw else ""
+    # SevenNet tensor product accelerator (SevenNet + CUDA only).
+    _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device, indent=i)
+    _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
+    _7net = f", {_7net_arg}" if _7net_arg else ""
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
@@ -222,12 +227,14 @@ def _calc_block(selected_model, model_size, device, dtype,
         return (f"{i}import os, torch; torch.serialization.add_safe_globals([slice])\n"
                 f"{discover}"
                 f"{i}from sevenn.calculator import SevenNetCalculator\n"
-                f"{i}calculator = SevenNetCalculator(model={model_expr}, device='{device}')\n"
+                f"{_7net_pre}"
+                f"{i}calculator = SevenNetCalculator(model={model_expr}, device='{device}'{_7net})\n"
                 f"{i}print('Custom SevenNet ready')\n")
     if is_sevennet:
         return (f"{i}import torch; torch.serialization.add_safe_globals([slice])\n"
                 f"{i}from sevenn.calculator import SevenNetCalculator\n"
-                f"{i}calculator = SevenNetCalculator(model='{model_size}', device='{device}')\n"
+                f"{_7net_pre}"
+                f"{i}calculator = SevenNetCalculator(model='{model_size}', device='{device}'{_7net})\n"
                 f"{i}print('SevenNet ready')\n")
     if is_mattersim:
         mp = "MatterSim-v1.0.0-5M.pth" if "5m" in model_size else "MatterSim-v1.0.0-1M.pth"
@@ -764,12 +771,13 @@ def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
                         custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                        mace_enable_cueq=False):
+                        mace_enable_cueq=False, sevennet_enable_cueq=False):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
                                custom_mace_path, custom_sevennet_path=custom_sevennet_path,
-                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
+                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
+                               sevennet_enable_cueq=sevennet_enable_cueq)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1232,12 +1240,13 @@ def generate_neb_script_minimal(neb_params, selected_model, model_size, device, 
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',
                                  custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                                 mace_enable_cueq=False):
+                                 mace_enable_cueq=False, sevennet_enable_cueq=False):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
                                custom_mace_path, custom_sevennet_path=custom_sevennet_path,
-                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
+                               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
+                               sevennet_enable_cueq=sevennet_enable_cueq)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1496,7 +1505,7 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
                               thread_count=4, mace_head=None,
                               mace_dispersion=False, mace_dispersion_xc='pbe',
                               custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                              mace_enable_cueq=False):
+                              mace_enable_cueq=False, sevennet_enable_cueq=False):
     st.markdown("---")
     st.subheader("📝 Generate Standalone NEB Scripts")
     st.info(
@@ -1508,7 +1517,8 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
               thread_count=thread_count, mace_head=mace_head,
               mace_dispersion=mace_dispersion, mace_dispersion_xc=mace_dispersion_xc,
               custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path,
-              custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq)
+              custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
+              sevennet_enable_cueq=sevennet_enable_cueq)
 
     col_a, col_b = st.columns(2)
 

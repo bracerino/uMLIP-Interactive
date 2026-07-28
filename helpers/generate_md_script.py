@@ -9,6 +9,7 @@ from helpers.quantum_espresso import (
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
+    sevennet_cueq_preamble, sevennet_cueq_arg,
 )
 
 
@@ -16,7 +17,8 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                               custom_mace_path=None, custom_upet_path=None,
                               polar_settings=None, custom_sevennet_path=None,
-                              custom_grace_path=None, mace_enable_cueq=False):
+                              custom_grace_path=None, mace_enable_cueq=False,
+                              sevennet_enable_cueq=False):
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -43,6 +45,11 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
     _cueq_pre = mace_cueq_preamble(mace_enable_cueq, device)
     _cueq_pre_i4 = mace_cueq_preamble(mace_enable_cueq, device, indent="    ")
     _cueq_arg = mace_cueq_arg(mace_enable_cueq, device)
+
+    # SevenNet tensor product accelerator (SevenNet + CUDA only).
+    _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device)
+    _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
+    _7net_kw = f", {_7net_arg}" if _7net_arg else ""
 
     calculator_setup_str = ""
     imports_str = f"""
@@ -542,6 +549,7 @@ except ImportError:
             calculator_setup_str = f"""
 import glob
 print("Setting up custom SevenNet calculator...")
+{_7net_pre}
 _explicit_path = r"{_csp}".strip()
 if _explicit_path:
     _model_path = _explicit_path
@@ -565,7 +573,7 @@ if not os.path.exists(_model_path):
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    calculator = SevenNetCalculator(model=_model_path, device="{device}")
+    calculator = SevenNetCalculator(model=_model_path, device="{device}"{_7net_kw})
     torch.set_default_dtype(original_dtype)
     print(f"✅ Custom SevenNet initialized on {device}")
 except Exception as e:
@@ -582,10 +590,11 @@ except Exception as e:
         else:
             calculator_setup_str = f"""
 print("Setting up SevenNet calculator...")
+{_7net_pre}
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    calculator = SevenNetCalculator(model="{actual_model_size}", device="{device}")
+    calculator = SevenNetCalculator(model="{actual_model_size}", device="{device}"{_7net_kw})
     torch.set_default_dtype(original_dtype)
     print(f"✅ SevenNet {actual_model_size} initialized on {device}")
 except Exception as e:

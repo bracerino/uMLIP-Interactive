@@ -109,6 +109,7 @@ from helpers.tensile_test import (
 )
 
 from helpers.generate_md_script import generate_md_python_script
+from helpers.custom_model_paths import SEVENNET_CUEQ_MODULE, SEVENNET_CUEQ_INSTALL
 from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
 import helpers.quantum_espresso as qe
@@ -3362,7 +3363,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          custom_upet_path=None,
                          polar_settings=None, eos_params=None, custom_sevennet_path=None,
                          custom_grace_path=None, custom_mace_path=None,
-                         mace_enable_cueq=False):
+                         mace_enable_cueq=False, sevennet_enable_cueq=False):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3752,22 +3753,40 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 model_size = custom_sevennet_path
                 log_queue.put(f"📁 Using custom SevenNet checkpoint: {model_size}")
 
+            # cuEquivariance: CUDA-only. SevenNet would only warn and fall back to
+            # e3nn, so the missing package is reported as an error instead.
+            _accel = {}
+            if sevennet_enable_cueq and device == "cuda":
+                import importlib.util as _accel_ilu
+                if _accel_ilu.find_spec(SEVENNET_CUEQ_MODULE) is None:
+                    log_queue.put("❌ cuEquivariance acceleration is enabled, but the "
+                                  f"'{SEVENNET_CUEQ_MODULE}' package is not installed.")
+                    log_queue.put("   Install it with:")
+                    for _accel_cmd in SEVENNET_CUEQ_INSTALL:
+                        log_queue.put(f"     {_accel_cmd}")
+                    log_queue.put("   ...or untick '⚡ cuEquivariance acceleration' "
+                                  "in the sidebar.")
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
+                _accel = {'enable_cueq': True}
+                log_queue.put("⚡ cuEquivariance acceleration enabled for SevenNet")
+
             try:
                 original_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.float32)
 
                 if model_size == "7net-mf-ompa-mpa":
-                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device)
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='mpa', device=device, **_accel)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (MPA modal) initialized successfully")
                 elif model_size == "7net-mf-ompa-omat24":
-                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device)
+                    calculator = SevenNetCalculator(model='7net-mf-ompa', modal='omat24', device=device, **_accel)
                     log_queue.put("✅ SevenNet 7net-mf-ompa (OMat24 modal) initialized successfully")
                 elif model_size.startswith("7net-omni-"):
                     modal = model_size.split("7net-omni-")[1]
-                    calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device)
+                    calculator = SevenNetCalculator(model='7net-omni', modal=modal, device=device, **_accel)
                     log_queue.put(f"✅ SevenNet-Omni ({modal}) initialized successfully on {device}")
                 else:
-                    calculator = SevenNetCalculator(model=model_size, device=device)
+                    calculator = SevenNetCalculator(model=model_size, device=device, **_accel)
                     log_queue.put(f"✅ SevenNet {model_size} initialized successfully on {device}")
 
                 torch.set_default_dtype(original_dtype)
@@ -5400,6 +5419,38 @@ with st.sidebar:
                     "or untick the box above to run without acceleration."
                 )
 
+    # cuEquivariance acceleration for SevenNet: GPU-only. Same model and weights,
+    # faster tensor product kernels. SevenNet only warns ("No tensor product
+    # accelerator is enabled...") and silently runs on plain e3nn when the package
+    # is missing, so it is validated here and the run stops instead.
+    sevennet_enable_cueq = False
+    if (not use_qe) and "SevenNet" in selected_model and device == "cuda":
+        import importlib.util as _ilu
+        _cueq_installed = _ilu.find_spec(SEVENNET_CUEQ_MODULE) is not None
+        sevennet_enable_cueq = st.checkbox(
+            "⚡ cuEquivariance acceleration (enable_cueq)",
+            # Ticked when the package is actually there, so a freshly installed
+            # environment gets the speed-up without an extra click, and an older
+            # one is not forced into an error.
+            value=_cueq_installed,
+            key="sevennet_enable_cueq",
+            help=(
+                "Runs SevenNet with the cuEquivariance CUDA kernels — same model "
+                "and weights, only faster. Without it SevenNet warns that no "
+                "tensor product accelerator is enabled and falls back to plain "
+                "e3nn. Installed via requirements-sevennet.txt; if it is missing, "
+                "the run stops with an error instead of silently continuing "
+                "without acceleration."
+            ),
+        )
+        if sevennet_enable_cueq and not _cueq_installed:
+            st.error(
+                "❌ **cuequivariance is not installed** in this environment — the "
+                "calculation will stop when it starts.\n\n"
+                "Install it with:\n```\n" + "\n".join(SEVENNET_CUEQ_INSTALL) + "\n```\n"
+                "or untick the box above to run without acceleration."
+            )
+
     col_mult1, col_mult2 = st.columns([1, 1])
     # Only show for MACE models (not other calculators)
 
@@ -5578,6 +5629,9 @@ with st.sidebar:
         'dispersion_xc': mace_dispersion_xc,
         'enable_cueq': mace_enable_cueq
     }
+    # Rewritten on every rerun so a stale pick cannot survive a switch to CPU or
+    # to a non-SevenNet model (the widget's own key would keep the old value).
+    st.session_state.sevennet_config = {'enable_cueq': sevennet_enable_cueq}
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -6003,6 +6057,7 @@ with tab1:
                             mace_dispersion=mace_dispersion_for_script,
                             mace_dispersion_xc=mace_dispersion_xc_for_script,
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                            sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                             custom_mace_path=custom_mace_path,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
@@ -6200,6 +6255,7 @@ with tab1:
                         custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                         custom_grace_path=custom_grace_path if is_custom_grace else None,
                         mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                        sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                     )
                     st.session_state.generated_tensile_script = generated_script
@@ -6270,6 +6326,7 @@ with tab1:
                             mace_dispersion=mace_config.get("dispersion", False),
                             mace_dispersion_xc=mace_config.get("dispersion_xc", "pbe"),
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                            sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get("polar_settings", {}),
@@ -6328,6 +6385,7 @@ with tab1:
                 mace_dispersion=mace_dispersion,
                 mace_dispersion_xc=mace_dispersion_xc,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                 custom_grace_path=custom_grace_path if is_custom_grace else None,
@@ -6392,6 +6450,7 @@ with tab1:
                         mace_dispersion=mace_config.get('dispersion', False),
                         mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
                         mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                        sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                         custom_upet_path=custom_upet_path if is_custom_upet else None,
                         polar_settings=st.session_state.get('polar_settings', {}),
@@ -8231,6 +8290,7 @@ with tab_st:
                 mace_dispersion=mace_cfg.get('dispersion', False),
                 mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings'),
@@ -8267,6 +8327,7 @@ with tab_st:
                 mace_dispersion=mace_config.get('dispersion', False),
                 mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8349,6 +8410,7 @@ with tab_st:
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                 custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8444,6 +8506,7 @@ with tab_st:
                 mace_dispersion=mace_dispersion_for_script,
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                 #custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -8526,7 +8589,8 @@ with tab_st:
                       custom_sevennet_path if is_custom_sevennet else None,
                       custom_grace_path if is_custom_grace else None,
                       custom_mace_path if is_custom_mace else None,
-                      st.session_state.get('mace_config', {}).get('enable_cueq', False),)
+                      st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                      st.session_state.get('sevennet_config', {}).get('enable_cueq', False),)
             )
             thread.start()
             st.rerun()

@@ -10,16 +10,23 @@ from helpers.quantum_espresso import (
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
+    sevennet_cueq_preamble, sevennet_cueq_arg,
 )
 
 
 def generate_tensile_test_python_script(tensile_params, selected_model, model_size, device, dtype, thread_count,
                                         custom_sevennet_path=None, custom_grace_path=None,
-                                        custom_mace_path=None, mace_enable_cueq=False):
+                                        custom_mace_path=None, mace_enable_cueq=False,
+                                        sevennet_enable_cueq=False):
 
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
     _cq_kw = mace_cueq_arg(mace_enable_cueq, device)
+
+    # SevenNet tensor product accelerator (SevenNet + CUDA only).
+    _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device)
+    _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
+    _7net_kw = f", {_7net_arg}" if _7net_arg else ""
     _cq = f", {_cq_kw}" if _cq_kw else ""
 
     is_custom_mace = ("MACE" in selected_model and "OFF" not in selected_model
@@ -255,10 +262,11 @@ else:
 if not os.path.exists(_model_path):
     raise FileNotFoundError("SevenNet checkpoint not found: " + _model_path)
 
+{_7net_pre}
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    calculator = SevenNetCalculator(model=_model_path, device="{device}")
+    calculator = SevenNetCalculator(model=_model_path, device="{device}"{_7net_kw})
     torch.set_default_dtype(original_dtype)
     print(f"✅ Custom SevenNet initialized on {device}")
 except Exception as e:
@@ -281,10 +289,11 @@ try:
 except AttributeError:
     print("  ... running on older torch version, add_safe_globals not needed.")
     pass
+{_7net_pre}
 original_dtype = torch.get_default_dtype()
 torch.set_default_dtype(torch.float32)
 try:
-    calculator = SevenNetCalculator(model="{model_size}", device="{device}")
+    calculator = SevenNetCalculator(model="{model_size}", device="{device}"{_7net_kw})
     torch.set_default_dtype(original_dtype)
     print(f"✅ SevenNet {model_size} initialized on {device}")
 except Exception as e:

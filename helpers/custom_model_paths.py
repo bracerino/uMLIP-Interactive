@@ -76,6 +76,53 @@ def mace_cueq_arg(enable_cueq=False, device="cpu"):
     return None
 
 
+# cuEquivariance acceleration for SevenNet. SevenNet also supports OpenEquivariance
+# and FlashTP, but only cuEquivariance is offered here: it is the one that installs
+# with a plain pip command (see requirements-sevennet.txt), while FlashTP has to be
+# built from source. https://sevennet.readthedocs.io/en/latest/user_guide/accelerator.html
+SEVENNET_CUEQ_MODULE = "cuequivariance"
+SEVENNET_CUEQ_INSTALL = [
+    "pip install 'sevenn[cueq12]'    # CUDA 12.x",
+    "pip install 'sevenn[cueq13]'    # CUDA 13.x",
+]
+
+
+def sevennet_cueq_preamble(enable_cueq=False, device="cpu", indent=""):
+    """Return code that checks cuEquivariance is usable before SevenNet starts.
+
+    SevenNet itself only emits a ``UserWarning`` and quietly falls back to e3nn
+    when the package is missing, which is easy to miss in a long log. The
+    generated script stops instead, the same way the MACE option does.
+    """
+    if not (enable_cueq and device == "cuda"):
+        return ""
+    # repr() so command lines containing quotes survive into the generated script.
+    hint_lines = "\n".join(f'    print("     " + {cmd!r})' for cmd in SEVENNET_CUEQ_INSTALL)
+    body = f'''# cuEquivariance tensor product acceleration (same weights, faster CUDA kernels).
+try:
+    import {SEVENNET_CUEQ_MODULE}  # noqa: F401
+except ImportError:
+    print("❌ cuEquivariance acceleration was requested, but the '{SEVENNET_CUEQ_MODULE}' package is not installed.")
+    print("   Install it with:")
+{hint_lines}
+    print("   ...or re-generate this script with the cuEquivariance option switched off.")
+    raise SystemExit(1)
+print("⚡ cuEquivariance acceleration enabled for SevenNet")
+'''
+    return textwrap.indent(body, indent)
+
+
+def sevennet_cueq_arg(enable_cueq=False, device="cpu"):
+    """The ``SevenNetCalculator`` keyword argument, or None when not applicable.
+
+    Only valid next to :func:`sevennet_cueq_preamble` output, and never on a CPU
+    fallback path — cuEquivariance is CUDA-only.
+    """
+    if enable_cueq and device == "cuda":
+        return "enable_cueq=True"
+    return None
+
+
 def is_custom_mace_model(model_size=None, selected_model_key=None, custom_mace_path=None):
     """True when the user picked the 'Custom MACE Model' entry (path optional).
 

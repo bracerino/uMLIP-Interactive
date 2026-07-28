@@ -21,3 +21,13 @@ torch==2.8.0
 # 6.0) and SevenNet-Omni-i8 / i12 are only registered on the development
 # branch. Pin back to `sevenn==0.13.0` if you do not need those models.
 sevenn @ git+https://github.com/MDIL-SNU/SevenNet.git@main
+
+# cuEquivariance tensor product kernels — the "⚡ cuEquivariance acceleration"
+# option the app offers for SevenNet on GPU. Same model and weights, faster
+# equivariant kernels; CUDA only, ignored on CPU. Without these, SevenNet warns
+# "No tensor product accelerator is enabled" and runs on plain e3nn.
+# This is the `sevenn[cueq12]` extra spelled out — on a CUDA 13 stack, swap the
+# last line for cuequivariance-ops-torch-cu13.
+cuequivariance>=0.6.0,<0.10.0
+cuequivariance-torch>=0.6.0,<0.10.0
+cuequivariance-ops-torch-cu12>=0.6.0,<0.10.0
