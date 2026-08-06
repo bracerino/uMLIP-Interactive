@@ -16,6 +16,7 @@ several modules, the active settings are also cached module-side
 way the sidebar caches the selected model.
 """
 
+import math
 import os
 
 # Name of the pseudo-model family/entry used in MODEL_FAMILIES.
@@ -68,6 +69,38 @@ QE_DEFAULTS = {
     # --- escape hatch ------------------------------------------------------
     'extra_input_data': '',      # raw "section.key = value" lines, one per line
 }
+
+
+# pw.x takes every energy in Rydberg, but the sidebar shows eV (as VASP does).
+# The settings dict, the saved presets and the generated scripts all stay in Ry
+# — the conversion happens only at the widget boundary.
+RY_TO_EV = 13.605693122994   # CODATA 2018, same value as ase.units.Rydberg
+
+
+def ry_to_ev(value):
+    """Rydberg -> eV, for display."""
+    return float(value) * RY_TO_EV
+
+
+def ev_to_ry(value):
+    """eV -> Rydberg, for the pw.x namelist.
+
+    Rounded to 10 significant digits so a round trip gives back a clean
+    ``60`` instead of ``59.99999999999999``, while conv_thr values as small
+    as 1e-12 Ry survive intact (a fixed number of decimals would flush them
+    to zero).
+    """
+    return float(f"{float(value) / RY_TO_EV:.10g}")
+
+
+def _clamp(value, low, high):
+    """Keep a converted value inside a widget's range.
+
+    A preset saved before the eV switch (or written by hand) can hold a cutoff
+    outside the range offered here; Streamlit raises if `value` is out of
+    bounds, so it is pulled back in instead.
+    """
+    return max(low, min(high, float(value)))
 
 
 SMEARING_CHOICES = ['mv', 'gaussian', 'mp', 'fd']
@@ -431,17 +464,246 @@ def missing_pseudopotentials(settings, symbols):
 
 
 # ---------------------------------------------------------------------------
-# Failure diagnostics
+# Failure diagnostics and live SCF progress
 #
 # A failed pw.x run only reaches Python as "returned non-zero exit status 1",
 # which says nothing. The real message ("Error in routine ...", a missing
 # pseudopotential, an MPI abort) is in espresso.pwo/espresso.err. This snippet
 # wraps the calculator so those lines travel with the exception.
 #
+# ASE hands pw.x's stdout straight to espresso.pwo, so nothing at all reaches
+# the console while a run is going - for DFT that can mean hours of silence.
+# The same wrapper therefore tails that file in a background thread and echoes
+# each SCF iteration with its estimated accuracy against conv_thr, so the user
+# can see how far the electronic loop still has to go.
+#
 # It is kept as source so the interface and the standalone scripts run byte-for
 # byte the same code: the generated script embeds it, the app execs it.
 # ---------------------------------------------------------------------------
 QE_DIAGNOSTICS_SRC = '''
+import math as _qemath
+import os as _qeos
+import threading as _qethreading
+import time as _qetime
+
+# Live progress is on by default; QE_SCF_PROGRESS=0 silences it.
+QE_PROGRESS_ENABLED = _qeos.environ.get("QE_SCF_PROGRESS", "1").lower() not in (
+    "0", "false", "no", "off",
+)
+QE_PROGRESS_POLL = float(_qeos.environ.get("QE_SCF_PROGRESS_POLL", "2"))
+QE_PROGRESS_HEARTBEAT = float(_qeos.environ.get("QE_SCF_PROGRESS_HEARTBEAT", "120"))
+
+# pw.x reports in Ry; the interface asks for eV (as VASP does), so the progress
+# lines are converted to match. QE_SCF_UNITS=Ry keeps the raw pwo numbers.
+QE_RY_TO_EV = 13.605693122994
+QE_BOHR_TO_ANG = 0.529177210903
+QE_PROGRESS_IN_RY = _qeos.environ.get("QE_SCF_UNITS", "eV").lower().startswith("ry")
+QE_ENERGY_UNIT = "Ry" if QE_PROGRESS_IN_RY else "eV"
+QE_ENERGY_SCALE = 1.0 if QE_PROGRESS_IN_RY else QE_RY_TO_EV
+QE_FORCE_UNIT = "Ry/au" if QE_PROGRESS_IN_RY else "eV/A"
+QE_FORCE_SCALE = 1.0 if QE_PROGRESS_IN_RY else QE_RY_TO_EV / QE_BOHR_TO_ANG
+
+
+def qe_format_elapsed(seconds):
+    """Human-readable duration for the progress lines."""
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 5400:
+        return f"{seconds / 60.0:.1f} min"
+    return f"{seconds / 3600.0:.2f} h"
+
+
+class QEScfProgress:
+    """Tail a pw.x output file while it runs and report SCF convergence.
+
+    pw.x prints one block per electronic iteration:
+
+        iteration #  3     ecut=    50.00 Ry     beta= 0.70
+        total energy              =    -155.12345678 Ry
+        estimated scf accuracy    <       0.00021 Ry
+
+    The estimated accuracy falls roughly geometrically, so the distance to
+    conv_thr is reported on a log scale - that is the honest answer to "how
+    much is left", far more so than the raw iteration count.
+    """
+
+    def __init__(self, path, poll=None, heartbeat=None):
+        self.path = str(path)
+        self.poll = QE_PROGRESS_POLL if poll is None else poll
+        self.heartbeat = QE_PROGRESS_HEARTBEAT if heartbeat is None else heartbeat
+        self.conv_thr = None
+        self.cycle = 0
+        self._buffer = ""
+        self._stop = _qethreading.Event()
+        self._thread = None
+        self._started = _qetime.time()
+        self._last_event = self._started
+        self._reset_cycle()
+
+    def _reset_cycle(self):
+        self.iteration = 0
+        self.first_accuracy = None
+        self.energy = None
+
+    # -- lifecycle ---------------------------------------------------------
+    def start(self):
+        # ASE opens the output file in "wb", so a stale file from an earlier
+        # run would be replayed before the truncation is noticed. Drop it;
+        # pw.x is about to overwrite it anyway.
+        try:
+            _qeos.remove(self.path)
+        except OSError:
+            pass
+        self._thread = _qethreading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(5.0, self.poll * 3))
+            self._thread = None
+
+    def _run(self):
+        handle = None
+        try:
+            while True:
+                # Read the stop flag first, so the loop always drains the file
+                # once more after pw.x has exited.
+                stopping = self._stop.is_set()
+                if handle is None:
+                    try:
+                        handle = open(self.path, "r", errors="replace")
+                    except OSError:
+                        handle = None
+                if handle is not None:
+                    self._drain(handle)
+                if stopping:
+                    break
+                self._heartbeat()
+                self._stop.wait(self.poll)
+        except Exception:
+            # Progress reporting must never break the calculation itself.
+            pass
+        finally:
+            if handle is not None:
+                handle.close()
+
+    def _drain(self, handle):
+        chunk = handle.read()
+        if not chunk:
+            return
+        lines = (self._buffer + chunk).split("\\n")
+        self._buffer = lines.pop()
+        for line in lines:
+            self._feed(line)
+
+    # -- parsing -----------------------------------------------------------
+    @staticmethod
+    def _number(text, separator):
+        try:
+            token = text.split(separator, 1)[1].split()[0]
+            return float(token.replace("D", "E").replace("d", "e"))
+        except (IndexError, ValueError):
+            return None
+
+    def _feed(self, line):
+        text = line.strip()
+        if not text:
+            return
+
+        if text.startswith("convergence threshold"):
+            self.conv_thr = self._number(text, "=")
+        elif text.startswith("Self-consistent Calculation"):
+            self.cycle += 1
+            self._reset_cycle()
+            if self.cycle > 1:
+                self._emit(f"   \\u2500\\u2500 ionic step {self.cycle}: new SCF cycle")
+        elif text.startswith("iteration #"):
+            number = self._number(text.replace("#", "# "), "#")
+            if number is not None:
+                self.iteration = int(number)
+        elif text.startswith("!") and "total energy" in text:
+            self.energy = self._number(text, "=")
+        elif text.startswith("total energy") and "=" in text:
+            self.energy = self._number(text, "=")
+        elif text.startswith("estimated scf accuracy"):
+            self._report(self._number(text, "<"))
+        elif text.startswith("convergence has been achieved"):
+            energy = ""
+            if self.energy is not None:
+                energy = (f" | E = {self.energy * QE_ENERGY_SCALE:.6f} "
+                          f"{QE_ENERGY_UNIT}")
+            self._emit(
+                f"   \\u2705 SCF converged after {self.iteration} iterations"
+                f"{energy} | {qe_format_elapsed(_qetime.time() - self._started)}"
+            )
+        elif text.startswith("convergence NOT achieved"):
+            self._emit(f"   \\u26a0\\ufe0f  {text}")
+        elif text.startswith("Total force ="):
+            force = self._number(text, "=")
+            if force is not None:
+                self._emit(f"   \\U0001f4d0 Total force = "
+                           f"{force * QE_FORCE_SCALE:.6f} {QE_FORCE_UNIT}")
+        elif text.startswith("End of BFGS Geometry Optimization"):
+            self._emit("   \\U0001f3c1 Geometry optimization finished")
+
+    def _report(self, accuracy):
+        if accuracy is None:
+            return
+        if self.first_accuracy is None and accuracy > 0:
+            self.first_accuracy = accuracy
+
+        parts = [f"   \\u269b\\ufe0f  SCF iter {self.iteration:>3d}"]
+        if self.energy is not None:
+            parts.append(f"E = {self.energy * QE_ENERGY_SCALE:.6f} {QE_ENERGY_UNIT}")
+        accuracy_ev = accuracy * QE_ENERGY_SCALE
+        if self.conv_thr:
+            parts.append(
+                f"accuracy {accuracy_ev:.2e} {QE_ENERGY_UNIT} "
+                f"(target {self.conv_thr * QE_ENERGY_SCALE:.1e})"
+            )
+        else:
+            parts.append(f"accuracy {accuracy_ev:.2e} {QE_ENERGY_UNIT}")
+
+        remaining = self._remaining(accuracy)
+        if remaining is not None:
+            done, decades = remaining
+            parts.append(f"~{done:.0f}% ({decades:.1f} decades to go)")
+        parts.append(qe_format_elapsed(_qetime.time() - self._started))
+        self._emit(" | ".join(parts))
+
+    def _remaining(self, accuracy):
+        """(percent done, decades left) on the log scale the SCF converges on."""
+        if not self.conv_thr or accuracy is None or accuracy <= 0:
+            return None
+        if not self.first_accuracy or self.first_accuracy <= 0:
+            return None
+        decades = max(0.0, _qemath.log10(accuracy) - _qemath.log10(self.conv_thr))
+        span = _qemath.log10(self.first_accuracy) - _qemath.log10(self.conv_thr)
+        if span <= 0:
+            return 100.0, decades
+        walked = _qemath.log10(self.first_accuracy) - _qemath.log10(accuracy)
+        return max(0.0, min(100.0, 100.0 * walked / span)), decades
+
+    # -- output ------------------------------------------------------------
+    def _heartbeat(self):
+        """Reassure the user during a single very long iteration."""
+        if self.heartbeat <= 0 or self.iteration == 0:
+            return
+        now = _qetime.time()
+        if now - self._last_event >= self.heartbeat:
+            elapsed = qe_format_elapsed(now - self._started)
+            self._emit(
+                f"   \\u23f3 still in SCF iteration {self.iteration} "
+                f"({elapsed} into this pw.x run)"
+            )
+
+    def _emit(self, message):
+        self._last_event = _qetime.time()
+        print(message, flush=True)
+
+
 def qe_failure_details(directory, max_lines=25):
     """Pull the useful part of a failed pw.x run out of its output files."""
     import os as _os
@@ -475,11 +737,23 @@ def qe_failure_details(directory, max_lines=25):
 
 
 class EspressoWithDiagnostics(Espresso):
-    """Espresso calculator that reports what pw.x actually said when it fails."""
+    """Espresso calculator that streams SCF progress and reports pw.x errors."""
 
     def calculate(self, *args, **kwargs):
+        outputname = getattr(self.template, "outputname", "espresso.pwo")
+        monitor = None
+        if QE_PROGRESS_ENABLED:
+            monitor = QEScfProgress(
+                _qeos.path.join(str(self.directory), outputname)
+            ).start()
         try:
-            super().calculate(*args, **kwargs)
+            try:
+                super().calculate(*args, **kwargs)
+            finally:
+                # Stop before the diagnostics read the file, so the last
+                # iterations are echoed ahead of any error banner.
+                if monitor is not None:
+                    monitor.stop()
         except Exception as exc:
             raise RuntimeError(
                 "Quantum ESPRESSO (pw.x) failed.\\n"
@@ -537,7 +811,8 @@ def build_qe_calculator(settings=None, directory=None, calculation='scf', log=No
     _log(f"  Command:        {command}")
     _log(f"  Pseudo dir:     {pseudo_dir} ({len(pseudopotentials)} elements)")
     _log(f"  Work dir:       {os.path.abspath(directory)}")
-    _log(f"  ecutwfc/ecutrho: {s['ecutwfc']} / {s['ecutrho']} Ry")
+    _log(f"  ENCUT/ENAUG:    {ry_to_ev(s['ecutwfc']):.0f} / {ry_to_ev(s['ecutrho']):.0f} eV"
+         f"  (ecutwfc/ecutrho {s['ecutwfc']:g} / {s['ecutrho']:g} Ry)")
     _log(f"  k-points:       {kpoint_kwargs}")
     _log(f"  OMP threads:    {os.environ.get('OMP_NUM_THREADS')}")
     if s['use_gpu']:
@@ -647,6 +922,9 @@ calculator = EspressoWithDiagnostics(
     **QE_KPOINT_KWARGS,
 )
 print("✅ Quantum ESPRESSO calculator ready")
+if QE_PROGRESS_ENABLED:
+    print(f"   Live SCF progress is printed per iteration in {{QE_ENERGY_UNIT}} "
+          "(QE_SCF_PROGRESS=0 silences it, QE_SCF_UNITS=Ry keeps pw.x's units)")
 '''
 
     if not indent:
@@ -676,6 +954,11 @@ def render_qe_sidebar(saved=None, symbols=None):
         "Ab initio DFT via an external `pw.x`. Orders of magnitude slower than an "
         "MLIP — start with a small cell."
     )
+    st.caption(
+        "⚡ All energies below are in **eV**; pw.x is fed the equivalent in Ry. "
+        "Where a VASP keyword means the same thing it is shown in front of the "
+        "label, with the QE name in the tooltip."
+    )
 
     # --- executable & pseudopotentials ------------------------------------
     s['pw_binary'] = st.text_input(
@@ -689,10 +972,11 @@ def render_qe_sidebar(saved=None, symbols=None):
         st.caption(f"→ resolved to `{_resolved_pw}`")
     s['pw_binary'] = _resolved_pw
     s['pseudo_dir'] = st.text_input(
-        "Pseudopotential directory *",
+        "Pseudopotential directory * (VASP: POTCAR library)",
         value=s['pseudo_dir'],
         placeholder="/opt/qe-7.4/pseudo",
-        help="Folder holding the .UPF files (e.g. SSSP, PSLibrary, SG15, GBRV).",
+        help="Folder holding the .UPF files (e.g. SSSP, PSLibrary, SG15, GBRV) — "
+             "the QE counterpart of the VASP POTCAR library.",
     )
 
     available = find_pseudopotentials(s['pseudo_dir'])
@@ -757,9 +1041,10 @@ def render_qe_sidebar(saved=None, symbols=None):
         )
     with col_d:
         s['npool'] = st.number_input(
-            "k-point pools (-nk)",
+            "KPAR — k-point pools (`-nk`)",
             min_value=1, max_value=256, step=1, value=int(s['npool']),
-            help="Splits k-points across pools. Must divide the number of MPI ranks.",
+            help="QE `-nk`, the counterpart of VASP's KPAR: splits k-points across "
+                 "pools. Must divide the number of MPI ranks.",
         )
 
     if s['use_gpu']:
@@ -792,47 +1077,64 @@ def render_qe_sidebar(saved=None, symbols=None):
     st.markdown("**Plane-wave basis**")
 
     # SSSP ships recommended cutoffs; using them is the single easiest way to
-    # avoid an under-converged calculation.
+    # avoid an under-converged calculation. They are tabulated in Ry, so they
+    # are converted here like everything else the user sees.
     suggestion = suggest_cutoffs(s['pseudo_dir'], symbols)
     if suggestion:
         sug_wfc, sug_rho, sug_src = suggestion
         scope = "your structures" if symbols else "the whole library"
         st.info(
-            f"📖 `{sug_src}` recommends **ecutwfc {sug_wfc:g} Ry / ecutrho {sug_rho:g} Ry** "
-            f"for {scope}."
+            f"📖 `{sug_src}` recommends **ENCUT {ry_to_ev(sug_wfc):.0f} eV / "
+            f"ENAUG {ry_to_ev(sug_rho):.0f} eV** for {scope} "
+            f"({sug_wfc:g} / {sug_rho:g} Ry)."
         )
         if st.button("Use recommended cutoffs", key="qe_apply_cutoffs"):
             # Write straight into the widgets' state, then rerun so the number
             # inputs below pick the new values up.
-            st.session_state['qe_ecutwfc'] = float(sug_wfc)
-            st.session_state['qe_ecutrho'] = float(sug_rho)
+            st.session_state['qe_ecutwfc_ev'] = ry_to_ev(sug_wfc)
+            st.session_state['qe_ecutrho_ev'] = ry_to_ev(sug_rho)
             st.rerun()
 
     # Seed the widget state once; afterwards session_state is the source of
     # truth (passing both `value` and a stored key makes Streamlit complain).
-    st.session_state.setdefault('qe_ecutwfc', float(s['ecutwfc']))
-    st.session_state.setdefault('qe_ecutrho', float(s['ecutrho']))
+    # The keys carry an _ev suffix so a session or preset holding the old
+    # Rydberg-valued keys can never be read back as eV.
+    # The eV ranges span the old Ry ones (10-400 / 40-3200 Ry) so no preset
+    # saved before the switch is silently clamped.
+    st.session_state.setdefault(
+        'qe_ecutwfc_ev', _clamp(ry_to_ev(s['ecutwfc']), 100.0, 5500.0))
+    st.session_state.setdefault(
+        'qe_ecutrho_ev', _clamp(ry_to_ev(s['ecutrho']), 200.0, 44000.0))
 
     col_e, col_f = st.columns(2)
     with col_e:
-        s['ecutwfc'] = st.number_input(
-            "ecutwfc (Ry)", min_value=10.0, max_value=400.0, step=5.0,
-            key="qe_ecutwfc",
-            help="Wavefunction cutoff. Use the value recommended for your pseudopotentials.",
-        )
+        s['ecutwfc'] = ev_to_ry(st.number_input(
+            "ENCUT — wavefunction cutoff (eV)",
+            min_value=100.0, max_value=5500.0, step=25.0, format="%.1f",
+            key="qe_ecutwfc_ev",
+            help="QE `ecutwfc`, the direct equivalent of VASP's ENCUT. Use the "
+                 "value recommended for your pseudopotentials.",
+        ))
     with col_f:
-        s['ecutrho'] = st.number_input(
-            "ecutrho (Ry)", min_value=40.0, max_value=3200.0, step=20.0,
-            key="qe_ecutrho",
-            help="Charge-density cutoff: ~4x ecutwfc for norm-conserving, 8-12x for US/PAW.",
-        )
+        s['ecutrho'] = ev_to_ry(st.number_input(
+            "ENAUG — charge-density cutoff (eV)",
+            min_value=200.0, max_value=44000.0, step=100.0, format="%.1f",
+            key="qe_ecutrho_ev",
+            help="QE `ecutrho`, closest to VASP's ENAUG: ~4x ENCUT for "
+                 "norm-conserving, 8-12x for US/PAW pseudopotentials.",
+        ))
+    st.caption(
+        f"→ written to the pw.x input as `ecutwfc = {s['ecutwfc']:g}` / "
+        f"`ecutrho = {s['ecutrho']:g}` Ry"
+    )
     if float(s['ecutrho']) < 4 * float(s['ecutwfc']):
-        st.warning("⚠️ ecutrho below 4x ecutwfc — fine only for norm-conserving pseudopotentials.")
+        st.warning("⚠️ ENAUG below 4x ENCUT (`ecutrho` < 4x `ecutwfc`) — fine only "
+                   "for norm-conserving pseudopotentials.")
 
     st.markdown("**k-points**")
     kmode_labels = {
-        'kspacing': "Automatic (k-spacing)",
-        'grid': "Explicit Monkhorst-Pack grid",
+        'kspacing': "Automatic (k-spacing / KSPACING)",
+        'grid': "Explicit Monkhorst-Pack grid (KPOINTS)",
         'gamma': "Gamma point only",
     }
     kmode_keys = list(kmode_labels)
@@ -844,9 +1146,17 @@ def render_qe_sidebar(saved=None, symbols=None):
     )
     if s['kpoint_mode'] == 'kspacing':
         s['kspacing'] = st.number_input(
-            "k-spacing (1/Å)", min_value=0.01, max_value=1.0, step=0.01,
+            "KSPACING — k-spacing (Å⁻¹)", min_value=0.01, max_value=1.0, step=0.01,
             value=float(s['kspacing']), format="%.3f",
-            help="Smaller = denser grid. 0.25 is a reasonable default, 0.15 for metals.",
+            help="Smaller = denser grid. 0.25 is a reasonable default, 0.15 for metals. "
+                 "Same idea as VASP's KSPACING but NOT the same number: ASE/QE measure "
+                 "the reciprocal cell without the 2π that VASP includes.",
+        )
+        # The 2π convention difference bites everyone who transfers a value
+        # straight from an INCAR, so spell out the equivalent.
+        st.caption(
+            f"≈ VASP `KSPACING = {2 * math.pi * float(s['kspacing']):.3f}` "
+            "(VASP counts the 2π in **b**, ASE does not)"
         )
     elif s['kpoint_mode'] == 'grid':
         cols_k = st.columns(3)
@@ -875,94 +1185,121 @@ def render_qe_sidebar(saved=None, symbols=None):
         }
         occ_keys = list(occ_labels)
         s['occupations'] = st.selectbox(
-            "Occupations", occ_keys,
+            "ISMEAR — occupations", occ_keys,
             index=occ_keys.index(s['occupations']) if s['occupations'] in occ_keys else 0,
             format_func=lambda k: occ_labels[k],
+            help="QE `occupations`. Plays the role VASP's ISMEAR sign does: "
+                 "smearing for metals, fixed for insulators, tetrahedra for DOS.",
         )
         if s['occupations'] == 'smearing':
             col_g, col_h = st.columns(2)
             with col_g:
                 s['smearing'] = st.selectbox(
-                    "Smearing type", SMEARING_CHOICES,
+                    "Smearing type (ISMEAR flavour)", SMEARING_CHOICES,
                     index=SMEARING_CHOICES.index(s['smearing'])
                     if s['smearing'] in SMEARING_CHOICES else 0,
-                    help="mv = Marzari-Vanderbilt, the usual choice for metals.",
+                    help="QE `smearing`. mv = Marzari-Vanderbilt (VASP ISMEAR=1 "
+                         "territory), the usual choice for metals.",
                 )
             with col_h:
-                s['degauss'] = st.number_input(
-                    "degauss (Ry)", min_value=0.0001, max_value=0.5, step=0.005,
-                    value=float(s['degauss']), format="%.4f",
-                )
+                s['degauss'] = ev_to_ry(st.number_input(
+                    "SIGMA — smearing width (eV)",
+                    min_value=0.001, max_value=7.0, step=0.01,
+                    value=_clamp(ry_to_ev(s['degauss']), 0.001, 7.0), format="%.4f",
+                    help="QE `degauss`, the direct equivalent of VASP's SIGMA.",
+                ))
+                st.caption(f"→ `degauss = {s['degauss']:g}` Ry")
 
         col_i, col_j = st.columns(2)
         with col_i:
             s['nspin'] = 2 if st.checkbox(
-                "Spin polarised", value=int(s['nspin']) == 2,
-                help="Also switched on automatically if the structure carries magnetic moments.",
+                "ISPIN — spin polarised", value=int(s['nspin']) == 2,
+                help="QE `nspin=2`, i.e. VASP ISPIN=2. Also switched on "
+                     "automatically if the structure carries magnetic moments.",
             ) else 1
         with col_j:
             if int(s['nspin']) == 2:
                 s['starting_magnetization'] = st.number_input(
-                    "Starting magnetisation", min_value=-1.0, max_value=1.0, step=0.1,
-                    value=float(s['starting_magnetization']),
+                    "MAGMOM — starting magnetisation", min_value=-1.0, max_value=1.0,
+                    step=0.1, value=float(s['starting_magnetization']),
+                    help="QE `starting_magnetization`: the initial moment as a "
+                         "fraction of the valence charge, not the Bohr magnetons "
+                         "VASP's MAGMOM takes.",
                 )
 
         col_k, col_l = st.columns(2)
         with col_k:
             s['tot_charge'] = st.number_input(
-                "Total charge", min_value=-20.0, max_value=20.0, step=1.0,
-                value=float(s['tot_charge']),
+                "Total charge (VASP: NELECT)", min_value=-20.0, max_value=20.0,
+                step=1.0, value=float(s['tot_charge']),
+                help="QE `tot_charge`: added/removed electrons. VASP asks for the "
+                     "absolute electron count (NELECT) instead — same knob, "
+                     "opposite sign convention.",
             )
         with col_l:
             s['nbnd'] = st.number_input(
-                "nbnd (0 = auto)", min_value=0, max_value=100000, step=1,
-                value=int(s['nbnd']),
+                "NBANDS — number of bands (0 = auto)", min_value=0, max_value=100000,
+                step=1, value=int(s['nbnd']),
+                help="QE `nbnd`, the equivalent of VASP's NBANDS.",
             )
 
         s['input_dft'] = st.text_input(
-            "Override functional (input_dft)", value=s['input_dft'],
+            "GGA / METAGGA — override functional (input_dft)", value=s['input_dft'],
             placeholder="leave empty to use the pseudopotential's functional",
+            help="QE `input_dft`, e.g. PBE, PBESOL, SCAN. Like setting GGA/METAGGA "
+                 "in an INCAR, it overrides what the pseudopotential was built for.",
         )
         s['vdw_corr'] = st.selectbox(
-            "Dispersion correction", VDW_CORR_CHOICES,
+            "IVDW — dispersion correction", VDW_CORR_CHOICES,
             index=VDW_CORR_CHOICES.index(s['vdw_corr'])
             if s['vdw_corr'] in VDW_CORR_CHOICES else 0,
+            help="QE `vdw_corr`, the counterpart of VASP's IVDW.",
         )
         s['assume_isolated'] = st.selectbox(
-            "assume_isolated", ASSUME_ISOLATED_CHOICES,
+            "assume_isolated (VASP: monopole/dipole corrections)",
+            ASSUME_ISOLATED_CHOICES,
             index=ASSUME_ISOLATED_CHOICES.index(s['assume_isolated'])
             if s['assume_isolated'] in ASSUME_ISOLATED_CHOICES else 0,
-            help="Use for charged or molecular systems in a periodic box.",
+            help="Use for charged or molecular systems in a periodic box — what "
+                 "VASP does with LMONO/LDIPOL/IDIPOL.",
         )
 
     with st.expander("🔁 SCF convergence"):
         col_m, col_n = st.columns(2)
         with col_m:
-            s['conv_thr'] = st.number_input(
-                "conv_thr (Ry)", min_value=1e-12, max_value=1e-2,
-                value=float(s['conv_thr']), format="%.2e",
-                help="1e-6 for energies; tighten to 1e-8/1e-10 for phonons.",
-            )
+            s['conv_thr'] = ev_to_ry(st.number_input(
+                "EDIFF — SCF convergence (eV)",
+                min_value=1e-11, max_value=2e-1,
+                value=_clamp(ry_to_ev(s['conv_thr']), 1e-11, 2e-1), format="%.2e",
+                help="QE `conv_thr`, the equivalent of VASP's EDIFF. ~1.4e-5 eV "
+                     "(1e-6 Ry) for energies; tighten by 2-4 orders for phonons.",
+            ))
+            st.caption(f"→ `conv_thr = {s['conv_thr']:.2e}` Ry")
             s['mixing_beta'] = st.number_input(
-                "mixing_beta", min_value=0.01, max_value=1.0, step=0.05,
+                "AMIX — mixing beta", min_value=0.01, max_value=1.0, step=0.05,
                 value=float(s['mixing_beta']),
-                help="Lower (0.1-0.3) helps hard-to-converge metals and magnets.",
+                help="QE `mixing_beta`, VASP's AMIX. Lower (0.1-0.3) helps "
+                     "hard-to-converge metals and magnets.",
             )
         with col_n:
             s['electron_maxstep'] = st.number_input(
-                "electron_maxstep", min_value=10, max_value=5000, step=10,
+                "NELM — max SCF steps", min_value=10, max_value=5000, step=10,
                 value=int(s['electron_maxstep']),
+                help="QE `electron_maxstep`, VASP's NELM.",
             )
             s['mixing_mode'] = st.selectbox(
-                "mixing_mode", MIXING_MODE_CHOICES,
+                "IMIX — mixing mode", MIXING_MODE_CHOICES,
                 index=MIXING_MODE_CHOICES.index(s['mixing_mode'])
                 if s['mixing_mode'] in MIXING_MODE_CHOICES else 0,
-                help="local-TF often helps slabs and inhomogeneous systems.",
+                help="QE `mixing_mode`, the counterpart of VASP's IMIX. "
+                     "local-TF often helps slabs and inhomogeneous systems.",
             )
         s['diagonalization'] = st.selectbox(
-            "diagonalization", DIAGONALIZATION_CHOICES,
+            "ALGO — diagonalisation", DIAGONALIZATION_CHOICES,
             index=DIAGONALIZATION_CHOICES.index(s['diagonalization'])
             if s['diagonalization'] in DIAGONALIZATION_CHOICES else 0,
+            help="QE `diagonalization`: david is the Davidson solver VASP calls "
+                 "ALGO=Normal, cg the conjugate-gradient one (ALGO=All).",
         )
 
     # --- pseudopotential picker -------------------------------------------
@@ -991,12 +1328,14 @@ def render_qe_sidebar(saved=None, symbols=None):
                     overrides.pop(sym, None)
             s['pseudo_overrides'] = overrides
 
-    with st.expander("📝 Extra pw.x parameters"):
+    with st.expander("📝 Extra pw.x parameters (the INCAR escape hatch)"):
         s['extra_input_data'] = st.text_area(
             "One `section.key = value` per line",
             value=s['extra_input_data'],
             placeholder="system.lda_plus_u = .true.\nsystem.Hubbard_U(1) = 4.0\nelectrons.mixing_ndim = 12",
-            help="Merged into input_data, overriding anything set above.",
+            help="Raw pw.x namelist entries — anything the fields above do not "
+                 "cover. Merged into input_data, overriding anything set above. "
+                 "These are QE keywords in QE units (Ry), not VASP ones.",
         )
 
     problems = validate_qe_settings(s)
