@@ -216,6 +216,17 @@ import torch
 SETTINGS_FILE = "default_settings.json"
 CUSTOM_KPATHS_FILE = "custom_kpaths.json"
 
+# How many decimals the energy is logged with. An MLIP is not accurate anywhere
+# near six decimals, so it keeps the short field; a DFT run asked to converge to
+# 1e-8 Ry (1.4e-7 eV) moves only in digits a six-decimal field cannot show, and
+# the log then looks frozen while the SCF is in fact still coming down.
+ENERGY_DECIMALS = 6
+ENERGY_DECIMALS_DFT = 10
+
+
+def energy_decimals_for(is_dft):
+    return ENERGY_DECIMALS_DFT if is_dft else ENERGY_DECIMALS
+
 
 def load_custom_kpaths():
     """Load user-saved phonon k-paths from ``CUSTOM_KPATHS_FILE``.
@@ -2407,13 +2418,17 @@ except ImportError:
 
 
 class OptimizationLogger:
-    def __init__(self, log_queue, structure_name,save_trajectory=True,tetragonal_callback=None):
+    def __init__(self, log_queue, structure_name,save_trajectory=True,tetragonal_callback=None,
+                 energy_decimals=ENERGY_DECIMALS):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
         self.trajectory = [] if save_trajectory else None
         self.save_trajectory = save_trajectory
         self.previous_energy = None
+        # A DFT run converged to 1e-8 Ry moves in digits six decimals cannot
+        # show, so the QE paths ask for a wider field (see ENERGY_DECIMALS_DFT).
+        self.energy_decimals = energy_decimals
 
         self.step_start_time = None
         self.step_times = deque(maxlen=10)  # Keep last 10 step times for averaging
@@ -2459,7 +2474,8 @@ class OptimizationLogger:
             avg_step_time, estimated_remaining_time, total_estimated_time = self._calculate_time_estimates(optimizer)
 
             elapsed_time = current_time - self.optimization_start_time
-            log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+            log_message = (f"  Step {self.step_count}: "
+                           f"Energy = {energy:.{self.energy_decimals}f} eV, "
                            f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
 
             # if avg_step_time > 0:
@@ -3254,13 +3270,15 @@ def setup_optimization_constraints(atoms, optimization_params):
 
 
 class CellOptimizationLogger:
-    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True, tetragonal_callback=None):
+    def __init__(self, log_queue, structure_name, opt_mode="both",save_trajectory=True, tetragonal_callback=None,
+                 energy_decimals=ENERGY_DECIMALS):
         self.log_queue = log_queue
         self.structure_name = structure_name
         self.step_count = 0
         self.trajectory = [] if save_trajectory else None
         self.save_trajectory = save_trajectory
         self.previous_energy = None
+        self.energy_decimals = energy_decimals
         self.opt_mode = opt_mode
         self.tetragonal_callback = tetragonal_callback
 
@@ -3324,15 +3342,17 @@ class CellOptimizationLogger:
 
                 elapsed_time = current_time - self.optimization_start_time
 
+                energy_text = (f"  Step {self.step_count}: "
+                               f"Energy = {energy:.{self.energy_decimals}f} eV, ")
                 if self.opt_mode == "cell_only":
-                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                    log_message = (energy_text +
                                    f"Max Stress = {max_stress:.4f} GPa, ΔE = {energy_change:.2e} eV")
                 elif self.opt_mode == "both":
-                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                    log_message = (energy_text +
                                    f"Max Force = {max_force:.4f} eV/Å, Max Stress = {max_stress:.4f} GPa, "
                                    f"ΔE = {energy_change:.2e} eV")
                 else:
-                    log_message = (f"  Step {self.step_count}: Energy = {energy:.6f} eV, "
+                    log_message = (energy_text +
                                    f"Max Force = {max_force:.4f} eV/Å, ΔE = {energy_change:.2e} eV")
 
                 # if avg_step_time > 0:
@@ -3429,6 +3449,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             return
 
         is_qe = is_qe_model(selected_model, model_size)
+        # Width of the energy field in the log lines below (see ENERGY_DECIMALS).
+        e_dec = energy_decimals_for(is_qe)
         is_chgnet = model_size.startswith("chgnet")
         is_sevennet = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")
         is_mattersim = selected_model.startswith("MatterSim")
@@ -4319,7 +4341,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         test_forces = atoms.get_forces()
                         log_queue.put(f"✅ Calculator test successful for {name}")
                         log_queue.put(
-                            f"Initial energy: {test_energy:.6f} eV, Initial max force: {np.max(np.abs(test_forces)):.6f} eV/Å")
+                            f"Initial energy: {test_energy:.{e_dec}f} eV, Initial max force: {np.max(np.abs(test_forces)):.6f} eV/Å")
                     except Exception as calc_error:
                         log_queue.put(f"❌ Calculator test failed for {name}: {str(calc_error)}")
                         log_queue.put({
@@ -4347,7 +4369,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if calc_type == "Energy Only":
                         try:
                             energy = atoms.get_potential_energy()
-                            log_queue.put(f"✅ Energy for {name}: {energy:.6f} eV")
+                            log_queue.put(f"✅ Energy for {name}: {energy:.{e_dec}f} eV")
                         except Exception as energy_error:
                             log_queue.put(f"❌ Energy calculation failed for {name}: {str(energy_error)}")
                             raise energy_error
@@ -4431,11 +4453,14 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             # Check if this is tetragonal mode
                             is_tetragonal = (tetragonal_callback is not None)
 
+                            log_decimals = energy_decimals_for(is_qe)
                             if opt_mode:
                                 logger = CellOptimizationLogger(log_queue, name, opt_mode, save_trajectory=save_traj,
-                                                                tetragonal_callback=tetragonal_callback)
+                                                                tetragonal_callback=tetragonal_callback,
+                                                                energy_decimals=log_decimals)
                             else:
-                                logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj)
+                                logger = OptimizationLogger(log_queue, name, save_trajectory=save_traj,
+                                                            energy_decimals=log_decimals)
 
                             opt_name = optimization_params['optimizer']
 
@@ -4629,13 +4654,13 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             # Log final results
                             if opt_mode == "cell_only":
                                 log_queue.put(
-                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.{e_dec}f} eV, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
                             elif opt_mode == "both":
                                 log_queue.put(
-                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.{e_dec}f} eV, Final max force = {max_final_force:.4f} eV/Å, Final max stress = {max_final_stress:.4f} GPa ({optimizer.nsteps} steps)")
                             else:
                                 log_queue.put(
-                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.6f} eV, Final max force = {max_final_force:.4f} eV/Å ({optimizer.nsteps} steps)")
+                                    f"✅ Optimization {convergence_status} for {name}: Final energy = {energy:.{e_dec}f} eV, Final max force = {max_final_force:.4f} eV/Å ({optimizer.nsteps} steps)")
 
                             log_queue.put({
                                 'type': 'complete_trajectory',
@@ -4658,7 +4683,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             try:
                                 energy = atoms.get_potential_energy()
                                 final_structure = structure
-                                log_queue.put(f"⚠️  Using initial energy for {name}: {energy:.6f} eV")
+                                log_queue.put(f"⚠️  Using initial energy for {name}: {energy:.{e_dec}f} eV")
                             except:
                                 raise opt_error
 
@@ -4708,7 +4733,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                         energy = msg['best_energy']
                                         final_structure = msg['best_structure']
                                         log_queue.put(
-                                            f"✅ GA optimization completed for {name}: Best energy = {energy:.6f} eV")
+                                            f"✅ GA optimization completed for {name}: Best energy = {energy:.{e_dec}f} eV")
 
                                     elif msg == "GA_OPTIMIZATION_FINISHED":
                                         ga_finished = True
@@ -4751,7 +4776,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 temp_optimizer.run(fmax=0.02, steps=50)
                                 atoms = temp_atoms
                                 energy = atoms.get_potential_energy()
-                                log_queue.put(f"Pre-phonon optimization completed. Energy: {energy:.6f} eV")
+                                log_queue.put(f"Pre-phonon optimization completed. Energy: {energy:.{e_dec}f} eV")
 
                             except Exception as pre_opt_error:
                                 log_queue.put(f"⚠️ Pre-optimization failed: {str(pre_opt_error)}")
@@ -4777,7 +4802,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                             lattice_mode = elastic_params.get('pre_opt_lattice_mode', 'none')
                             relax_target, relax_desc = build_relax_target(temp_atoms, lattice_mode)
                             log_queue.put(f"  Pre-elastic optimization target: {relax_desc}")
-                            temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt")
+                            temp_logger = OptimizationLogger(log_queue, f"{name}_pre_elastic_opt",
+                                                             energy_decimals=e_dec)
                             try:
                                 # Select optimizer
                                 if opt_name == "LBFGS":
@@ -4809,7 +4835,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 status = "✅ converged" if converged else f"⚠️ did NOT converge (F_max={final_fmax:.4f})"
                                 log_queue.put(
                                     f"Pre-elastic optimization {status} for {name}: "
-                                    f"E={energy:.6f} eV, F_max={final_fmax:.4f} eV/Å "
+                                    f"E={energy:.{e_dec}f} eV, F_max={final_fmax:.4f} eV/Å "
                                     f"({temp_optimizer.nsteps} steps)"
                                 )
                             except Exception as pre_opt_error:
@@ -4989,7 +5015,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     if calc_formation_energy and energy is not None:
                         formation_energy = calculate_formation_energy(energy, structure, reference_energies)
                         if formation_energy is not None:
-                            log_queue.put(f"✅ Formation energy for {name}: {formation_energy:.6f} eV/atom")
+                            log_queue.put(f"✅ Formation energy for {name}: {formation_energy:.{e_dec}f} eV/atom")
                         else:
                             log_queue.put(f"⚠️ Could not calculate formation energy for {name}")
 

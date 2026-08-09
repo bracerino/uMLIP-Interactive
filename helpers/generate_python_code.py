@@ -144,6 +144,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
+    # Quantum ESPRESSO energies are logged with a wider field (see E_DEC).
+    _e_dec = 10 if is_qe_model(selected_model_key, model_size) else 6
     structure_creation_code = _generate_structure_creation_code(structures)
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
@@ -232,6 +234,11 @@ os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 import torch
 torch.set_num_threads({thread_count})
 
+# How many decimals the energies are printed with. Six is plenty for an MLIP,
+# but a DFT run converged to 1e-8 Ry moves only in digits six decimals cannot
+# show, so the Quantum ESPRESSO scripts print a wider field.
+E_DEC = {_e_dec}
+
 # ASE imports
 from ase import Atoms
 from ase.io import read, write
@@ -310,6 +317,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
+    # Quantum ESPRESSO energies are logged with a wider field (see E_DEC).
+    _e_dec = 10 if is_qe_model(selected_model_key, model_size) else 6
     calculator_setup_code = _generate_calculator_setup_code(
         model_size, device, selected_model_key, dtype, mace_head=mace_head,
         mace_dispersion=mace_dispersion,
@@ -399,6 +408,11 @@ os.environ['OMP_NUM_THREADS'] = '{thread_count}'
 
 import torch
 torch.set_num_threads({thread_count})
+
+# How many decimals the energies are printed with. Six is plenty for an MLIP,
+# but a DFT run converged to 1e-8 Ry moves only in digits six decimals cannot
+# show, so the Quantum ESPRESSO scripts print a wider field.
+E_DEC = {_e_dec}
 
 # ASE imports
 from ase import Atoms
@@ -1275,7 +1289,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
                             )
                             if formation_energy is not None:
                                 run_result["formation_energy_eV_per_atom"] = formation_energy
-                                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
+                                print(f"  ✅ Formation energy: {formation_energy:.{E_DEC}f} eV/atom")
 
                     # Save fitness history
                     if len(concentration_combinations) > 1:
@@ -2960,14 +2974,14 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
             formation_energy = calculate_formation_energy(energy, atoms, reference_energies)
             result["formation_energy_eV_per_atom"] = formation_energy
 
-            print(f"  ✅ Energy: {energy:.6f} eV")
+            print(f"  ✅ Energy: {energy:.{E_DEC}f} eV")
             if formation_energy is not None:
-                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")
+                print(f"  ✅ Formation energy: {formation_energy:.{E_DEC}f} eV/atom")
             else:
                 print(f"  ⚠️ Could not calculate formation energy")'''
     else:
         code += '''
-            print(f"  ✅ Energy: {energy:.6f} eV")'''
+            print(f"  ✅ Energy: {energy:.{E_DEC}f} eV")'''
 
     code += '''
             if is_orbmol:
@@ -3660,7 +3674,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     if calc_formation_energy:
         code += '''
             if formation_energy is not None:
-                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")'''
+                print(f"  ✅ Formation energy: {formation_energy:.{E_DEC}f} eV/atom")'''
 
     code += '''
 
@@ -4846,12 +4860,12 @@ class OptimizationLogger:
                 else:
                     remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
 
-                print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                print(f"    Step {self.step_count}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
                       f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
                       f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom) | "
                       f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
             else:
-                print(f"    Step {self.step_count}: E={energy:.6f} eV ({energy_per_atom:.6f} eV/atom), "
+                print(f"    Step {self.step_count}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
                       f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
                       f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
 
@@ -5057,7 +5071,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
             initial_energy = atoms.get_potential_energy()
             initial_forces = atoms.get_forces()
             initial_max_force = np.max(np.linalg.norm(initial_forces, axis=1))
-            print(f"  📊 Initial energy: {initial_energy:.6f} eV")
+            print(f"  📊 Initial energy: {initial_energy:.{E_DEC}f} eV")
             print(f"  📊 Initial max force: {initial_max_force:.4f} eV/Å")
 
             # Setup optimization object based on type
@@ -5466,7 +5480,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
             structure_time = time.time() - structure_start_time
             print(f"  ✅ Optimization completed: {convergence_status}")
-            print(f"  ✅ Final energy: {final_energy:.6f} eV (Δ={final_energy - initial_energy:.6f} eV)")
+            print(f"  ✅ Final energy: {final_energy:.{E_DEC}f} eV (Δ={final_energy - initial_energy:.{E_DEC}f} eV)")
             print(f"  ✅ Final max force: {max_final_force:.4f} eV/Å")
             if opt_mode in ["cell_only", "both"]:
                 print(f"  ✅ Final max stress: {max_final_stress:.4f} GPa")
@@ -5477,7 +5491,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     if calc_formation_energy:
         code += '''
             if formation_energy is not None:
-                print(f"  ✅ Formation energy: {formation_energy:.6f} eV/atom")'''
+                print(f"  ✅ Formation energy: {formation_energy:.{E_DEC}f} eV/atom")'''
 
     code += '''
             results.append(result)
@@ -6779,7 +6793,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
 {formation_save_block}
             struct_time = time.time() - structure_start
             log(f"  ✅ Phonon calculation completed in {{struct_time:.1f}}s")
-            log(f"  ✅ Energy: {{final_energy:.6f}} eV")
+            log(f"  ✅ Energy: {{final_energy:.{{E_DEC}}f}} eV")
             log(f"  ✅ Imaginary modes: {{imaginary_modes}}")
             log(f"  ✅ Frequency range: {{result['min_frequency_meV']:.2f}}–{{result['max_frequency_meV']:.2f}} meV")
             if imaginary_modes > 0:

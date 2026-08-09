@@ -1435,6 +1435,27 @@ QE_ENERGY_SCALE = 1.0 if QE_PROGRESS_IN_RY else QE_RY_TO_EV
 QE_FORCE_UNIT = "Ry/au" if QE_PROGRESS_IN_RY else "eV/A"
 QE_FORCE_SCALE = 1.0 if QE_PROGRESS_IN_RY else QE_RY_TO_EV / QE_BOHR_TO_ANG
 
+# Six decimals hide the tail end of a tight SCF: pw.x prints the total energy
+# with eight decimals in Ry, and one unit of that last digit is 1.4e-7 eV, so a
+# run heading for conv_thr = 1e-8 Ry looks frozen unless the eV value is shown
+# to ten decimals. The accuracy is printed with matching resolution.
+QE_ENERGY_DECIMALS = max(2, int(_qeos.environ.get("QE_SCF_DECIMALS", "10")))
+QE_ACCURACY_DECIMALS = 3
+
+
+def qe_format_energy(value, decimals=None):
+    """Total energy in the reporting unit, wide enough to see the last digit."""
+    if decimals is None:
+        decimals = QE_ENERGY_DECIMALS
+    return f"{value * QE_ENERGY_SCALE:.{decimals}f}"
+
+
+def qe_format_accuracy(value, decimals=None):
+    """Scf accuracy / threshold on the log scale it actually converges on."""
+    if decimals is None:
+        decimals = QE_ACCURACY_DECIMALS
+    return f"{value * QE_ENERGY_SCALE:.{decimals}e}"
+
 
 def qe_format_elapsed(seconds):
     """Human-readable duration for the progress lines."""
@@ -1571,7 +1592,7 @@ class QEScfProgress:
         elif text.startswith("convergence has been achieved"):
             energy = ""
             if self.energy is not None:
-                energy = (f" | E = {self.energy * QE_ENERGY_SCALE:.6f} "
+                energy = (f" | E = {qe_format_energy(self.energy)} "
                           f"{QE_ENERGY_UNIT}")
             elapsed = qe_format_elapsed(_qetime.time() - self._started)
             # With scf_must_converge = .false. pw.x prints this line even when
@@ -1581,8 +1602,8 @@ class QEScfProgress:
                 self._emit(
                     f"   \\u26a0\\ufe0f  SCF stopped at iteration {self.iteration} "
                     f"WITHOUT reaching the threshold "
-                    f"({self.last_accuracy * QE_ENERGY_SCALE:.2e} vs "
-                    f"{self.conv_thr * QE_ENERGY_SCALE:.1e} {QE_ENERGY_UNIT}) - "
+                    f"({qe_format_accuracy(self.last_accuracy)} vs "
+                    f"{qe_format_accuracy(self.conv_thr)} {QE_ENERGY_UNIT}) - "
                     f"scf_must_converge is off, so this step is used as it is"
                     f"{energy} | {elapsed}"
                 )
@@ -1640,15 +1661,14 @@ class QEScfProgress:
 
         parts = [f"   \\u269b\\ufe0f  SCF iter {self.iteration:>3d}"]
         if self.energy is not None:
-            parts.append(f"E = {self.energy * QE_ENERGY_SCALE:.6f} {QE_ENERGY_UNIT}")
-        accuracy_ev = accuracy * QE_ENERGY_SCALE
+            parts.append(f"E = {qe_format_energy(self.energy)} {QE_ENERGY_UNIT}")
         if self.conv_thr:
             parts.append(
-                f"accuracy {accuracy_ev:.2e} {QE_ENERGY_UNIT} "
-                f"(target {self.conv_thr * QE_ENERGY_SCALE:.1e})"
+                f"accuracy {qe_format_accuracy(accuracy)} {QE_ENERGY_UNIT} "
+                f"(target {qe_format_accuracy(self.conv_thr)})"
             )
         else:
-            parts.append(f"accuracy {accuracy_ev:.2e} {QE_ENERGY_UNIT}")
+            parts.append(f"accuracy {qe_format_accuracy(accuracy)} {QE_ENERGY_UNIT}")
 
         remaining = self._remaining(accuracy)
         if remaining is not None:
