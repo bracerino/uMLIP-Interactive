@@ -2876,6 +2876,11 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     for i, filename in enumerate(structure_files):
         print(f"\\n📊 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
+        # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
+        try:
+            qe_set_structure_name(filename)
+        except NameError:
+            pass
         try:
             atoms = read(filename)
             atoms.calc = calculator
@@ -3344,6 +3349,11 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     for i, filename in enumerate(structure_files):
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
+        # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
+        try:
+            qe_set_structure_name(filename)
+        except NameError:
+            pass
         try:
             atoms = read(filename)
             atoms.calc = calculator
@@ -4375,6 +4385,41 @@ def write_poscar_with_selective_dynamics(atoms, filename, selective_dynamics=Non
             for line in lines[1:]:
                 f.write(line)
 
+def cif_safe_site_properties(pmg_struct):
+    """Make the site properties writable by pymatgen's CifWriter.
+
+    CifWriter formats every site property with "{:.8f}", so anything that is not
+    a number raises "unsupported format string passed to list.__format__" - a
+    selective_dynamics flag triple, or any per-atom vector the calculator left
+    on the atoms. Scalars are kept as they are, short numeric vectors become one
+    column per component, and the rest is dropped rather than losing the file.
+    """
+    struct = pmg_struct.copy()
+    dropped = []
+    for name, values in list(struct.site_properties.items()):
+        sample = values[0]
+        if isinstance(sample, (bool, np.bool_)):
+            struct.add_site_property(name, [int(v) for v in values])
+        elif isinstance(sample, (int, float, np.integer, np.floating)):
+            continue
+        elif isinstance(sample, (list, tuple, np.ndarray)) and 2 <= len(sample) <= 6:
+            try:
+                columns = [[float(v[i]) for v in values] for i in range(len(sample))]
+            except (TypeError, ValueError):
+                struct.remove_site_property(name)
+                dropped.append(name)
+                continue
+            struct.remove_site_property(name)
+            labels = "xyz" if len(sample) == 3 else None
+            for i, column in enumerate(columns):
+                suffix = labels[i] if labels else str(i + 1)
+                struct.add_site_property(f"{name}_{suffix}", column)
+        else:
+            struct.remove_site_property(name)
+            dropped.append(name)
+    return struct, dropped
+
+
 def save_structure_as_cif(atoms, filename, preserve_order=False):
     """Save ASE atoms as a P1 CIF with every site listed explicitly.
 
@@ -4387,10 +4432,14 @@ def save_structure_as_cif(atoms, filename, preserve_order=False):
         from pymatgen.io.cif import CifWriter
 
         pmg_struct = AseAtomsAdaptor().get_structure(atoms)
+        pmg_struct, dropped = cif_safe_site_properties(pmg_struct)
         cif_content = str(CifWriter(pmg_struct, symprec=None,
                                     write_site_properties=True))
         with open(filename, 'w') as f:
             f.write(cif_content)
+        if dropped:
+            print(f"  ℹ️ CIF: site properties not writable as numbers were left "
+                  f"out ({', '.join(dropped)})")
         return True
     except Exception as e:
         print(f"  ⚠️ CIF save failed ({e})")
@@ -4960,6 +5009,11 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     for i, filename in enumerate(structure_files):
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
+        # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
+        try:
+            qe_set_structure_name(filename)
+        except NameError:
+            pass
         try:
             # Read structure with selective dynamics information
             atoms, selective_dynamics = read_poscar_with_selective_dynamics(filename)

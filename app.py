@@ -2964,6 +2964,55 @@ def pymatgen_to_ase(structure):
     return wrapped_atoms
 
 
+def _save_qe_defaults(qe_settings):
+    """Persist the Quantum ESPRESSO panel to default_settings.json.
+
+    Kept next to the other defaults so a saved pw.x path, pseudopotential
+    library and cutoffs survive a restart. Returns True when it was written.
+    """
+    if ONLINE_MODE:
+        return False
+    settings = dict(st.session_state.default_settings)
+    settings['qe_settings'] = dict(qe_settings)
+    if save_default_settings(settings):
+        st.session_state.default_settings = settings
+        return True
+    return False
+
+
+def structure_to_cif(structure, symprec=None):
+    """CIF text for a pymatgen structure, site properties included.
+
+    CifWriter formats every site property with "{:.8f}", so a non-numeric one
+    (a selective_dynamics flag triple, a per-atom vector) makes it raise
+    "unsupported format string passed to list.__format__". Scalars are kept,
+    short numeric vectors become one column per component, the rest is dropped.
+    """
+    from pymatgen.io.cif import CifWriter
+
+    struct = structure.copy()
+    for name, values in list(struct.site_properties.items()):
+        sample = values[0]
+        if isinstance(sample, (bool, np.bool_)):
+            struct.add_site_property(name, [int(v) for v in values])
+        elif isinstance(sample, (int, float, np.integer, np.floating)):
+            continue
+        elif isinstance(sample, (list, tuple, np.ndarray)) and 2 <= len(sample) <= 6:
+            try:
+                columns = [[float(v[i]) for v in values] for i in range(len(sample))]
+            except (TypeError, ValueError):
+                struct.remove_site_property(name)
+                continue
+            struct.remove_site_property(name)
+            labels = "xyz" if len(sample) == 3 else None
+            for i, column in enumerate(columns):
+                struct.add_site_property(
+                    f"{name}_{labels[i] if labels else i + 1}", column)
+        else:
+            struct.remove_site_property(name)
+    return str(CifWriter(struct, symprec=symprec, write_site_properties=True))
+
+
 def calculate_atomic_reference_energies(unique_elements, calculator, log_queue):
     reference_energies = {}
 
@@ -3407,6 +3456,25 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(f"❌ {problem}")
                 log_queue.put("CALCULATION_FINISHED")
                 return
+
+            # Where the stress is certainly needed, say so up front: "auto"
+            # would otherwise spend one extra pw.x run discovering it.
+            if qe_settings.get('compute_stress', 'auto') == 'auto':
+                _cell_is_relaxed = (
+                    calc_type == "Geometry Optimization"
+                    and optimization_params.get('optimization_type')
+                    != "Atoms only (fixed cell)"
+                )
+                if _cell_is_relaxed or calc_type in (
+                        "Elastic Properties", "Birch-Murnaghan EOS",
+                        "Virtual Tensile Test"):
+                    qe_settings = dict(qe_settings, compute_stress='always')
+                    qe.set_active_qe_settings(qe_settings)
+                    log_queue.put("  Stress:         computed every step "
+                                  "(this calculation needs it)")
+                elif calc_type == "Phonon Calculation":
+                    log_queue.put("  Stress:         skipped for the displaced "
+                                  "supercells (phonons only need forces)")
 
             try:
                 calculator = build_qe_calculator(
@@ -4215,6 +4283,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
                 log_queue.put(f"Processing structure {i + 1}/{len(structure_data)}: {name}")
                 log_queue.put({'type': 'progress', 'current': i, 'total': len(structure_data), 'name': name})
+
+                if is_qe:
+                    # Lets the calculator pick up this structure's spin/+U file.
+                    qe.set_active_structure_name(name)
 
                 try:
                     atoms = pymatgen_to_ase(structure)
@@ -5123,17 +5195,17 @@ with st.sidebar:
     # settings block and none of the MLIP options below apply to it.
     use_qe = is_qe_model(selected_model, model_size)
     if use_qe:
-        _qe_symbols = sorted({
-            str(sp.symbol)
-            for structure in st.session_state.get('structures', {}).values()
-            for sp in getattr(structure, 'composition', {})
-        })
-        qe_settings = qe.render_qe_sidebar(
-            saved=st.session_state.get('qe_settings'),
-            symbols=_qe_symbols or None,
+        # pw.x has far more settings than an MLIP, so its panel gets its own tab.
+        st.info(
+            "🧪 The **Quantum ESPRESSO settings** are in their own tab, "
+            "*🧪 QE Settings*."
         )
-        st.session_state['qe_settings'] = qe_settings
-        set_active_qe_settings(qe_settings)
+        # Saved defaults seed the panel the first time it is drawn this session.
+        if 'qe_settings' not in st.session_state:
+            _saved_qe = st.session_state.default_settings.get('qe_settings')
+            if _saved_qe:
+                st.session_state['qe_settings'] = dict(_saved_qe)
+        set_active_qe_settings(st.session_state.get('qe_settings'))
         # Kept only so the rest of the app (which assumes an MLIP) stays happy.
         device = "cpu"
         dtype = "float64"
@@ -5735,9 +5807,39 @@ if st.session_state.calculation_running:
         st.progress(progress_value, text=st.session_state.get('progress_text', ''))
 
 
-tab1, tab_st, tab2, tab3, tab4 = st.tabs(
-    ["📁 Structure Upload & Setup", "✅ Start Calculations", "🖥️ Calculation Console", "📊 Results & Analysis",
-     "📈 Optimization Trajectories and Convergence"])
+_tab_labels = ["📁 Structure Upload & Setup"]
+if use_qe:
+    # pw.x has far more settings than an MLIP, so it gets a tab of its own.
+    _tab_labels.append("🧪 QE Settings")
+_tab_labels += ["✅ Start Calculations", "🖥️ Calculation Console",
+                "📊 Results & Analysis", "📈 Optimization Trajectories and Convergence"]
+
+_tabs = st.tabs(_tab_labels)
+if use_qe:
+    tab1, tab_qe, tab_st, tab2, tab3, tab4 = _tabs
+else:
+    tab_qe = None
+    tab1, tab_st, tab2, tab3, tab4 = _tabs
+
+# Rendered before everything else so the settings the rest of the page reads are
+# the ones on screen, whichever tab the user is looking at.
+if tab_qe is not None:
+    with tab_qe:
+        _qe_structures = st.session_state.get('structures', {})
+        qe_settings = qe.render_qe_settings(
+            saved=st.session_state.get('qe_settings'),
+            symbols=sorted({
+                str(sp.symbol)
+                for structure in _qe_structures.values()
+                for sp in getattr(structure, 'composition', {})
+            }) or None,
+            structure_names=list(_qe_structures.keys()),
+            structure_sizes={name: structure.num_sites
+                             for name, structure in _qe_structures.items()},
+            on_save_defaults=_save_qe_defaults,
+        )
+        st.session_state['qe_settings'] = qe_settings
+        set_active_qe_settings(qe_settings)
 
 with tab1:
     if ONLINE_MODE:
@@ -5923,6 +6025,12 @@ with tab1:
             render_structure_preview(st.session_state.structures)
 
         st.divider()
+
+        if use_qe:
+            st.info(
+                "🧪 The **Quantum ESPRESSO settings** live in their own tab "
+                "(*🧪 QE Settings*, next to this one)."
+            )
 
         st.header("Calculation Setup")
 
@@ -11394,11 +11502,8 @@ with tab3:
                                     try:
                                         initial_structure = st.session_state.structures.get(r['name'])
                                         if initial_structure is not None:
-                                            from pymatgen.io.cif import CifWriter
-
-                                            cif_content = str(CifWriter(
-                                                initial_structure, symprec=None, write_site_properties=True
-                                            ))
+                                            cif_content = structure_to_cif(
+                                                initial_structure, symprec=None)
                                             base_name = r['name'].rsplit('.', 1)[0] if '.' in r['name'] else r['name']
                                             cif_filename = f"{base_name}_initial_for_RMSCD.cif"
                                             st.download_button(
@@ -11560,9 +11665,8 @@ with tab3:
                                                     ).get('preserve_atom_order', False)
 
                                                     effective_symprec = None if preserve_order else cif_symprec
-                                                    file_content = CifWriter(
-                                                        new_struct, symprec=effective_symprec,
-                                                        write_site_properties=True).__str__()
+                                                    file_content = structure_to_cif(
+                                                        new_struct, symprec=effective_symprec)
                                                     file_extension = ".cif"
                                                     mime_type = "chemical/x-cif"
 
@@ -11712,8 +11816,7 @@ with tab3:
                                                                     coords=site.frac_coords,
                                                                     coords_are_cartesian=False,
                                                                 )
-                                                            file_content = CifWriter(new_struct, symprec=0.1,
-                                                                                     write_site_properties=True).__str__()
+                                                            file_content = structure_to_cif(new_struct, symprec=0.1)
                                                             filename = f"CIF/{base_name}.cif"
 
                                                         elif fmt == "LAMMPS":
