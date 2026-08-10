@@ -172,7 +172,9 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
             is_orbmol=is_orbmol)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
-            phonon_params, optimization_params, calc_formation_energy)
+            phonon_params, optimization_params, calc_formation_energy,
+            resume_cache=(is_qe_model(selected_model_key, model_size)
+                          and phonon_params.get('resume_from_cache', True)))
     elif calc_type == "Elastic Properties":
         calculation_code = _generate_elastic_code(
             elastic_params, optimization_params, calc_formation_energy)
@@ -344,7 +346,9 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
             is_orbmol=is_orbmol)
     elif calc_type == "Phonon Calculation":
         calculation_code = _generate_phonon_code(
-            phonon_params, optimization_params, calc_formation_energy)
+            phonon_params, optimization_params, calc_formation_energy,
+            resume_cache=(is_qe_model(selected_model_key, model_size)
+                          and phonon_params.get('resume_from_cache', True)))
     elif calc_type == "Elastic Properties":
         calculation_code = _generate_elastic_code(
             elastic_params, optimization_params, calc_formation_energy)
@@ -5784,7 +5788,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 '''
 
     return code
-def _generate_phonon_code(phonon_params, optimization_params, calc_formation_energy):
+def _generate_phonon_code(phonon_params, optimization_params, calc_formation_energy,
+                          resume_cache=False):
     auto_supercell      = phonon_params.get('auto_supercell', True)
     target_length       = phonon_params.get('target_supercell_length', 15.0)
     max_multiplier      = phonon_params.get('max_supercell_multiplier', 4)
@@ -5829,6 +5834,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     use_auto_kpath_str  = str(use_auto_kpath)
     pre_relax_str       = str(pre_relax)
     dos_mesh_str        = str(list(dos_mesh))
+    resume_cache_str    = str(bool(resume_cache))
 
     if auto_supercell:
         supercell_block = f"""
@@ -5855,6 +5861,139 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             n_sc = len(atoms) * {na} * {nb} * {nc}
             log(f"  Manual supercell: {na}×{nb}×{nc} → {{n_sc}} atoms")"""
 
+    # Per-displacement force cache. One SCF per displaced supercell is what makes
+    # a DFT phonon run expensive, so with an external code every finished
+    # displacement is written to its own folder and a rerun of an interrupted
+    # script continues at the first one that has no forces yet. Written as a
+    # plain string (no f-string) so the braces below stay single.
+    resume_block = '''
+    # ---------------------------------------------------------------------
+    # Resume support: forces of every displaced supercell are cached on disk
+    # ---------------------------------------------------------------------
+    # Set to False to recompute every displacement from scratch. The cache key
+    # below is derived from the calculator's own parameters, so editing the
+    # cutoffs / k-points / pseudopotentials in this script starts a fresh cache
+    # instead of handing back forces from the old settings.
+    PHONON_RESUME_CACHE = %(resume)s
+    PHONON_CACHE_ROOT   = "phonon_cache"
+    # Positions/cell agreement required before cached forces are accepted:
+    # loose enough for the text round-trip of the cached pre-relaxed cell,
+    # far tighter than the displacement it has to tell apart.
+    PHONON_CACHE_TOL    = 1e-6
+
+    def phonon_cache_dir(filename, atoms_in):
+        """Cache folder for this structure, or None when caching is off."""
+        if not PHONON_RESUME_CACHE:
+            return None
+        try:
+            payload = {
+                "file": os.path.basename(filename),
+                "displacement": displacement_distance,
+                "supercell": %(supercell)r,
+                "pre_relax": [pre_relax, pre_relax_optimizer, pre_relax_fmax,
+                              pre_relax_steps, pre_relax_lattice,
+                              pre_relax_fix_symmetry, pre_relax_symprec],
+                "calculator": repr(sorted(
+                    dict(getattr(calculator, "parameters", {})).items(), key=str)),
+                # The geometry itself, so an edited structure under the same
+                # file name can never pick up the forces of the old one.
+                "cell": np.round(np.array(atoms_in.get_cell()), 6).tolist(),
+                "positions": np.round(atoms_in.get_positions(), 6).tolist(),
+                "symbols": list(atoms_in.get_chemical_symbols()),
+            }
+            key = hashlib.sha1(
+                json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")
+            ).hexdigest()[:12]
+            base = os.path.splitext(os.path.basename(filename))[0] or "structure"
+            path = os.path.join(PHONON_CACHE_ROOT, f"{base}_{key}")
+            os.makedirs(path, exist_ok=True)
+            return path
+        except Exception as _cache_err:
+            log(f"  ⚠️ Could not open the force cache ({_cache_err}) — no resume")
+            return None
+
+    def phonon_cache_slot(cache_dir, index):
+        if not cache_dir:
+            return None
+        return os.path.join(cache_dir, f"disp-{index + 1:04d}")
+
+    def phonon_cache_load_forces(slot, sc_atoms):
+        """Forces stored for exactly this displaced supercell, or None."""
+        if not slot or not os.path.isfile(os.path.join(slot, "forces.npz")):
+            return None
+        try:
+            with np.load(os.path.join(slot, "forces.npz")) as data:
+                forces = data["forces"]
+                if forces.shape != (len(sc_atoms), 3):
+                    return None
+                if not np.array_equal(data["numbers"], sc_atoms.get_atomic_numbers()):
+                    return None
+                if not np.allclose(data["cell"], np.array(sc_atoms.get_cell()),
+                                   atol=PHONON_CACHE_TOL):
+                    return None
+                if not np.allclose(data["positions"], sc_atoms.get_positions(),
+                                   atol=PHONON_CACHE_TOL):
+                    return None
+                return forces
+        except Exception:
+            # A half-written file from the run that was killed: recompute it.
+            return None
+
+    def phonon_cache_store_forces(slot, sc_atoms, forces):
+        """Save the forces plus the input/output files of this displacement."""
+        if not slot:
+            return
+        try:
+            os.makedirs(slot, exist_ok=True)
+            source_dir = str(getattr(calculator, "directory", "") or "")
+            for _fname in ("espresso.pwi", "espresso.pwo"):
+                _src = os.path.join(source_dir, _fname)
+                if os.path.isfile(_src):
+                    shutil.copy2(_src, os.path.join(slot, _fname))
+            # Written aside and renamed, so an interrupted write can never leave
+            # a truncated forces.npz behind.
+            _tmp = os.path.join(slot, "_forces.partial.npz")
+            np.savez(_tmp,
+                     forces=np.asarray(forces, dtype=float),
+                     positions=sc_atoms.get_positions(),
+                     cell=np.array(sc_atoms.get_cell()),
+                     numbers=sc_atoms.get_atomic_numbers())
+            os.replace(_tmp, os.path.join(slot, "forces.npz"))
+        except Exception as _store_err:
+            log(f"    ⚠️ Could not cache displacement forces ({_store_err})")
+
+    def phonon_cache_load_relaxed(cache_dir):
+        """The pre-relaxed cell of the interrupted run.
+
+        The displacements are generated from it, so resuming has to start from
+        the very same structure — a second pre-relaxation would land a hair away
+        and invalidate every cached force.
+        """
+        if not cache_dir:
+            return None
+        _path = os.path.join(cache_dir, "pre_relaxed.extxyz")
+        if not os.path.isfile(_path):
+            return None
+        try:
+            return read(_path, format="extxyz")
+        except Exception as _rel_err:
+            log(f"  ⚠️ Cached pre-relaxed structure unusable ({_rel_err}) — relaxing again")
+            return None
+
+    def phonon_cache_store_relaxed(cache_dir, relaxed):
+        if not cache_dir:
+            return
+        try:
+            write(os.path.join(cache_dir, "pre_relaxed.extxyz"), relaxed.copy(),
+                  format="extxyz")
+        except Exception as _rel_err:
+            log(f"  ⚠️ Could not cache the pre-relaxed structure ({_rel_err})")
+''' % {
+        'resume': resume_cache_str,
+        'supercell': ('auto', target_length, max_multiplier, max_atoms)
+                     if auto_supercell else ('manual', tuple(supercell_size)),
+    }
+
     formation_ref_block = ""
     if calc_formation_energy:
         formation_ref_block = """
@@ -5880,7 +6019,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 log(f"  ✅ Formation energy: {fe:.6f} eV/atom")
 """
 
-    code = f'''    import io, warnings
+    code = f'''    import io, warnings, hashlib, json, shutil
 
     def log(msg):
         print(msg)
@@ -5935,7 +6074,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     plot_freq_factor    = {plot_freq_factor}      # THz → chosen unit
     plot_freq_label_mpl = "{plot_freq_label_mpl}" # matplotlib axis label
     plot_freq_label_log = "{plot_freq_label_log}" # plain-text label for logs
-
+{resume_block}
     log(f"⚙️  Displacement: {{displacement_distance}} Å")
     log(f"⚙️  k-path: {{'auto (' + kpath_convention + ')' if use_auto_kpath else 'manual'}}")
     log(f"⚙️  Points/segment: {{npoints_per_segment}}")
@@ -5943,6 +6082,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     log(f"⚙️  Pre-relax: {{pre_relax}} ({{pre_relax_optimizer}}, fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)")
     log(f"⚙️  Imaginary mode tolerance: {{imaginary_tol_mev:.3f}} meV")
     log(f"⚙️  Plot frequency unit: {{plot_freq_label_log}}")
+    if PHONON_RESUME_CACHE:
+        log(f"⚙️  Force cache: ./{{PHONON_CACHE_ROOT}}/ — every finished displacement "
+            f"is stored there, rerunning this script resumes from it")
     if calc_gamma_irreps:
         log(f"⚙️  Γ-point irreps: enabled "
             f"(irreps symprec {{irreps_symprec:g}} Å, "
@@ -5959,7 +6101,18 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             atoms.calc = calculator
             log(f"  {{len(atoms)}}-atom structure loaded")
 
-            if pre_relax:
+            disp_cache = phonon_cache_dir(filename, atoms)
+            if disp_cache:
+                log(f"  Force cache: {{os.path.abspath(disp_cache)}}")
+
+            _cached_relaxed = phonon_cache_load_relaxed(disp_cache) if pre_relax else None
+            if _cached_relaxed is not None:
+                atoms = _cached_relaxed
+                atoms.calc = calculator
+                log("  ♻️ Reusing the pre-relaxed cell from the cache "
+                    "(the cached forces belong to it)")
+
+            if pre_relax and _cached_relaxed is None:
                 log(f"  Running brief pre-phonon optimisation ({{pre_relax_optimizer}}, "
                     f"fmax={{pre_relax_fmax}} eV/Å, max {{pre_relax_steps}} steps)...")
                 pre_atoms = atoms.copy()
@@ -6098,6 +6251,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 log(f"  Pre-relax ✅  E={{atoms.get_potential_energy():.6f}} eV  "
                     f"F_max={{np.max(np.linalg.norm(atoms.get_forces(), axis=1)):.4f}} eV/Å")
 
+                # Kept so a rerun displaces exactly this cell again
+                phonon_cache_store_relaxed(disp_cache, atoms)
+
                 # Save the pre-relaxed structure (POSCAR + CIF) and the
                 # optimisation trajectory into optimized_structures/, exactly
                 # like the standalone Geometry Optimization script does.
@@ -6143,7 +6299,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                                     f"{{_f[0]:12.6f}} {{_f[1]:12.6f}} {{_f[2]:12.6f}} "
                                     f"{{_tot:12.6f}}\\n")
                     log(f"  💾 Trajectory saved: {{_traj_file}}")
-            else:
+            elif _cached_relaxed is None:
                 log("  Skipping pre-optimisation (disabled by user)")
 
             from pymatgen.io.ase import AseAtomsAdaptor
@@ -6182,13 +6338,30 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
 
             log("  Calculating forces for displaced supercells...")
             all_forces = []
+            _n_reused = 0
             for j, sc in enumerate(supercells):
                 sc_atoms = Atoms(symbols=sc.symbols, positions=sc.positions,
                                  cell=sc.cell, pbc=True)
+
+                _slot = phonon_cache_slot(disp_cache, j)
+                _cached_forces = phonon_cache_load_forces(_slot, sc_atoms)
+                if _cached_forces is not None:
+                    all_forces.append(_cached_forces)
+                    _n_reused += 1
+                    if _n_reused == 1 or (j + 1) % max(1, len(supercells) // 8) == 0:
+                        log(f"    Forces: {{j+1}}/{{len(supercells)}} — ♻️ reused from "
+                            f"{{os.path.basename(_slot)}}")
+                    continue
+
                 sc_atoms.calc = calculator
-                all_forces.append(sc_atoms.get_forces())
+                _disp_forces = sc_atoms.get_forces()
+                all_forces.append(_disp_forces)
+                phonon_cache_store_forces(_slot, sc_atoms, _disp_forces)
                 if (j + 1) % max(1, len(supercells) // 8) == 0 or j == len(supercells) - 1:
                     log(f"    Forces: {{j+1}}/{{len(supercells)}} ({{100*(j+1)//len(supercells)}}%)")
+            if _n_reused:
+                log(f"  ♻️ Resumed: {{_n_reused}} of {{len(supercells)}} displacements came "
+                    f"from the cache, {{len(supercells) - _n_reused}} were computed now")
             log("  ✅ All force calculations completed")
 
             phonon.forces = all_forces

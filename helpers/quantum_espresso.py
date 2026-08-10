@@ -16,6 +16,8 @@ several modules, the active settings are also cached module-side
 way the sidebar caches the selected model.
 """
 
+import hashlib
+import json
 import math
 import os
 
@@ -2312,6 +2314,128 @@ def find_override_file(settings, structure_name=None, formula=None):
     s = _merged(settings)
     directory = os.path.abspath(os.path.expanduser(s['overrides_dir'] or '.'))
     return runtime['qe_find_override_file'](structure_name, formula, directory)
+
+
+# ---------------------------------------------------------------------------
+# Phonon force cache (resume an interrupted run)
+# ---------------------------------------------------------------------------
+PHONON_CACHE_SUBDIR = 'phonon_cache'
+
+
+def _overrides_fingerprint(s, structure_name=None):
+    """What the per-structure MAGMOM/+U settings contribute to the cache key."""
+    if not s['per_structure_overrides']:
+        return None
+    if s['overrides_source'] != 'file':
+        return s['overrides_text']
+    directory = os.path.abspath(os.path.expanduser(s['overrides_dir'] or '.'))
+    name = structure_name if structure_name is not None else _ACTIVE_STRUCTURE_NAME
+    try:
+        path = overrides_runtime()['qe_find_override_file'](name, None, directory)
+        if not path:
+            return None
+        with open(path, 'r', errors='replace') as handle:
+            return handle.read()
+    except Exception:
+        # An unreadable file must not make the key unstable: fall back to the
+        # path alone, and let the per-displacement structure check do the rest.
+        return str(name)
+
+
+def qe_settings_fingerprint(settings=None, structure_name=None):
+    """Short hash of everything in the settings that changes a computed force.
+
+    Cached forces may only be reused when this is identical, so it covers the
+    pw.x namelists, the k-points and the pseudopotentials: a raised cutoff or a
+    denser mesh then lands in its own cache folder instead of silently handing
+    back the numbers from the old settings.
+    """
+    s = _merged(settings if settings is not None else get_active_qe_settings())
+    pseudo_dir = os.path.abspath(s['pseudo_dir']) if s['pseudo_dir'] else ''
+    try:
+        pseudopotentials = resolve_pseudopotentials(pseudo_dir, s['pseudo_overrides'])
+    except Exception:
+        pseudopotentials = dict(s['pseudo_overrides'] or {})
+
+    payload = {
+        'input_data': build_qe_input_data(s, calculation='scf'),
+        'kpoints': build_qe_kpoint_kwargs(s),
+        'pseudo_dir': pseudo_dir,
+        'pseudopotentials': pseudopotentials,
+        'nspin': int(s['nspin']),
+        'starting_magnetization': float(s['starting_magnetization']),
+        'magmom_units': s['magmom_units'],
+        'hubbard_style': s['hubbard_style'],
+        'hubbard_projectors': s['hubbard_projectors'],
+        'overrides': _overrides_fingerprint(s, structure_name),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=repr)
+    return hashlib.sha1(blob.encode('utf-8')).hexdigest()[:10]
+
+
+def _cache_slug(text):
+    keep = '-_.'
+    cleaned = ''.join(c if (c.isalnum() or c in keep) else '_' for c in str(text))
+    return cleaned.strip('_')[:60] or 'structure'
+
+
+# Phonon settings that decide which structures get displaced, and therefore
+# which cached forces still apply. The supercell and the displacement distance
+# are spelled out in the folder name instead.
+PHONON_CACHE_PARAM_KEYS = (
+    'pre_relax', 'pre_relax_fmax', 'pre_relax_steps', 'pre_relax_optimizer',
+    'pre_relax_lattice_mode', 'pre_relax_fix_symmetry', 'pre_relax_symprec',
+    'max_supercell_atoms', 'max_supercell_multiplier',
+)
+
+
+def qe_structure_cache_fingerprint(atoms):
+    """Hash of the structure the displacements are generated from.
+
+    Two structures may carry the same name — an edited lattice parameter, a
+    swapped species — and their forces must never be mixed up, so the geometry
+    itself goes into the cache key as well.
+    """
+    if atoms is None:
+        return None
+    payload = {
+        'numbers': [int(z) for z in atoms.get_atomic_numbers()],
+        'cell': [round(float(v), 6) for row in atoms.get_cell() for v in row],
+        'positions': [round(float(v), 6) for row in atoms.get_positions() for v in row],
+        'pbc': [bool(v) for v in atoms.get_pbc()],
+    }
+    blob = json.dumps(payload, sort_keys=True)
+    return hashlib.sha1(blob.encode('utf-8')).hexdigest()[:8]
+
+
+def qe_phonon_cache_dir(structure_name, phonon_params=None, settings=None, atoms=None):
+    """Folder holding the per-displacement forces of one phonon run.
+
+    Everything that would change a force sits in the folder name, so a rerun
+    with different settings starts a fresh cache and an identical rerun picks up
+    where the interrupted one stopped.
+    """
+    s = _merged(settings if settings is not None else get_active_qe_settings())
+    p = phonon_params or {}
+
+    delta = float(p.get('displacement_distance', p.get('delta', 0.01)))
+    if p.get('auto_supercell', True):
+        supercell = 'auto{:g}'.format(float(p.get('target_supercell_length', 15.0)))
+    else:
+        size = tuple(int(x) for x in p.get('supercell_size', (2, 2, 2)))
+        supercell = '{}x{}x{}'.format(*size)
+
+    params_blob = json.dumps({k: p.get(k) for k in PHONON_CACHE_PARAM_KEYS},
+                             sort_keys=True, default=repr)
+    params_key = hashlib.sha1(params_blob.encode('utf-8')).hexdigest()[:6]
+
+    structure_key = qe_structure_cache_fingerprint(atoms) or ''
+    tag = '{}_{}_d{:g}_{}{}{}'.format(
+        _cache_slug(structure_name), supercell, delta,
+        qe_settings_fingerprint(s, structure_name), params_key, structure_key,
+    )
+    root = os.path.abspath(os.path.expanduser(s['work_dir'] or 'qe_calc'))
+    return os.path.join(root, PHONON_CACHE_SUBDIR, tag)
 
 
 # ---------------------------------------------------------------------------
