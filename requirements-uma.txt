@@ -1,0 +1,125 @@
+# UMA (Meta FAIR Chemistry) — its own environment.
+#
+# Two things make UMA different from the other model families here:
+#
+#   1) fairchem-core 2.22.0 pins torch~=2.13 and numpy<2.5, and needs Python
+#      3.11-3.14. Every other family here is on torch 2.8, so this one cannot
+#      share their environment - it gets a venv of its own.
+#   2) The weights are GATED on Hugging Face. Nothing downloads until a token
+#      that has been granted access is visible to huggingface_hub — see the
+#      bottom of this file.
+#
+# UMA runs from the *generated standalone script*, not inside the GUI. The
+# Streamlit packages are still listed so one venv can do both jobs: launch the
+# app, pick the UMA family, generate the script, then run that script here.
+
+streamlit==1.57.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26
+ase==3.28.0
+phonopy==2.41.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+
+seekpath==2.2.1
+
+# fairchem-core brings its own torch (~=2.13), numpy (<2.5), e3nn, numba and
+# ray, so torch is deliberately NOT pinned separately above — let the resolver
+# take fairchem's window rather than fighting it. Note this is a *different*
+# torch from the rest of the project, which is the reason for the separate env.
+fairchem-core==2.22.0
+
+# `hf auth login` lives in the CLI extra. fairchem only asks for
+# huggingface-hub>=0.27.1, which predates the `hf` command, so it is pinned
+# forward here; without it the only way to authenticate is the HF_TOKEN
+# environment variable.
+huggingface_hub[cli]>=0.34.0
+
+# ---------------------------------------------------------------------------
+# Access to the weights
+# ---------------------------------------------------------------------------
+# Each checkpoint sits in a separately gated repo. Accepting one licence does
+# NOT grant the others, so accept the licence for whichever you plan to use:
+#
+#   facebook/UMA      uma-s-1p1, uma-s-1p2, uma-s-1p2p1, uma-m-1p1
+#   facebook/OMol25   esen-*-omol, allscaip-*-omol
+#   facebook/OC25     esen-*-oc25
+#   facebook/ODAC25   esen-*-odac25
+#
+# Then create a token at https://huggingface.co/settings/tokens with
+# "Read access to contents of all public gated repos you can access", and
+# either:
+#
+#   hf auth login
+# or
+#   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+#
+# The sidebar can also write the token straight into the generated script, in
+# which case neither of the above is needed - but treat that file as a secret.
+#
+# ---------------------------------------------------------------------------
+# Optional
+# ---------------------------------------------------------------------------
+# GPU — READ THIS IF CUDA "IS NOT AVAILABLE"
+#
+# fairchem-core 2.22 pins torch~=2.13, and the default PyPI wheel for torch
+# 2.13 is built against CUDA 13 (torch-2.13.0+cu130). CUDA 13 requires an
+# NVIDIA driver from the r580 series or newer. On an older driver torch loads
+# fine but reports no GPU, and fairchem then fails with the misleading
+#
+#     cannot set cpu=false and no cuda available!
+#
+# Check which side you are on:
+#     nvidia-smi                       # "CUDA Version:" is your driver's max
+#     python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+#
+# If the driver is older than r580, either update it (on WSL2 that means the
+# *Windows* NVIDIA driver, not anything inside Linux), or install a torch built
+# for CUDA 12 - still inside fairchem's window, so fairchem stays happy:
+#
+#     pip install "torch>=2.13,<2.14" \
+#       --index-url https://download.pytorch.org/whl/cu126
+#
+# CUDA 12.x minor-version compatibility means a cu126 build runs on any 12.x
+# driver (>= 525.60.13), so this works all the way back to CUDA 12.0.
+# Other channels carrying torch 2.13: cu126, cu129, cu130. There is no cu128
+# build of 2.13, so cu126 is the one to use for older drivers.
+#
+# ---------------------------------------------------------------------------
+# HOST RAM — READ THIS IF THE RUN IS "KILLED" PART-WAY
+#
+# UMA is far more demanding of system RAM than of VRAM, and the usual symptom
+# is a run that dies with a bare "Killed" (the Linux OOM killer) rather than
+# any Python traceback. It is easy to misread as a GPU problem; it is not.
+# Measured here on a 64-atom Si cell, uma-s-1p2p1 on an RTX 3060:
+#
+#   preset                        peak host RAM   peak VRAM   start-up   per call
+#   default                          10.1 GB        0.3 GB      86 s       73 ms
+#   default, 1 compile worker         5.2 GB        0.3 GB      34 s       75 ms
+#   batch                             5.2 GB        1.4 GB       5 s      167 ms
+#
+# Note the peak barely depends on the size of the structure: it is the 2.2 GB
+# checkpoint plus torch.compile, which forks one inductor worker per core with
+# each worker re-importing torch. That transient is what overruns the machine.
+#
+# The generated script now caps the workers automatically when it detects less
+# than 12 GB of RAM, which costs nothing (it is also ~2x faster to compile).
+# To do it by hand:
+#
+#     export TORCHINDUCTOR_COMPILE_THREADS=1
+#
+# Or choose the "batch" preset in the sidebar to skip compiling altogether -
+# better for a few single-point calculations, worse for MD/NEB/phonons.
+#
+# On WSL2 the limit is usually WSL's own, not the machine's: it takes 50% of
+# Windows RAM by default, so a 16 GB laptop gives Linux only ~7.7 GB. Raise it
+# in %UserProfile%\.wslconfig (create the file if absent):
+#
+#     [wsl2]
+#     memory=12GB
+#
+# then run `wsl --shutdown` in PowerShell and reopen the terminal. Check with
+# `free -g` inside WSL.

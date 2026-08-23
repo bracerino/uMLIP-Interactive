@@ -11,6 +11,9 @@ from helpers.custom_model_paths import (
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
 )
+from helpers.uma_models import (
+    is_uma_model, get_active_uma_settings, uma_checkpoint_name,
+)
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
@@ -19,6 +22,19 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
                               polar_settings=None, custom_sevennet_path=None,
                               custom_grace_path=None, mace_enable_cueq=False,
                               sevennet_enable_cueq=False):
+    # A UMA model picked in the sidebar feeds the same fairchem path that this
+    # panel's manual "Override with Fairchem" checkbox uses. The explicit
+    # override still wins, so a hand-typed checkpoint name keeps working.
+    if not md_params.get('use_fairchem') and is_uma_model(selected_model, model_size):
+        _uma = get_active_uma_settings()
+        md_params = copy.deepcopy(md_params)
+        md_params['use_fairchem'] = True
+        md_params['fairchem_model_name'] = uma_checkpoint_name(model_size)
+        # None for a single-task checkpoint — fairchem then picks the task.
+        md_params['fairchem_task'] = _uma.get('task')
+        if _uma.get('embed_token', True) and _uma.get('hf_token'):
+            md_params['fairchem_key'] = _uma['hf_token']
+
     if md_params.get('use_fairchem'):
         actual_selected_model = "Fairchem (UMA Override)"
         actual_model_size = md_params.get('fairchem_model_name', 'Unknown Fairchem Model')
@@ -180,11 +196,12 @@ else:
     print("  Warning: 'fairchem_key' not found in md_params. This may be required for gated UMA models.")
     print("  Proceeding without it (OK if token is already set globally).")
 
-fairchem_task = md_params.get('fairchem_task', None)
-if not fairchem_task:
-    print("❌ ERROR: 'fairchem_task' not found in md_params.")
-    print("  To use Fairchem UMA models, please add `fairchem_task` (e.g., 'oc20', 'omat', 'omol') to md_params.")
-    exit()
+fairchem_task = md_params.get('fairchem_task', None) or None
+if fairchem_task is None:
+    # Fine for a single-task checkpoint (the eSEN / AllScAIP specialists):
+    # fairchem picks the only task it has. A multi-task UMA checkpoint will
+    # raise here instead, naming the tasks it accepts.
+    print("  No task set — letting fairchem choose (single-task checkpoint expected).")
 
 calc_device = "{device}" # Use the top-level device setting passed to the function
 

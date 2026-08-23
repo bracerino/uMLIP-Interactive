@@ -7,6 +7,10 @@ import numpy as np
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.uma_models import (
+    is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
+    uma_checkpoint_name,
+)
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
@@ -114,6 +118,12 @@ torch.set_num_threads({thread_count})
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         calculator_setup_str = generate_qe_calculator_code(
             get_active_qe_settings(), indent="")
+    elif is_uma_model(selected_model, model_size):
+        # UMA: a fairchem predict unit plus a task name, nothing below applies.
+        _uma = get_active_uma_settings()
+        _uma["model_id"] = uma_checkpoint_name(model_size)
+        _uma["device"] = device
+        calculator_setup_str = generate_uma_calculator_code(_uma, indent="")
     elif "CHGNet" in selected_model:
         imports_str += """
 try:

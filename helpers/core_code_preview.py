@@ -1,6 +1,10 @@
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.uma_models import (
+    is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
+    uma_checkpoint_name,
+)
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
@@ -122,6 +126,16 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent="")
+
+    if is_uma_model(selected_model, model_size):
+        # UMA: fairchem predict unit + task name. The preview is only ever
+        # read on screen, so the access token is left out of it — the real
+        # generated script is where it belongs.
+        _uma = get_active_uma_settings()
+        _uma["model_id"] = uma_checkpoint_name(model_size)
+        _uma["device"] = device
+        _uma["embed_token"] = False
+        return generate_uma_calculator_code(_uma, indent="")
 
     if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
                             custom_mace_path=custom_mace_path):

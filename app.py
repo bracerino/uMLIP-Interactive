@@ -117,6 +117,10 @@ from helpers.quantum_espresso import (
     QE_FAMILY_NAME, QE_MODEL_KEY, QE_MODEL_VALUE, QE_DEFAULTS, QE_ENV_SETUP,
     is_qe_model, build_qe_calculator, set_active_qe_settings,
 )
+from helpers.uma_models import (
+    UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
+    is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
+)
 from helpers.postprocessing_scripts import render_postprocessing_panel
 from helpers.birch_murnaghan_eos import (
     setup_eos_ui,
@@ -193,6 +197,14 @@ try:
     GRACE_AVAILABLE = True
 except ImportError:
     GRACE_AVAILABLE = False
+
+# Probed rather than imported: fairchem pulls in ray/torchtnt and is only ever
+# used by the generated standalone scripts, never inside this process.
+try:
+    import importlib.util as _uma_ilu
+    UMA_AVAILABLE = _uma_ilu.find_spec("fairchem.core") is not None
+except Exception:
+    UMA_AVAILABLE = False
 
 try:
     from alignn.ff.ff import AlignnAtomwiseCalculator, default_path
@@ -2908,6 +2920,8 @@ MODEL_FAMILIES = {
         "GRACE-2L-MP-r6 (MPtraj, 6Å cutoff)": "GRACE-2L-MP-r6",
         "Custom GRACE Model (local) 🔧": "grace:custom",
     },
+    # Script-only: gated weights + its own torch pin, see helpers/uma_models.py.
+    UMA_FAMILY_NAME: UMA_MODELS,
 }
 
 # Flat dict kept for backward compatibility (script generation, etc.)
@@ -2975,6 +2989,7 @@ FAMILY_ENV_SETUP = {
         "pip": f"pip install tensorpotential torch==2.8.0 scipy==1.17.1 {_CORE_SCI_ASE327}",
         "note": "GRACE needs tensorpotential on torch 2.8 (and ASE 3.27).",
     },
+    UMA_FAMILY_NAME: UMA_ENV_SETUP,
 }
 
 
@@ -3621,6 +3636,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put("NEB calculation mode - using separate structure handling")
         elif not structure_data:
             log_queue.put("❌ No structures provided")
+            log_queue.put("CALCULATION_FINISHED")
+            return
+
+        # UMA never runs in-process: gated weights plus its own torch pin. The
+        # button is disabled for it, so reaching here means some other entry
+        # point routed a UMA model in — stop with a message rather than falling
+        # through the chain below and silently setting up MACE.
+        if is_uma_model(selected_model, model_size):
+            log_queue.put(
+                "❌ UMA models cannot run inside this interface — generate a "
+                "standalone script instead (see the sidebar for the token and "
+                "task, then use the 'Generate Python Script' buttons)."
+            )
             log_queue.put("CALCULATION_FINISHED")
             return
 
@@ -5313,7 +5341,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.10.1 · 7/23/2026
+            v0.11.0 · 8/23/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5417,6 +5445,13 @@ with st.sidebar:
         custom_mace_path = None
         custom_upet_path = None
         st.session_state['polar_settings'] = {}
+
+    # UMA (fairchem) is an MLIP, but a script-only one: gated weights plus a
+    # torch pin of its own. Its panel is drawn further down, once the compute
+    # device has been picked.
+    use_uma = is_uma_model(selected_model, model_size)
+    if not use_uma:
+        set_active_uma_settings(None)
 
     is_custom_mace = (not use_qe) and (selected_model == "Custom MACE Model 🔧")
     custom_mace_path = None
@@ -5624,6 +5659,7 @@ with st.sidebar:
             "Allegro / NequIP": ALLEGRO_AVAILABLE,
             "UPET": UPET_AVAILABLE,
             "GRACE": GRACE_AVAILABLE,
+            "UMA (fairchem)": UMA_AVAILABLE,
         }
         available = [name for name, ok in availability.items() if ok]
         not_available = [name for name, ok in availability.items() if not ok]
@@ -5646,7 +5682,12 @@ with st.sidebar:
             device = "cuda" if device_option == "GPU (CUDA)" else "cpu"
 
         with cols2:
-            if not selected_model.startswith("CHGNet"):
+            if use_uma:
+                # fairchem has no dtype argument: the working precision comes
+                # from the inference preset instead ('turbo' adds TF32).
+                st.info("UMA precision follows the inference preset below.")
+                dtype = "float32"
+            elif not selected_model.startswith("CHGNet"):
                 default_precision_index = 0 if defaults['dtype'] == "float32" else 1
                 precision_option = st.radio(
                     "Precision",
@@ -5661,6 +5702,20 @@ with st.sidebar:
         mace_head = None
         mace_dispersion = False
         mace_dispersion_xc = "pbe"
+
+    # UMA options: token, task, inference preset, and the molecular electronic
+    # state. Drawn here because it needs the device chosen just above.
+    uma_settings = None
+    if use_uma:
+        # No save_settings_function: the panel only updates the in-memory
+        # defaults, so the settings file is written by the "Save as Default"
+        # button rather than on every widget interaction.
+        uma_settings = setup_uma_ui(
+            model_size,
+            device=device,
+            default_settings=st.session_state.default_settings,
+            save_settings_function=None,
+        )
 
     # cuEquivariance acceleration (enable_cueq): MACE-only and GPU-only. Same model
     # and weights, faster equivariant kernels — so it is on by default when a GPU is
@@ -5925,6 +5980,11 @@ with st.sidebar:
                 'device': device,
                 'dtype': dtype
             }
+            # UMA's task / preset are worth keeping; its access token is not
+            # (setup_uma_ui never puts the token in here).
+            _saved_uma = st.session_state.default_settings.get('uma_settings')
+            if _saved_uma:
+                new_settings['uma_settings'] = _saved_uma
 
             if save_default_settings(new_settings):
                 st.session_state.default_settings = new_settings
@@ -8516,6 +8576,18 @@ with tab_st:
             f"`python your_script.py` in your terminal\n\n"
             f"💡 You can still use **👁️ Preview Core Code** below to inspect the calculation logic before generating."
         )
+
+    # UMA is script-only for the whole app, whatever the calculation type is.
+    if use_uma:
+        st.info(
+            f"`{selected_model}` is script-only. Configure the calculation as "
+            f"usual, generate the script below, then run it in an environment "
+            f"built from `requirements-uma.txt`. First run downloads the "
+            f"checkpoint from [{uma_repo_id(model_size)}]"
+            f"(https://huggingface.co/{uma_repo_id(model_size)}) — accept that "
+            f"repo's licence first, or it returns 403."
+        )
+
     if True:
         current_script_folder = os.getcwd()
         backup_folder = os.path.join(current_script_folder, "results_backup")
@@ -8571,6 +8643,7 @@ with tab_st:
                 type="primary",
                 disabled=ONLINE_MODE or
                          external_only or
+                         use_uma or
                          not all_compatible or
                          st.session_state.calculation_running or
                          (calc_type != "NEB Calculation" and (

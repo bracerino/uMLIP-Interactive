@@ -14,6 +14,10 @@ import json
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.uma_models import (
+    is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
+    uma_checkpoint_name,
+)
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
@@ -184,6 +188,13 @@ def _calc_block(selected_model, model_size, device, dtype,
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
+
+    if is_uma_model(selected_model, model_size):
+        # UMA: a fairchem predict unit plus a task name, nothing below applies.
+        _uma = get_active_uma_settings()
+        _uma["model_id"] = uma_checkpoint_name(model_size)
+        _uma["device"] = device
+        return generate_uma_calculator_code(_uma, indent=i)
 
     is_chgnet    = selected_model.startswith("CHGNet")
     is_sevennet  = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")

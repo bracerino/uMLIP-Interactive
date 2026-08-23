@@ -9,6 +9,10 @@ from helpers.custom_model_paths import (
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.uma_models import (
+    is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
+    uma_checkpoint_name,
+)
 
 
 def _generate_mlip_imports():
@@ -95,8 +99,16 @@ try:
 except ImportError:
     GRACE_AVAILABLE = False
 
+# UMA imports (Meta FAIR Chemistry). Only the presence of the package is probed
+# here; the checkpoint itself downloads later, once the HF token is in place.
+try:
+    from fairchem.core import pretrained_mlip as _fairchem_pretrained_mlip
+    UMA_AVAILABLE = True
+except ImportError:
+    UMA_AVAILABLE = False
+
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE or UMA_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -108,6 +120,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILAB
     print("  - Allegro / NequIP: pip install nequip-allegro")
     print("  - PET-MAD: pip install pet-mad")
     print("  - UPET: pip install upet")
+    print("  - UMA (Meta FAIR): pip install fairchem-core")
     exit(1)
 else:
     available_models = []
@@ -131,6 +144,8 @@ else:
         available_models.append("PET-MAD")
     if UPET_AVAILABLE:
         available_models.append("UPET")
+    if UMA_AVAILABLE:
+        available_models.append("UMA")
     print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
 
 
@@ -1939,6 +1954,14 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     # short-circuits the whole model-detection chain below.
     if is_qe_model(selected_model_key, model_size):
         return generate_qe_calculator_code(get_active_qe_settings(), indent="    ")
+
+    # UMA comes from fairchem, which has its own loader (a predict unit plus a
+    # task name) and nothing in common with the keyword-based MLIPs below.
+    if is_uma_model(selected_model_key, model_size):
+        _uma = get_active_uma_settings()
+        _uma["model_id"] = uma_checkpoint_name(model_size)
+        _uma["device"] = device
+        return generate_uma_calculator_code(_uma, indent="    ")
 
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     if is_mace_polar:

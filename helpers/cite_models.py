@@ -274,4 +274,22 @@ def create_citation_info():
                 </a>
             </div>
         </div>
+
+        <div class="model-section" style="border-left-color: #0866FF;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣2️⃣</span>
+                <span>UMA (Universal Model for Atoms, Meta FAIR Chemistry)</span>
+            </div>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2506.23971" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> arXiv:2506.23971, 2025
+                </a>
+                <a href="https://github.com/facebookresearch/fairchem" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+                <a href="https://huggingface.co/facebook/UMA" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Weights (gated)
+                </a>
+            </div>
+        </div>
         """, unsafe_allow_html=True)

@@ -1,2 +1,7 @@
 # Runtime page-view counter (ephemeral, not versioned)
 pageviews.json
+
+# Per-machine settings written by "Save as Default". Local paths (pw.x, ...)
+# and, if the user opts in, a Hugging Face access token in plain text — so
+# this must never be committed.
+default_settings.json

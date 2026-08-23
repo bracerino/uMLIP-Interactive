@@ -217,10 +217,18 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
         val = _md_defaults.get(key)
         return options.index(val) if val in options else fallback_idx
 
-    # Fairchem/UMA override option
+    # Fairchem/UMA override. The normal route is now the sidebar's
+    # "UMA (Meta FAIR)" model family, which feeds this same code path; this
+    # box stays as an escape hatch for a checkpoint name that is not listed
+    # there (a newly released one, or a local fine-tune).
     md_params['use_fairchem'] = st.checkbox(
-        "Override with Fairchem (UMA) Model?",
-        help="If checked, the model selected above will be ignored and the Fairchem (UMA) model specified below will be used."
+        "Override with a hand-typed Fairchem (UMA) model?",
+        help=(
+            "Not needed for the listed UMA models — pick them in the sidebar "
+            "under the 'UMA (Meta FAIR)' family instead. Tick this only to "
+            "name a checkpoint that is not in that list; it then overrides "
+            "whatever the sidebar has selected."
+        )
     )
 
     if md_params['use_fairchem']:
@@ -229,12 +237,12 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
         with col_fc1:
             md_params['fairchem_model_name'] = st.text_input(
                 "Fairchem Model Name",
-                value="uma-s-1p1",
-                help="The name of the UMA model to use (e.g., 'uma-s-1p1')."
+                value="uma-s-1p2p1",
+                help="The name of the UMA model to use (e.g., 'uma-s-1p2p1')."
             )
             md_params['fairchem_task'] = st.selectbox(
                 "Fairchem Task",
-                ["omat", "oc20", "omol", "odac", "omc"],
+                ["omat", "omc", "odac", "omol", "oc20", "oc25"],
                 index=0,
                 help="The universal model task (e.g., 'omat' for materials, 'oc20' for catalysis)."
             )
