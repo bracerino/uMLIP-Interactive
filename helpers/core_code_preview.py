@@ -17,6 +17,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           optimization_params=None, phonon_params=None,
                           elastic_params=None, md_params=None,
                           neb_params=None, tensile_params=None,
+                          finite_t_elastic_params=None,
                           mace_head=None,
                           mace_dispersion=False, mace_dispersion_xc="pbe",
                           custom_mace_path=None, custom_upet_path=None,
@@ -56,6 +57,8 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
         body = _molecular_dynamics(md_params or {})
     elif calc_type == "Virtual Tensile Test":
         body = _tensile(tensile_params or {})
+    elif calc_type == "Finite-T Elastic Properties":
+        body = _finite_t_elastic(finite_t_elastic_params or {})
     elif calc_type == "NEB Calculation":
         body = _neb(neb_params or {})
     elif calc_type == "GA Structure Optimization":
@@ -1372,3 +1375,140 @@ def _ga():
         "#       population = elite + offspring\n"
         "#   best = min(population, key=lambda ind: calc_energy(ind, calculator))\n"
     )
+
+
+def _finite_t_elastic(p):
+    temperatures  = p.get('temperature_list') or [300.0]
+    pressure      = p.get('pressure_GPa', 0.0)
+    timestep      = p.get('timestep', 1.0)
+    delta         = p.get('strain_magnitude', 0.01)
+    multi         = p.get('use_multi_strain', False)
+    components    = p.get('strain_components', [0, 1, 2, 3, 4, 5])
+    use_npt       = p.get('use_npt_equilibration', True)
+    npt_eq        = p.get('npt_equilibration_steps', 5000)
+    npt_prod      = p.get('npt_production_steps', 5000)
+    npt_taup      = p.get('npt_ptime', 1000.0)
+    bulk_guess    = p.get('npt_bulk_modulus', 140.0)
+    thermostat    = p.get('nvt_thermostat', 'Langevin')
+    friction      = p.get('friction', 0.02)
+    taut          = p.get('thermostat_taut', 100.0)
+    nvt_eq        = p.get('nvt_equilibration_steps', 2000)
+    nvt_prod      = p.get('nvt_production_steps', 8000)
+    sample_int    = p.get('sample_interval', 10)
+    kinetic       = p.get('include_kinetic_stress', True)
+
+    if multi:
+        strains_repr = f"[-{delta}, -{delta}/2, {delta}/2, {delta}]"
+    else:
+        strains_repr = f"[-{delta}, {delta}]"
+
+    if thermostat == 'Berendsen':
+        nvt_lines = [
+            "    from ase.md.nvtberendsen import NVTBerendsen",
+            f"    return NVTBerendsen(atoms, timestep={timestep} * units.fs,",
+            f"                        temperature_K=T, taut={taut} * units.fs)",
+        ]
+    elif thermostat == 'Nose-Hoover':
+        nvt_lines = [
+            "    from ase.md.nose_hoover_chain import NoseHooverChainNVT",
+            f"    return NoseHooverChainNVT(atoms, timestep={timestep} * units.fs,",
+            f"                              temperature_K=T, tdamp={taut} * units.fs)",
+        ]
+    else:
+        nvt_lines = [
+            "    from ase.md.langevin import Langevin",
+            f"    return Langevin(atoms, timestep={timestep} * units.fs,",
+            f"                    temperature_K=T, friction={friction} / units.fs)",
+        ]
+
+    lines = [
+        "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary",
+        "from ase.md.nptberendsen import NPTBerendsen",
+        "",
+        "eV_to_GPa = 160.21766208",
+        f"temperatures = {[float(t) for t in temperatures]}",
+        f"strains      = {strains_repr}",
+        "components   = [0, 1, 2, 3, 4, 5]      # Voigt indices that get strained"
+        + (f"   # symmetry reduces this to {list(components)}"
+           if len(components) < 6 else ""),
+        "",
+        "def voigt_strain(j, d):",
+        "    e = np.zeros((3, 3))",
+        "    pairs = [(0,0),(1,1),(2,2),(1,2),(0,2),(0,1)]",
+        "    a, b = pairs[j]",
+        "    e[a, b] = e[b, a] = d / (2 if j >= 3 else 1)   # engineering shear",
+        "    return e",
+        "",
+        "def build_nvt(atoms, T):",
+    ] + nvt_lines + [
+        "",
+        "# The thermodynamic stress is the virial plus the kinetic (ideal-gas) term.",
+        "def stress_voigt(atoms):",
+        f"    return atoms.get_stress(voigt=True, include_ideal_gas={bool(kinetic)})",
+        "",
+    ]
+
+    if use_npt:
+        lines += [
+            "# 1) NPT pre-equilibration -> thermally expanded reference cell",
+            "def reference_cell_at(T):",
+            "    hot = atoms.copy(); hot.calc = calculator",
+            "    MaxwellBoltzmannDistribution(hot, temperature_K=T); Stationary(hot)",
+            f"    dyn = NPTBerendsen(hot, timestep={timestep} * units.fs, temperature_K=T,",
+            f"                       pressure_au={pressure} * units.GPa,",
+            f"                       taut={taut} * units.fs, taup={npt_taup} * units.fs,",
+            f"                       compressibility_au=1.0 / ({bulk_guess} * units.GPa))",
+            f"    dyn.run({npt_eq})                      # discarded burn-in",
+            "    cells = []",
+            "    dyn.attach(lambda: cells.append(np.array(hot.get_cell()[:])), interval=%d)" % sample_int,
+            f"    dyn.run({npt_prod})",
+            "    ref_cell = np.mean(cells, axis=0)      # time-averaged cell",
+            "    hot.set_cell(ref_cell, scale_atoms=True)",
+            "    return ref_cell, hot",
+            "",
+        ]
+    else:
+        lines += [
+            "# 1) NPT pre-equilibration disabled: the input cell is the reference",
+            "def reference_cell_at(T):",
+            "    hot = atoms.copy(); hot.calc = calculator",
+            "    return np.array(hot.get_cell()[:]), hot",
+            "",
+        ]
+
+    lines += [
+        "# 2) strain the reference cell, run NVT, average the stress",
+        "for T in temperatures:",
+        "    ref_cell, hot = reference_cell_at(T)",
+        "    C = np.zeros((6, 6))",
+        "    for j in components:",
+        "        sigma_of_delta = []",
+        "        for d in strains:",
+        "            a = hot.copy(); a.calc = calculator",
+        "            F = np.eye(3) + voigt_strain(j, d)",
+        "            a.set_cell(np.dot(F, ref_cell.T).T, scale_atoms=True)",
+        "            MaxwellBoltzmannDistribution(a, temperature_K=T); Stationary(a)",
+        "            dyn = build_nvt(a, T)",
+        f"            dyn.run({nvt_eq})                  # discarded burn-in",
+        "            samples = []",
+        f"            dyn.attach(lambda a=a, s=samples: s.append(stress_voigt(a)), interval={sample_int})",
+        f"            dyn.run({nvt_prod})",
+        "            sigma_of_delta.append(np.mean(samples, axis=0) * eV_to_GPa)",
+        "",
+        "        # C_ij = d<sigma_i>/d eps_j",
+        "        sigma_of_delta = np.array(sigma_of_delta)",
+        "        for i in range(6):",
+        "            C[i, j] = np.polyfit(strains, sigma_of_delta[:, i], 1)[0]",
+        "",
+        "    C = (C + C.T) / 2                          # symmetrise",
+        "    K = (C[0,0] + C[1,1] + C[2,2] + 2*(C[0,1] + C[0,2] + C[1,2])) / 9",
+        "    G = (C[0,0] + C[1,1] + C[2,2] - C[0,1] - C[0,2] - C[1,2]",
+        "         + 3*(C[3,3] + C[4,4] + C[5,5])) / 15",
+        "    print(f\"T = {T} K: C11 = {C[0,0]:.1f}, C12 = {C[0,1]:.1f}, \"",
+        "          f\"C44 = {C[3,3]:.1f}, K_Voigt = {K:.1f}, G_Voigt = {G:.1f} GPa\")",
+        "",
+        "# The generated standalone script adds block-averaged error bars, the",
+        "# symmetry-reduced tensor assembly, Reuss/Hill averages, Born stability,",
+        "# the Debye temperature and the C_ij(T) plots.",
+    ]
+    return "\n".join(lines)

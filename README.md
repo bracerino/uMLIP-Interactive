@@ -4,6 +4,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 - **Single-point energy**
 - **Geometry optimization**
 - **Elastic properties**  
+- **Finite-temperature elastic properties** — C_ij(T) from explicit stress–strain MD with optional NPT pre-equilibration (with generated Python script)  
 - **Birch-Murnaghan EOS**  
 - **Phonons**
 - **Genetic algorithm for finding energetically favorible atomic site configurations of substitutes/vacancies**

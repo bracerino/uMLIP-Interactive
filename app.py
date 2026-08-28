@@ -5341,7 +5341,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.11.0 · 8/23/2026
+            v0.11.1 · 8/28/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6308,7 +6308,8 @@ with tab1:
             calc_type = st.radio(
                 "Calculation Type",
                 ["Energy Only", "Geometry Optimization", "Birch-Murnaghan EOS", "Phonon Calculation",
-                 "Elastic Properties", "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics",
+                 "Elastic Properties", "Finite-T Elastic Properties",
+                 "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics",
                  "Virtual Tensile Test", "Energy Grid Scan", "NEB Calculation",
                  "Selected postprocessing scripts"],
                 help="Choose the type of calculation to perform"
@@ -6375,6 +6376,7 @@ with tab1:
                 "Birch-Murnaghan EOS": "📈 **Equation of state** — E(V) scan fitted to Birch–Murnaghan for V₀, bulk modulus B₀ & B₀'.",
                 "Phonon Calculation": "🎵 **Vibrational analysis** — phonon dispersion & DOS, thermodynamic properties.",
                 "Elastic Properties": "⚙️ **Mechanical properties** — elastic tensor & moduli (bulk, shear, Young's).",
+                "Finite-T Elastic Properties": "🌡️⚙️ **Elastic constants at temperature** — stress–strain MD after an NPT pre-equilibration, C_ij(T) with error bars.",
                 "GA Structure Optimization": "🧬 **Evolutionary optimization** — optimal substitution patterns & defect configurations.",
                 "Energy Grid Scan": "🗺️ **3-D energy map** — probe-atom energy on a grid (interstitial / adsorption scan).",
                 "Molecular Dynamics": "🌡️ **Molecular dynamics** — time evolution, NVE / NVT / NPT ensembles.",
@@ -6655,6 +6657,101 @@ with tab1:
                         4. Run the script from your terminal: `python run_tensile_test.py`
                         5. Results (`_tensile_data.csv`, plots `.png`) will be saved in the `md_results` subdirectory.
                         """)
+        if calc_type == "Finite-T Elastic Properties":
+            from helpers.finite_temperature_elastic import setup_finite_t_elastic_ui
+            from helpers.generate_finite_t_elastic_script import (
+                generate_finite_t_elastic_python_script,
+            )
+
+            finite_t_elastic_params = setup_finite_t_elastic_ui(
+                default_settings=st.session_state.default_settings,
+                save_settings_function=save_default_settings,
+            )
+
+            st.markdown("---")
+            st.subheader("Generate Standalone Finite-T Elastic Script")
+
+            if 'generated_finite_t_elastic_script' not in st.session_state:
+                st.session_state.generated_finite_t_elastic_script = None
+
+            if st.button("📝 Generate Finite-T Elastic Python Script (using current settings)",
+                         key="generate_finite_t_elastic_script_button",
+                         type="secondary"):
+                try:
+                    st.session_state.generated_finite_t_elastic_script = (
+                        generate_finite_t_elastic_python_script(
+                            finite_t_elastic_params,
+                            selected_model,
+                            model_size,
+                            device,
+                            dtype,
+                            st.session_state.thread_count,
+                            custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
+                            custom_grace_path=custom_grace_path if is_custom_grace else None,
+                            custom_mace_path=custom_mace_path if is_custom_mace else None,
+                            mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
+                            sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                        )
+                    )
+                    st.success("✅ Finite-T elastic script generated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate finite-T elastic script: {str(e)}")
+                    st.session_state.generated_finite_t_elastic_script = None
+
+            if st.session_state.generated_finite_t_elastic_script:
+                with st.expander("🐍 View Generated Finite-T Elastic Script", expanded=True):
+                    st.code(st.session_state.generated_finite_t_elastic_script, language='python')
+
+                    st.download_button(
+                        label="💾 Download Finite-T Elastic Script (.py)",
+                        data=st.session_state.generated_finite_t_elastic_script,
+                        file_name="run_finite_t_elastic.py",
+                        mime="text/x-python",
+                        key="download_generated_finite_t_elastic_script",
+                        type='primary'
+                    )
+                st.info("""
+                        **Instructions (Finite-T Elastic Properties):**
+                        1. Save the script (e.g., `run_finite_t_elastic.py`).
+                        2. Place **one** structure file (`.cif`, `.vasp`, `POSCAR`) next to it.
+                        3. Install the dependencies (`pip install ase pandas matplotlib ...`) plus your MLIP.
+                        4. Run it: `python run_finite_t_elastic.py`
+                        5. Results land in `elastic_md_results/`:
+
+                        ```
+                        elastic_md_results/
+                          <name>_elastic_vs_temperature.csv         across all temperatures
+                          <name>_finite_T_elastic.json              every number, machine readable
+                          <name>_relaxed_0K.xyz                     relaxed input structure
+                          <name>_checkpoint.json + checkpoint/      resume data
+                          summary_plots/                            publication-ready, PNG + PDF
+                            <name>_elastic_constants_vs_T           C_ij(T), 0 K anchor at T=0
+                            <name>_bulk_modulus_vs_T                one figure per quantity
+                            <name>_shear_modulus_vs_T
+                            <name>_youngs_modulus_vs_T
+                            <name>_poisson_ratio_vs_T
+                            <name>_debye_temperature_vs_T
+                            <name>_thermal_expansion_vs_T
+                            <name>_thermal_softening_vs_T
+                          T_300K/                                   one folder per temperature
+                            <name>_T300K_strain_states.csv          averaged stress per strain
+                            <name>_T300K_stress_samples.csv         every stress sample
+                            <name>_T300K_elastic_summary.txt        C_ij, moduli, stability
+                            <name>_T300K_stress_strain.png          fits
+                            <name>_T300K_stress_convergence.png     running averages
+                            <name>_T300K_npt_reference.xyz          equilibrated cell
+                            trajectories/                           one .xyz per strain state
+                          T_600K/  ...
+                        ```
+
+                        **Reading the output:** check `*_stress_convergence.png` first — if the
+                        running stress averages have not flattened, extend the NVT production
+                        steps (or enlarge the supercell) before trusting C_ij.
+
+                        **Interrupted?** Just run the script again — it reloads every finished
+                        strained run from the checkpoint and computes only what is missing.
+                        """)
+
         if calc_type == "Energy Grid Scan":
             from helpers.energy_grid_scan import (
                 setup_energy_grid_scan_ui,
@@ -8537,6 +8634,7 @@ with tab_st:
                 )
     external_only = calc_type in [
         "Molecular Dynamics",
+        "Finite-T Elastic Properties",
         "NEB Calculation",
         "Virtual Tensile Test",
         "Energy Grid Scan",
@@ -8547,6 +8645,7 @@ with tab_st:
         # Per-type label for the script-generation button referenced in step 4.
         _generate_button_label = {
             "Molecular Dynamics":             "📝 Generate MD Python Script",
+            "Finite-T Elastic Properties":    "📝 Generate Finite-T Elastic Python Script",
             "NEB Calculation":                "📝 Generate Standalone NEB Script",
             "Virtual Tensile Test":           "📝 Generate Tensile Test Python Script",
             "Energy Grid Scan":               "📝 Generate Energy Grid Scan Script",
@@ -8687,6 +8786,8 @@ with tab_st:
                 md_params=md_params if calc_type == "Molecular Dynamics" else None,
                 neb_params=neb_params if calc_type == "NEB Calculation" else None,
                 tensile_params=tensile_params if calc_type == "Virtual Tensile Test" else None,
+                finite_t_elastic_params=(finite_t_elastic_params
+                                         if calc_type == "Finite-T Elastic Properties" else None),
                 mace_head=mace_cfg.get('head'),
                 mace_dispersion=mace_cfg.get('dispersion', False),
                 mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
