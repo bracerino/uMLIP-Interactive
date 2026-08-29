@@ -254,9 +254,22 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}print('MatterSim ready')\n")
     if is_orb:
         return (f"{i}from orb_models.forcefield import pretrained\n"
-                f"{i}from orb_models.forcefield.calculator import ORBCalculator\n"
-                f"{i}orbff = pretrained.{model_size}(device='{device}', precision='float32-high')\n"
-                f"{i}calculator = ORBCalculator(orbff, device='{device}')\n"
+                f"{i}try:\n"
+                f"{i}    # New location in orb-models v0.7.0+\n"
+                f"{i}    from orb_models.forcefield.inference.calculator import ORBCalculator\n"
+                f"{i}except ImportError:\n"
+                f"{i}    # Legacy location (older orb-models)\n"
+                f"{i}    from orb_models.forcefield.calculator import ORBCalculator\n"
+                f"{i}_orb_result = pretrained.{model_size}(device='{device}', precision='float32-high')\n"
+                f"{i}# orb-models v0.7.0+ returns (model, atoms_adapter); older returns model only\n"
+                f"{i}if isinstance(_orb_result, tuple):\n"
+                f"{i}    orbff, _atoms_adapter = _orb_result\n"
+                f"{i}else:\n"
+                f"{i}    orbff, _atoms_adapter = _orb_result, None\n"
+                f"{i}if _atoms_adapter is not None:\n"
+                f"{i}    calculator = ORBCalculator(orbff, _atoms_adapter, device='{device}')\n"
+                f"{i}else:\n"
+                f"{i}    calculator = ORBCalculator(orbff, device='{device}')\n"
                 f"{i}print('ORB ready')\n")
     if is_allegro:
         # Loaded eagerly from nequip.net; downloaded once, then cached.

@@ -297,7 +297,12 @@ except Exception as e:
         model_imports += """
 try:
     from orb_models.forcefield import pretrained
-    from orb_models.forcefield.calculator import ORBCalculator
+    try:
+        # New location in orb-models v0.7.0+
+        from orb_models.forcefield.inference.calculator import ORBCalculator
+    except ImportError:
+        # Legacy location (older orb-models)
+        from orb_models.forcefield.calculator import ORBCalculator
 except ImportError:
     print("Error: ORB models not found. Please install with: pip install orb-models")
     exit()
@@ -308,16 +313,31 @@ print("Setting up ORB calculator...")
 precision = "{precision}"
 try:
     model_func = getattr(pretrained, "{model_size}")
-    orbff = model_func(device="{device}", precision=precision)
-    calculator = ORBCalculator(orbff, device="{device}")
+    _orb_result = model_func(device="{device}", precision=precision)
+    # orb-models v0.7.0+ returns (model, atoms_adapter); older returns model only
+    if isinstance(_orb_result, tuple):
+        orbff, _atoms_adapter = _orb_result
+    else:
+        orbff, _atoms_adapter = _orb_result, None
+    if _atoms_adapter is not None:
+        calculator = ORBCalculator(orbff, _atoms_adapter, device="{device}")
+    else:
+        calculator = ORBCalculator(orbff, device="{device}")
     print(f"✅ ORB {model_size} initialized on {device}")
 except Exception as e:
     print(f"❌ ORB initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
         model_func = getattr(pretrained, "{model_size}")
-        orbff = model_func(device="cpu", precision=precision)
-        calculator = ORBCalculator(orbff, device="cpu")
+        _orb_result = model_func(device="cpu", precision=precision)
+        if isinstance(_orb_result, tuple):
+            orbff, _atoms_adapter = _orb_result
+        else:
+            orbff, _atoms_adapter = _orb_result, None
+        if _atoms_adapter is not None:
+            calculator = ORBCalculator(orbff, _atoms_adapter, device="cpu")
+        else:
+            calculator = ORBCalculator(orbff, device="cpu")
         print("✅ ORB initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ ORB CPU fallback failed: {{cpu_e}}")
