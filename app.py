@@ -6712,6 +6712,9 @@ with tab1:
                         mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                         sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
+                        mace_head=st.session_state.get('mace_config', {}).get('head'),
+                        mace_dispersion=st.session_state.get('mace_config', {}).get('dispersion', False),
+                        mace_dispersion_xc=st.session_state.get('mace_config', {}).get('dispersion_xc', 'pbe'),
                     )
                     st.session_state.generated_tensile_script = generated_script
                     st.success("✅ Tensile test script generated successfully!")
@@ -6774,6 +6777,9 @@ with tab1:
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                            mace_head=st.session_state.get('mace_config', {}).get('head'),
+                            mace_dispersion=st.session_state.get('mace_config', {}).get('dispersion', False),
+                            mace_dispersion_xc=st.session_state.get('mace_config', {}).get('dispersion_xc', 'pbe'),
                         )
                     )
                     st.success("✅ Finite-T elastic script generated successfully!")

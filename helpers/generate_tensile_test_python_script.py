@@ -10,7 +10,8 @@ from helpers.calculator_setup_code import build_calculator_code
 def generate_tensile_test_python_script(tensile_params, selected_model, model_size, device, dtype, thread_count,
                                         custom_sevennet_path=None, custom_grace_path=None,
                                         custom_mace_path=None, mace_enable_cueq=False,
-                                        sevennet_enable_cueq=False):
+                                        sevennet_enable_cueq=False, mace_head=None,
+                                        mace_dispersion=False, mace_dispersion_xc="pbe"):
 
     imports_str = f"""
 import os
@@ -90,6 +91,9 @@ torch.set_num_threads({thread_count})
         custom_mace_path=custom_mace_path,
         mace_enable_cueq=mace_enable_cueq,
         sevennet_enable_cueq=sevennet_enable_cueq,
+        mace_head=mace_head,
+        mace_dispersion=mace_dispersion,
+        mace_dispersion_xc=mace_dispersion_xc,
     )
     imports_str += model_imports
 

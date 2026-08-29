@@ -25,10 +25,22 @@ from helpers.custom_model_paths import (
 )
 
 
+def is_url_mace_model(model_size):
+    """MACE foundation models that are distributed as a download URL."""
+    return isinstance(model_size, str) and model_size.startswith(("http://", "https://"))
+
+
+def is_multihead_mace(selected_model):
+    """MACE-MH-* models, which require an explicit `head=` keyword."""
+    return ("Multi-head" in selected_model
+            or "MH-0" in selected_model or "MH-1" in selected_model)
+
+
 def build_calculator_code(selected_model, model_size, device, dtype,
                           custom_sevennet_path=None, custom_grace_path=None,
                           custom_mace_path=None, mace_enable_cueq=False,
-                          sevennet_enable_cueq=False):
+                          sevennet_enable_cueq=False, mace_head=None,
+                          mace_dispersion=False, mace_dispersion_xc="pbe"):
     model_imports = ""
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
@@ -149,23 +161,51 @@ except Exception as e:
         exit()
 """
         else:
-            calculator_setup_str = f"""
+            # Foundation models: plain names ("medium-omat-0") and the
+            # URL-hosted ones (MACE-MH-*, MACE-MATPES-*). mace_mp downloads a
+            # URL itself; the multi-head models additionally need `head=`.
+            _mace_args = [f'model="{model_size}"', f'default_dtype="{dtype}"']
+            if mace_head and (is_multihead_mace(selected_model)
+                              or is_url_mace_model(model_size)):
+                _mace_args.append(f'head="{mace_head}"')
+            if mace_dispersion:
+                _mace_args += ["dispersion=True",
+                               f'dispersion_xc="{mace_dispersion_xc}"']
+            else:
+                _mace_args.append("dispersion=False")
+            _mace_gpu = ", ".join(_mace_args + [f'device="{device}"'])
+            _mace_cpu = ", ".join(_mace_args + ['device="cpu"'])
+            # A URL is too long to echo back in the "initialized" line.
+            _mace_label = (model_size.split("/")[-1]
+                           if is_url_mace_model(model_size) else model_size)
+            if mace_head:
+                _mace_label += f" [head: {mace_head}]"
+
+            if is_multihead_mace(selected_model) and not mace_head:
+                calculator_setup_str = f"""
+print("\u274c {selected_model} is a multi-head model and needs a prediction head.")
+print("   Pick one in the app (MACE settings -> Prediction head, e.g. omat_pbe)")
+print("   and generate this script again.")
+exit()
+"""
+            else:
+                calculator_setup_str = f"""
 print("Setting up MACE calculator...")
 {_cq_pre}try:
     calculator = mace_mp(
-        model="{model_size}", dispersion=False, default_dtype="{dtype}", device="{device}"{_cq}
+        {_mace_gpu}{_cq}
     )
-    print(f"✅ MACE {model_size} initialized on {device}")
+    print(f"✅ MACE {_mace_label} initialized on {device}")
 except Exception as e:
     print(f"❌ MACE initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
         calculator = mace_mp(
-            model="{model_size}", dispersion=False, default_dtype="{dtype}", device="cpu"
+            {_mace_cpu}
         )
         print("✅ MACE initialized on CPU (fallback)")
     except Exception as cpu_e:
-        print(f"❌ MACE-OFF CPU fallback failed: {{cpu_e}}")
+        print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
         exit()
 """
     elif "SevenNet" in selected_model:
