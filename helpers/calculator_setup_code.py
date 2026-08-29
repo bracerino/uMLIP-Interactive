@@ -102,6 +102,31 @@ except Exception as e:
         print(f"❌ CHGNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
+    elif "MatterSim" in selected_model:
+        model_imports += """
+try:
+    from mattersim.forcefield import MatterSimCalculator
+except ImportError:
+    print("Error: MatterSim not found. Please install with: pip install mattersim")
+    exit()
+"""
+        _ms_path = {"mattersim-1m": "MatterSim-v1.0.0-1M.pth",
+                    "mattersim-5m": "MatterSim-v1.0.0-5M.pth"}.get(model_size, model_size)
+        calculator_setup_str = f"""
+print("Setting up MatterSim calculator...")
+try:
+    calculator = MatterSimCalculator(model_path="{_ms_path}", device="{device}")
+    print(f"✅ MatterSim {_ms_path} initialized on {device}")
+except Exception as e:
+    print(f"❌ MatterSim initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = MatterSimCalculator(model_path="{_ms_path}", device="cpu")
+        print("✅ MatterSim initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MatterSim CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
     elif "MACE-OFF" in selected_model:
         model_imports += """
 try:
@@ -523,7 +548,9 @@ except Exception as e:
     exit()
 """
     else:
-        calculator_setup_str = "print('Error: Could not determine calculator type.')\ncalculator = None\nexit()"
+        calculator_setup_str = (
+            f"print('Error: no calculator is implemented for the selected model "
+            f"({selected_model}).')\ncalculator = None\nexit()")
 
 
     return model_imports, calculator_setup_str

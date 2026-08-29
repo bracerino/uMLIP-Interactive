@@ -2897,6 +2897,7 @@ MODEL_FAMILIES = {
         "GRACE-2L-SMAX-OMAT-medium (SMAX+OMat24, 2L) ⭐": "GRACE-2L-SMAX-OMAT-medium",
         "GRACE-2L-SMAX-OMAT-large (SMAX+OMat24, 2L) ⭐": "GRACE-2L-SMAX-OMAT-large",
         # --- OMAT models ---
+        "GRACE-FS-OMAT (OMat24, FS-like local, fastest)": "GRACE-FS-OMAT",
         "GRACE-1L-OMAT (OMat24, small)": "GRACE-1L-OMAT",
         "GRACE-1L-OMAT-medium-base (OMat24, medium base)": "GRACE-1L-OMAT-medium-base",
         "GRACE-1L-OMAT-medium-ft-E (OMat24, medium, energy fine-tuned) ⭐": "GRACE-1L-OMAT-medium-ft-E",
@@ -2908,6 +2909,7 @@ MODEL_FAMILIES = {
         "GRACE-2L-OMAT-large-base (OMat24, large base)": "GRACE-2L-OMAT-large-base",
         "GRACE-2L-OMAT-large-ft-E (OMat24, large, energy fine-tuned)": "GRACE-2L-OMAT-large-ft-E",
         # --- OAM models (OMat24 + sAlex + MPtraj) ---
+        "GRACE-FS-OAM (OAM, FS-like local, fastest)": "GRACE-FS-OAM",
         "GRACE-1L-OAM (OAM, small)": "GRACE-1L-OAM",
         "GRACE-1L-OMAT-medium-ft-AM (OAM, medium)": "GRACE-1L-OMAT-medium-ft-AM",
         "GRACE-1L-OMAT-large-ft-AM (OAM, large)": "GRACE-1L-OMAT-large-ft-AM",
