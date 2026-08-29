@@ -5359,6 +5359,89 @@ if 'results' not in st.session_state:
     st.session_state.results = []
 if 'calculation_running' not in st.session_state:
     st.session_state.calculation_running = False
+
+
+LOG_TAIL_LINES = 300
+
+
+def render_calculation_log(messages, height=300, tail=LOG_TAIL_LINES):
+    """The live calculation log, kept scrolled to the newest line.
+
+    While a calculation runs the page reruns twice a second, and a plain
+    text area is rebuilt from scratch every time - which snaps it back to the
+    oldest line on screen, exactly the part nobody is waiting for. This writes
+    the lines newest-first into a `column-reverse` flex box instead: the
+    browser lays such a box out from its bottom edge, so it opens on the newest
+    line while the lines themselves still read top-to-bottom in chronological
+    order. No script is involved, so nothing flickers on a rerun, and if the
+    style is ever dropped the newest line simply ends up first instead.
+    """
+    import html as _html
+
+    tail = max(1, int(tail))
+    lines = list(messages)[-tail:]
+    hidden = max(0, len(messages) - len(lines))
+
+    # Newest first in the markup; column-reverse puts it back the right way up.
+    body = "".join(
+        '<div class="calc-log-line">%s</div>' % (_html.escape(str(line)) or "&nbsp;")
+        for line in reversed(lines)
+    )
+
+    st.markdown(
+        """
+        <style>
+        .calc-log-box {
+            display: flex;
+            flex-direction: column-reverse;   /* opens pinned to the newest line */
+            overflow-y: auto;
+            height: %dpx;
+            padding: 10px 14px;
+            border: 1px solid rgba(128, 128, 128, 0.35);
+            border-radius: 8px;
+            background: #fbfbfb;
+            color: #1f1f1f;
+            font-family: "Source Code Pro", ui-monospace, SFMono-Regular,
+                         Menlo, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.45;
+            scrollbar-width: auto;
+            scrollbar-color: #888 #f1f1f1;
+        }
+        .calc-log-line {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .calc-log-box::-webkit-scrollbar { width: 12px; height: 12px; }
+        .calc-log-box::-webkit-scrollbar-track {
+            background: #f1f1f1; border-radius: 10px;
+        }
+        .calc-log-box::-webkit-scrollbar-thumb {
+            background: #888; border-radius: 10px;
+        }
+        .calc-log-box::-webkit-scrollbar-thumb:hover { background: #555; }
+        @media (prefers-color-scheme: dark) {
+            .calc-log-box {
+                background: #12161c;
+                color: #e6e6e6;
+                border-color: rgba(200, 200, 200, 0.25);
+                scrollbar-color: #666 #22262c;
+            }
+            .calc-log-box::-webkit-scrollbar-track { background: #22262c; }
+            .calc-log-box::-webkit-scrollbar-thumb { background: #666; }
+        }
+        </style>
+        """ % int(height),
+        unsafe_allow_html=True,
+    )
+    st.markdown("**Calculation Log**")
+    st.markdown('<div class="calc-log-box">%s</div>' % body,
+                unsafe_allow_html=True)
+    if hidden:
+        st.caption("Showing the last %d of %d lines - the newest is at the "
+                   "bottom." % (len(lines), len(messages)))
+
+
 if 'log_messages' not in st.session_state:
     st.session_state.log_messages = []
 if 'log_queue' not in st.session_state:
@@ -9596,37 +9679,7 @@ with tab2:
                         time_display = f"{remaining / 3600:.1f}h"
                     st.metric("Est. Remaining", time_display)
     if st.session_state.log_messages:
-        recent_messages = st.session_state.log_messages[-40:]
-        st.markdown("""
-            <style>
-            /* Make text area scrollbar more visible */
-            textarea {
-                scrollbar-width: auto !important;  /* Firefox */
-                scrollbar-color: #888 #f1f1f1 !important;  /* Firefox */
-            }
-
-            /* Webkit browsers (Chrome, Safari, Edge) */
-            textarea::-webkit-scrollbar {
-                width: 12px !important;
-                height: 12px !important;
-            }
-
-            textarea::-webkit-scrollbar-track {
-                background: #f1f1f1 !important;
-                border-radius: 10px !important;
-            }
-
-            textarea::-webkit-scrollbar-thumb {
-                background: #888 !important;
-                border-radius: 10px !important;
-            }
-
-            textarea::-webkit-scrollbar-thumb:hover {
-                background: #555 !important;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-        st.text_area("Calculation Log", "\n".join(recent_messages), height=300)
+        render_calculation_log(st.session_state.log_messages)
 
     if has_new_messages and st.session_state.calculation_running:
         time.sleep(0.5)
