@@ -10,6 +10,11 @@ isothermal elastic constants at finite temperature:
     ->  NVT run per strain state, time-averaged thermodynamic stress
     ->  C_ij = d<sigma_i>/d eps_j  ->  VRH moduli, stability, Debye temperature
 
+The production part can also run adaptively: all strain states of one
+temperature are then advanced together in segments, C_ij is re-fitted after
+every segment and the runs stop as soon as the constants have stopped moving
+by more than the requested tolerance.
+
 Everything below only assembles source text; nothing is executed here.
 """
 
@@ -174,18 +179,27 @@ def save_atoms_npz(path, atoms):
     resuming reproduces the uninterrupted result bit for bit.
     """
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    np.savez(path,
-             numbers=atoms.get_atomic_numbers(),
-             positions=atoms.get_positions(),
-             cell=np.array(atoms.get_cell()[:], dtype=float),
-             pbc=np.array(atoms.get_pbc(), dtype=bool))
+    payload = {
+        "numbers": atoms.get_atomic_numbers(),
+        "positions": atoms.get_positions(),
+        "cell": np.array(atoms.get_cell()[:], dtype=float),
+        "pbc": np.array(atoms.get_pbc(), dtype=bool),
+    }
+    # Velocities matter only for a snapshot taken in the middle of an MD run
+    # (adaptive production length); everywhere else they are simply absent.
+    if atoms.has("momenta"):
+        payload["momenta"] = atoms.get_momenta()
+    np.savez(path, **payload)
 
 
 def load_atoms_npz(path):
     from ase import Atoms
     with np.load(path) as data:
-        return Atoms(numbers=data["numbers"], positions=data["positions"],
-                     cell=data["cell"], pbc=data["pbc"])
+        atoms = Atoms(numbers=data["numbers"], positions=data["positions"],
+                      cell=data["cell"], pbc=data["pbc"])
+        if "momenta" in data.files:
+            atoms.set_momenta(data["momenta"])
+        return atoms
 
 
 def temperature_key(temperature_K):
@@ -244,10 +258,22 @@ def load_checkpoint(basename, signature):
         print("  The settings or the input structure changed since the previous "
               "run - the old checkpoint does not apply, starting fresh.")
         return empty_checkpoint(signature)
-    n_states = sum(len(t.get("states", {})) for t in data.get("temperatures", {}).values())
+    n_prod = int(finite_t_params.get("nvt_production_steps", 0))
+    n_done = 0
+    n_partial = 0
+    for entry in data.get("temperatures", {}).values():
+        for record in entry.get("states", {}).values():
+            if (bool(record.get("complete", True))
+                    and int(record.get("production_steps", n_prod)) >= n_prod):
+                n_done += 1
+            elif record.get("snapshot_file"):
+                n_partial += 1
     n_npt = sum(1 for t in data.get("temperatures", {}).values() if t.get("ref_cell"))
     print("  Found a checkpoint from a previous run: %d NPT reference cell(s) "
-          "and %d strained run(s) already done." % (n_npt, n_states))
+          "and %d finished strained run(s)%s."
+          % (n_npt, n_done,
+             ", plus %d that stopped part-way and will be continued" % n_partial
+             if n_partial else ""))
     data.setdefault("temperatures", {})
     return data
 
@@ -264,20 +290,41 @@ def save_checkpoint(basename, checkpoint):
         print("  \u26a0\ufe0f  WARNING: could not write the checkpoint: %s" % exc)
 
 
-def store_state(checkpoint, basename, temperature_K, state):
-    """Persist one finished strained run (scalars in JSON, samples in an .npz)."""
+def store_state(checkpoint, basename, temperature_K, state, flush=True):
+    """Persist one strained run (scalars in JSON, samples in an .npz).
+
+    A run is normally stored once, when it is finished. With the adaptive
+    production length it is stored again after every segment, together with a
+    snapshot of positions and velocities, so that an interrupted calculation
+    can pick a half-finished production run up where it stopped.
+    """
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     tkey = temperature_key(temperature_K)
     skey = state_key(state["voigt_index"], state["delta"])
-    samples_name = "%s_T%sK_state_%s.npz" % (basename, tkey, skey.replace("+", "p").replace("-", "m"))
+    stem = "%s_T%sK_state_%s" % (basename, tkey,
+                                 skey.replace("+", "p").replace("-", "m"))
+    samples_name = "%s.npz" % stem
     samples_path = os.path.join(CHECKPOINT_DIR, samples_name)
     try:
-        np.savez_compressed(samples_path,
-                            times_ps=np.asarray(state["times_ps"], dtype=float),
-                            samples_GPa=np.asarray(state["samples_GPa"], dtype=float))
+        np.savez_compressed(
+            samples_path,
+            times_ps=np.asarray(state["times_ps"], dtype=float),
+            samples_GPa=np.asarray(state["samples_GPa"], dtype=float),
+            temperatures_K=np.asarray(state.get("temperatures_K", []), dtype=float))
     except Exception as exc:
         print("  \u26a0\ufe0f  WARNING: could not save the stress samples: %s" % exc)
         samples_name = None
+
+    snapshot_name = None
+    snapshot = state.get("snapshot")
+    if snapshot is not None:
+        snapshot_name = "%s_snapshot.npz" % stem
+        try:
+            save_atoms_npz(os.path.join(CHECKPOINT_DIR, snapshot_name), snapshot)
+        except Exception as exc:
+            print("  \u26a0\ufe0f  WARNING: could not save the run snapshot: %s" % exc)
+            snapshot_name = None
+
     entry = checkpoint["temperatures"].setdefault(tkey, {"states": {}})
     entry.setdefault("states", {})[skey] = {
         "voigt_index": int(state["voigt_index"]),
@@ -287,12 +334,22 @@ def store_state(checkpoint, basename, temperature_K, state):
         "mean_temperature_K": float(state["mean_temperature_K"]),
         "n_samples": int(state["n_samples"]),
         "samples_file": samples_name,
+        "production_steps": int(state.get("production_steps",
+                                          finite_t_params.get("nvt_production_steps", 0))),
+        "complete": bool(state.get("complete", True)),
+        "snapshot_file": snapshot_name,
     }
-    save_checkpoint(basename, checkpoint)
+    if flush:
+        save_checkpoint(basename, checkpoint)
 
 
-def restore_state(checkpoint, temperature_K, j, delta):
-    """A finished strained run from the checkpoint, or None."""
+def restore_state(checkpoint, temperature_K, j, delta, allow_partial=False):
+    """A strained run from the checkpoint, or None.
+
+    Unless `allow_partial` is set, only a run that finished the full production
+    length counts as done - a half-finished one left behind by an adaptive run
+    that was interrupted has to be continued, not used as a result.
+    """
     entry = checkpoint.get("temperatures", {}).get(temperature_key(temperature_K))
     if not entry:
         return None
@@ -300,8 +357,17 @@ def restore_state(checkpoint, temperature_K, j, delta):
     if not record:
         return None
 
+    n_prod = int(finite_t_params.get("nvt_production_steps", 0))
+    # Records written before partial storage existed have neither key and were
+    # always complete runs of the full production length.
+    steps_done = int(record.get("production_steps", n_prod))
+    complete = bool(record.get("complete", True))
+    if not allow_partial and (not complete or steps_done < n_prod):
+        return None
+
     times = np.zeros(0)
     samples = np.zeros((0, 6))
+    sampled_T = np.zeros(0)
     name = record.get("samples_file")
     if name:
         path = os.path.join(CHECKPOINT_DIR, name)
@@ -310,6 +376,8 @@ def restore_state(checkpoint, temperature_K, j, delta):
                 with np.load(path) as data:
                     times = np.asarray(data["times_ps"], dtype=float)
                     samples = np.asarray(data["samples_GPa"], dtype=float)
+                    if "temperatures_K" in data.files:
+                        sampled_T = np.asarray(data["temperatures_K"], dtype=float)
             except Exception as exc:
                 print("      \u26a0\ufe0f  WARNING: stored stress samples unreadable (%s) - "
                       "the plots will skip this state." % exc)
@@ -331,6 +399,10 @@ def restore_state(checkpoint, temperature_K, j, delta):
         "n_samples": int(record["n_samples"]),
         "samples_GPa": samples,
         "times_ps": times,
+        "temperatures_K": sampled_T,
+        "production_steps": steps_done,
+        "complete": complete,
+        "snapshot_file": record.get("snapshot_file"),
         "restored": True,
     }
 
@@ -711,6 +783,23 @@ class JobClock:
         self.done_steps += int(steps)
         self.done_runs += 1
 
+    def add_steps(self, steps):
+        """Count steps of a run that is not finished yet (interleaved mode)."""
+        self.done_steps += int(steps)
+
+    def complete_run(self):
+        self.done_runs += 1
+
+    def drop_steps(self, steps):
+        """Remove steps from the plan that will never run.
+
+        The adaptive production length stops the runs as soon as C_ij is
+        converged, so the steps that were budgeted for the rest of the
+        production must leave the total or the ETA would never reach zero.
+        """
+        self.total_steps = max(self.done_steps + 1,
+                               self.total_steps - int(max(0, steps)))
+
     def elapsed(self):
         return 0.0 if self.t0 is None else time.perf_counter() - self.t0
 
@@ -745,12 +834,23 @@ class MDProgress:
         self.start_step = int(dyn.get_number_of_steps())
         self.steps_before = 0      # steps of this run already counted elsewhere
         self.t0 = time.perf_counter()
+        self.elapsed_before = 0.0  # wall time of this run's earlier segments
+
+    def pause(self):
+        """Stop this run's clock while the other strain states advance."""
+        if self.t0 is not None:
+            self.elapsed_before += time.perf_counter() - self.t0
+            self.t0 = None
+
+    def resume(self):
+        self.t0 = time.perf_counter()
 
     def __call__(self):
         done = int(self.dyn.get_number_of_steps()) - self.start_step
         if done <= 0:
             return
-        elapsed = time.perf_counter() - self.t0
+        elapsed = self.elapsed_before + (
+            0.0 if self.t0 is None else time.perf_counter() - self.t0)
         rate = done / elapsed if elapsed > 0 else 0.0
         remaining = (self.total_steps - done) / rate if rate > 0 else 0.0
         temperature = self.atoms.get_temperature()
@@ -761,7 +861,7 @@ class MDProgress:
         if self.job is not None:
             job_note = "  |  %s" % self.job.summary(self.steps_before + done)
         print("    %s step %6d/%-6d  T = %7.1f K  Epot = %14.4f eV  "
-              "P = %8.3f GPa  (%.1f steps/s, ~%s left in this run)%s"
+              "P = %8.3f GPa  (%.1f steps/s, ~%s)%s"
               % (self.label, done, self.total_steps, temperature, epot,
                  pressure, rate, format_time(remaining), job_note), flush=True)
 
@@ -1107,6 +1207,7 @@ def run_strain_state(hot_reference, calculator, temperature_K, j, delta,
         "n_samples": len(collector.stresses),
         "samples_GPa": samples_GPa,
         "times_ps": np.asarray(collector.times_ps, dtype=float),
+        "temperatures_K": np.asarray(collector.temperatures, dtype=float),
     }
 
 
@@ -1199,30 +1300,701 @@ def pressure_corrected_tensor(B, pressure_GPa):
     return C
 
 
-def run_temperature(hot_reference, calculator, temperature_K, symmetry,
-                    components, basename, job=None, checkpoint=None):
-    """Full set of strained runs at one temperature -> C_ij and its errors.
+# ---------------------------------------------------------------------------
+# Adaptive production length.
+#
+# Instead of running every strained cell for a fixed number of production
+# steps, all strain states of one temperature can be advanced *together* in
+# segments. After every segment the whole tensor is re-fitted from the
+# trajectory accumulated so far and compared with the previous check; once the
+# constants stop moving by more than the tolerance the production ends for
+# every strain state at once. That is the usual "recompute C_ij from the first
+# 10, 20 and 50 ps of the same trajectory" test, run automatically and used to
+# decide when to stop.
+#
+# Running a trajectory in segments is not an approximation: the integrator and
+# its random stream continue exactly where they left off, so the result is the
+# same trajectory a single long run would have produced.
+# ---------------------------------------------------------------------------
 
-    Strain states already present in the checkpoint are loaded instead of rerun.
+CONVERGENCE_DIRNAME = "convergence"
+# A percentage change is meaningless for a constant that is essentially zero
+# (the off-diagonal blocks of a triclinic fit), so below this magnitude only
+# the absolute criterion applies.
+CONVERGENCE_REL_FLOOR_GPA = 1.0
+
+
+def convergence_enabled():
+    return bool(finite_t_params.get("use_convergence_check", False))
+
+
+def convergence_segment_steps():
+    """MD steps every strain state advances between two convergence checks."""
+    interval_ps = float(finite_t_params.get("convergence_interval_ps", 1.0))
+    timestep_fs = float(finite_t_params["timestep"])
+    return max(1, int(round(interval_ps * 1000.0 / timestep_fs)))
+
+
+def convergence_criterion_key():
+    key = finite_t_params.get("convergence_criterion_key")
+    if key:
+        return str(key)
+    text = str(finite_t_params.get("convergence_criterion", "either")).lower()
+    if text.startswith("both"):
+        return "both"
+    if text.startswith("absolute"):
+        return "absolute"
+    if text.startswith("relative"):
+        return "relative"
+    return "either"
+
+
+def convergence_dir(temperature_K, create=True):
+    """Where the convergence history of one temperature is written."""
+    path = os.path.join(temperature_dir(temperature_K, create=create),
+                        CONVERGENCE_DIRNAME)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
+
+
+def tracked_components(symmetry):
+    """The C_ij whose drift decides whether the runs may stop.
+
+    Only the constants the chosen symmetry determines independently - the ones
+    filled in by a symmetry relation carry no extra information and would just
+    count the same number twice.
     """
+    if symmetry == "cubic":
+        return [(0, 0), (0, 1), (3, 3)]
+    if symmetry == "hexagonal":
+        return [(0, 0), (0, 1), (0, 2), (2, 2), (3, 3)]
+    return [(i, k) for i in range(6) for k in range(i, 6)]
+
+
+def modulus_uncertainties(C, C_err, n_mc=200, rng=None):
+    """Error bars on K, G and E from the error bars on C_ij.
+
+    The moduli are non-linear functions of the tensor (the Reuss average needs
+    its inverse), so the C_ij uncertainties are propagated by resampling the
+    tensor rather than by a derivative. This is the same resampling
+    analyze_tensor does for the final result, restricted to the three moduli so
+    that it is cheap enough to run at every convergence check. Draws that come
+    out mechanically unstable are rejected, and the spread is read off the
+    16/84 percentiles so a single outlier cannot dominate it.
+    """
+    zero = {"K": 0.0, "G": 0.0, "E": 0.0}
+    if C_err is None or not np.any(C_err > 0) or n_mc <= 0:
+        return zero
+    if rng is None:
+        rng = np.random.RandomState(0)
+    samples = {"K": [], "G": [], "E": []}
+    for _ in range(int(n_mc)):
+        noise = rng.normal(0.0, 1.0, size=(6, 6)) * C_err
+        noise = 0.5 * (noise + noise.T)
+        C_sample = C + noise
+        try:
+            if np.min(np.linalg.eigvalsh(C_sample)) <= 0.0:
+                continue
+            m = vrh_moduli(C_sample)
+        except Exception:
+            continue
+        samples["K"].append(m["K"])
+        samples["G"].append(m["G"])
+        samples["E"].append(m["youngs_modulus"])
+    errors = {}
+    for key, values in samples.items():
+        values = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
+        if len(values) > 8:
+            lo, hi = np.percentile(values, [16.0, 84.0])
+            errors[key] = float(0.5 * (hi - lo))
+        else:
+            errors[key] = 0.0
+    return errors
+
+
+def tracked_quantities(C, C_err, symmetry, moduli=None, moduli_err=None):
+    """[(label, value, error)] that one convergence check compares."""
+    items = [("C%d%d" % (i + 1, k + 1), float(C[i, k]), float(C_err[i, k]))
+             for (i, k) in tracked_components(symmetry)]
+    if finite_t_params.get("convergence_include_moduli", True):
+        if moduli is None:
+            moduli = vrh_moduli(C)
+        if moduli_err is None:
+            moduli_err = modulus_uncertainties(C, C_err)
+        items.append(("K", float(moduli["K"]), float(moduli_err.get("K", 0.0))))
+        items.append(("G", float(moduli["G"]), float(moduli_err.get("G", 0.0))))
+    return items
+
+
+def convergence_verdict(previous, current):
+    """Compare two consecutive checks.
+
+    Returns (passed, max |change| in GPa, max |change| in %, per-quantity rows).
+    """
+    tol_abs = float(finite_t_params.get("convergence_tol_GPa", 5.0))
+    tol_rel = float(finite_t_params.get("convergence_tol_percent", 2.0))
+    key = convergence_criterion_key()
+
+    before = dict((name, value) for name, value, _ in previous)
+    rows = []
+    max_abs = 0.0
+    max_rel = 0.0
+    for name, value, err in current:
+        if name not in before:
+            continue
+        change = abs(value - before[name])
+        scale = max(abs(value), abs(before[name]))
+        rel = (100.0 * change / scale if scale > CONVERGENCE_REL_FLOOR_GPA
+               else float("nan"))
+        rows.append({"quantity": name, "value_GPa": value, "error_GPa": err,
+                     "previous_GPa": before[name], "change_GPa": change,
+                     "change_percent": rel})
+        max_abs = max(max_abs, change)
+        if np.isfinite(rel):
+            max_rel = max(max_rel, rel)
+
+    pass_abs = max_abs < tol_abs
+    pass_rel = max_rel < tol_rel
+    if key == "absolute":
+        passed = pass_abs
+    elif key == "relative":
+        passed = pass_rel
+    elif key == "both":
+        passed = pass_abs and pass_rel
+    else:
+        passed = pass_abs or pass_rel
+    return bool(passed), float(max_abs), float(max_rel), rows
+
+
+class StrainRun:
+    """One strained cell that can be advanced a segment at a time.
+
+    Interleaving is what makes an early stop possible: C_ij can only be
+    re-fitted once every strain state has reached the same amount of
+    production time, so the states take turns instead of running one after
+    the other.
+    """
+
+    def __init__(self, hot_reference, calculator, temperature_K, j, delta,
+                 index, n_states, basename, job=None, restored=None):
+        self.j = int(j)
+        self.delta = float(delta)
+        self.index = int(index)
+        self.temperature_K = float(temperature_K)
+        self.basename = basename
+        self.job = job
+        self.timestep_fs = float(finite_t_params["timestep"])
+        self.n_eq = int(finite_t_params.get("nvt_equilibration_steps", 0))
+        self.n_blocks = int(finite_t_params.get("n_blocks", 5))
+        self.label = "eps_%s = %+.4f" % (VOIGT_LABELS[self.j], self.delta)
+        self.prod_steps = 0
+        self.samples_GPa = []
+        self.times_ps = []
+        self.temperatures = []
+        self.restored_complete = False
+
+        seed = int(finite_t_params.get("seed", 42))
+        # Same stream as a plain sequential run of this state, so the two modes
+        # produce the same trajectory.
+        self.rng = np.random.RandomState(
+            seed + 977 * self.index + int(temperature_K))
+
+        if restored is not None:
+            atoms = restored["atoms"]
+            self.prod_steps = int(restored["production_steps"])
+            # The samples are written before the checkpoint index that records
+            # how far the run got, so a crash in between can leave the .npz one
+            # segment ahead. The index decides; anything past it is dropped.
+            horizon_ps = ((self.n_eq + self.prod_steps) * self.timestep_fs
+                          / 1000.0 + 1e-9)
+            keep = int(np.searchsorted(
+                np.asarray(restored["times_ps"], dtype=float), horizon_ps,
+                side="right"))
+            self.samples_GPa = [np.asarray(row, dtype=float)
+                                for row in restored["samples_GPa"][:keep]]
+            self.times_ps = [float(t) for t in restored["times_ps"][:keep]]
+            stored_T = np.asarray(restored.get("temperatures_K", []),
+                                  dtype=float)[:keep]
+            if len(stored_T) == len(self.samples_GPa):
+                self.temperatures = [float(t) for t in stored_T]
+            elif self.samples_GPa:
+                # Older checkpoint without the temperature series: fall back to
+                # its mean so the reported <T> stays representative.
+                self.temperatures = [float(restored.get("mean_temperature_K", 0.0))
+                                     ] * len(self.samples_GPa)
+            self.restored_complete = bool(restored.get("complete", False))
+            self.equilibrated = True
+        else:
+            atoms = hot_reference.copy()
+            atoms.set_cell(strained_cell(hot_reference.get_cell(), self.j, self.delta),
+                           scale_atoms=True)
+            self.equilibrated = False
+        atoms.calc = calculator
+        self.atoms = atoms
+
+        if not self.equilibrated:
+            MaxwellBoltzmannDistribution(self.atoms, temperature_K=temperature_K,
+                                         rng=self.rng)
+            Stationary(self.atoms)
+
+        self.dyn = build_nvt(self.atoms, temperature_K,
+                             self.timestep_fs * units.fs, self.rng)
+        if self.equilibrated:
+            # Continue the step counter where the stored run stopped, so the
+            # sampling interval keeps falling on the same steps.
+            try:
+                self.dyn.nsteps = self.n_eq + self.prod_steps
+            except Exception:
+                pass
+        self.progress = None
+        self.n_states = int(n_states)
+
+    # -- setup -------------------------------------------------------------
+    def equilibrate(self, log_interval):
+        """The burn-in that is discarded after the strain is applied."""
+        if self.equilibrated or self.n_eq <= 0:
+            self.equilibrated = True
+            return
+        print("\n  [%d/%d] %s at %.1f K - NVT equilibration (%d steps)"
+              % (self.index, self.n_states, self.label, self.temperature_K,
+                 self.n_eq))
+        progress = MDProgress(self.atoms, self.dyn, self.n_eq, "NVT equil",
+                              log_interval, job=self.job)
+        self.dyn.attach(progress, interval=log_interval)
+        self.dyn.run(self.n_eq)
+        self.dyn.observers.clear()
+        self.equilibrated = True
+        if self.job is not None:
+            self.job.add_steps(self.n_eq)
+
+    def start_production(self, n_prod_max, log_interval):
+        """Attach the stress sampler and the progress line for the production."""
+        sample_interval = max(1, int(finite_t_params.get("sample_interval", 5)))
+        self.dyn.observers.clear()
+        self.dyn.attach(self._sample, interval=sample_interval)
+        self.progress = MDProgress(self.atoms, self.dyn, n_prod_max,
+                                   "NVT prod %s" % self.label, log_interval,
+                                   job=self.job)
+        self.progress.start_step = self.n_eq
+        self.dyn.attach(self.progress, interval=log_interval)
+        self.progress.pause()
+
+        if finite_t_params.get("save_trajectories", False):
+            traj_interval = max(1, int(finite_t_params.get("traj_interval", 500)))
+            self.traj_path = os.path.join(
+                trajectory_dir(self.temperature_K), "%s_T%sK_eps%s_%+.4f.xyz"
+                % (self.basename, temperature_tag(self.temperature_K),
+                   VOIGT_LABELS[self.j], self.delta))
+            if self.prod_steps == 0 and os.path.exists(self.traj_path):
+                os.remove(self.traj_path)
+            self.dyn.attach(self._write_frame, interval=traj_interval)
+
+    # -- observers ---------------------------------------------------------
+    def _sample(self):
+        self.samples_GPa.append(
+            np.asarray(thermo_stress_voigt(self.atoms), dtype=float) * EV_TO_GPA)
+        self.temperatures.append(self.atoms.get_temperature())
+        self.times_ps.append(
+            int(self.dyn.get_number_of_steps()) * self.timestep_fs / 1000.0)
+
+    def _write_frame(self):
+        write(self.traj_path, self.atoms, format="extxyz", append=True)
+
+    # -- running -----------------------------------------------------------
+    def advance_to(self, target_steps):
+        """Run production until this state has `target_steps` production steps."""
+        steps = int(target_steps) - self.prod_steps
+        if steps <= 0:
+            return 0
+        # The job note in the progress line should only show the segment that is
+        # in flight; the finished ones are already counted in the job clock.
+        self.progress.steps_before = -self.prod_steps
+        self.progress.resume()
+        self.dyn.run(steps)
+        self.progress.pause()
+        self.prod_steps += steps
+        if self.job is not None:
+            self.job.add_steps(steps)
+        return steps
+
+    def state(self, complete=False, with_snapshot=False):
+        """The same record a sequential strained run produces."""
+        samples = (np.asarray(self.samples_GPa, dtype=float)
+                   if self.samples_GPa else np.zeros((0, 6)))
+        if len(samples) > 0:
+            mean_GPa, sem_GPa = block_stats(samples, self.n_blocks)
+        else:
+            mean_GPa, sem_GPa = np.zeros(6), np.zeros(6)
+        record = {
+            "voigt_index": self.j,
+            "delta": self.delta,
+            "stress_mean_GPa": mean_GPa,
+            "stress_sem_GPa": sem_GPa,
+            "mean_temperature_K": (float(np.mean(self.temperatures))
+                                   if self.temperatures else 0.0),
+            "n_samples": len(samples),
+            "samples_GPa": samples,
+            "times_ps": np.asarray(self.times_ps, dtype=float),
+            "temperatures_K": np.asarray(self.temperatures, dtype=float),
+            "production_steps": int(self.prod_steps),
+            "complete": bool(complete),
+        }
+        if with_snapshot:
+            record["snapshot"] = self.atoms
+        return record
+
+
+def restore_run(checkpoint, temperature_K, j, delta, calculator):
+    """A half-finished (or finished) strained run ready to be continued."""
+    if checkpoint is None:
+        return None
+    record = restore_state(checkpoint, temperature_K, j, delta, allow_partial=True)
+    if record is None:
+        return None
+    name = record.get("snapshot_file")
+    if not name:
+        # Stored by an older run that only ever saved finished states: usable as
+        # a result, but there is no snapshot to continue from.
+        if not record.get("complete", True):
+            return None
+        name = None
+    atoms = None
+    if name:
+        path = os.path.join(CHECKPOINT_DIR, name)
+        if os.path.exists(path):
+            try:
+                atoms = load_atoms_npz(path)
+                atoms.set_pbc(True)
+            except Exception as exc:
+                print("      ⚠️  WARNING: could not read the stored run "
+                      "snapshot (%s) - this strain state restarts." % exc)
+                return None
+    if atoms is None:
+        return None
+    record["atoms"] = atoms
+    return record
+
+
+def tensor_from_states(states, components, symmetry):
+    """(C, C_err, columns, warnings) from the strained runs done so far."""
+    by_component = {}
+    for state in states:
+        by_component.setdefault(int(state["voigt_index"]), []).append(state)
+
+    columns = {}
+    warnings = []
+    for j in components:
+        per_delta = sorted(by_component.get(j, []), key=lambda s: s["delta"])
+        if len(per_delta) < 2:
+            columns[j] = {"slope": np.zeros(6), "err": np.zeros(6)}
+            continue
+        x = np.array([s["delta"] for s in per_delta])
+        means = np.array([s["stress_mean_GPa"] for s in per_delta])
+        sems = np.array([s["stress_sem_GPa"] for s in per_delta])
+        slope = np.zeros(6)
+        err = np.zeros(6)
+        for i in range(6):
+            slope[i], err[i], residual = weighted_slope(x, means[:, i], sems[:, i])
+            if residual > 1.0:
+                warnings.append("sigma_%s vs eps_%s: max fit residual %.2f GPa"
+                                % (VOIGT_LABELS[i], VOIGT_LABELS[j], residual))
+        columns[j] = {"slope": slope, "err": err}
+
+    C, C_err = assemble_tensor(columns, symmetry)
+    return C, C_err, columns, warnings
+
+
+def print_convergence_check(entry, tol_abs, tol_rel, needed, streak):
+    """One check, printed as a compact table."""
+    print("\n  --- convergence check %d: %.2f ps of production per strain state "
+          "(%d stress samples) ---"
+          % (entry["check"], entry["production_ps"], entry["n_samples"]))
+    if not entry["rows"]:
+        print("      (first check - nothing to compare against yet: "
+              + ", ".join("%s = %.2f GPa" % (name, value)
+                          for name, value, _ in entry["quantities"]) + ")")
+        return
+    print("      %-6s %12s %11s %12s %10s"
+          % ("", "value (GPa)", "stat. err", "change (GPa)", "change (%)"))
+    for row in entry["rows"]:
+        rel = ("%10.2f" % row["change_percent"]
+               if np.isfinite(row["change_percent"]) else "%10s" % "-")
+        print("      %-6s %12.2f %11.2f %12.3f %s"
+              % (row["quantity"], row["value_GPa"], row["error_GPa"],
+                 row["change_GPa"], rel))
+    print("      max |dC| = %.3f GPa (tol %.2f)   max relative = %.3f %% (tol %.2f)"
+          % (entry["max_abs_GPa"], tol_abs, entry["max_rel_percent"], tol_rel))
+    # Drift that is already smaller than the statistical error is noise, not a
+    # trend - worth seeing next to the tolerance.
+    max_err = max([row["error_GPa"] for row in entry["rows"]] or [0.0])
+    if max_err > 0:
+        print("      largest statistical error among them: %.3f GPa - the drift "
+              "is %s it" % (max_err,
+                            "within" if entry["max_abs_GPa"] <= max_err else "above"))
+    if entry["passed"]:
+        print("      ✓ within tolerance (%d of %d consecutive checks needed)"
+              % (streak, needed))
+    else:
+        print("      ✗ still drifting - continuing")
+
+
+def write_convergence_outputs(basename, temperature_K, history, symmetry,
+                              final=True):
+    """The convergence history of one temperature: CSV + figures.
+
+    Called after every check while the runs are still going (PNG only, so the
+    files on disk always show the latest comparison) and once more when the
+    temperature is finished, which adds the vector copies.
+    """
+    if not history:
+        return
+    outdir = convergence_dir(temperature_K)
+    tag = temperature_tag(temperature_K)
+    formats = ("png", "pdf") if final else ("png",)
+
+    labels = [name for name, _, _ in history[-1]["quantities"]]
+    final_values = dict((name, value) for name, value, _ in history[-1]["quantities"])
+    c_labels = [name for name in labels if name.startswith("C")]
+    # A triclinic fit tracks 21 constants; the CSV keeps all of them but the
+    # overview figure would be unreadable, so it shows the largest ones.
+    plotted = c_labels
+    if len(c_labels) > 8:
+        by_size = sorted(c_labels, key=lambda name: -abs(final_values[name]))
+        keep = set(by_size[:8])
+        plotted = [name for name in c_labels if name in keep]
+
+    rows = []
+    for entry in history:
+        changes = dict((r["quantity"], r) for r in entry["rows"])
+        row = {"check": entry["check"],
+               "production_ps": entry["production_ps"],
+               "production_steps": entry["production_steps"],
+               "n_stress_samples": entry["n_samples"]}
+        for name, value, err in entry["quantities"]:
+            row["%s_GPa" % name] = value
+            row["%s_err_GPa" % name] = err
+            row["%s_change_GPa" % name] = changes.get(name, {}).get(
+                "change_GPa", float("nan"))
+            row["%s_change_percent" % name] = changes.get(name, {}).get(
+                "change_percent", float("nan"))
+        row["youngs_modulus_GPa"] = entry["moduli"]["E"]
+        row["youngs_modulus_err_GPa"] = entry.get("moduli_err", {}).get("E", 0.0)
+        row["max_change_GPa"] = entry["max_abs_GPa"] if entry["rows"] else float("nan")
+        row["max_change_percent"] = (entry["max_rel_percent"] if entry["rows"]
+                                     else float("nan"))
+        row["within_tolerance"] = bool(entry["passed"])
+        rows.append(row)
+    csv_path = os.path.join(
+        outdir, "%s_T%sK_convergence.csv" % (basename, tag))
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+    times = np.array([e["production_ps"] for e in history], dtype=float)
+    tol_abs = float(finite_t_params.get("convergence_tol_GPa", 5.0))
+    tol_rel = float(finite_t_params.get("convergence_tol_percent", 2.0))
+    written = []
+
+    def series(name):
+        values = np.array([dict((n, v) for n, v, _ in e["quantities"]).get(name, np.nan)
+                           for e in history], dtype=float)
+        errors = np.array([dict((n, s) for n, _, s in e["quantities"]).get(name, 0.0)
+                           for e in history], dtype=float)
+        return values, errors
+
+    def single_quantity_figure(values, errors, ylabel, label, colour, stem,
+                               title):
+        """One quantity against production time, with its tolerance band."""
+        fig, ax = plt.subplots(figsize=(7.6, 5.6))
+        ax.errorbar(times, values, yerr=errors, marker="o", color=colour,
+                    mfc="white", mew=2.2, label=label, zorder=3)
+        last = values[-1]
+        if np.isfinite(last):
+            ax.axhline(last, ls=":", lw=1.6, color=colour, alpha=0.8, zorder=1)
+            ax.axhspan(last - tol_abs, last + tol_abs, color=colour, alpha=0.10,
+                       lw=0, zorder=0,
+                       label=r"final value $\pm$ %.3g GPa" % tol_abs)
+        # The tolerance band is a backdrop, not the subject: keep the axis on
+        # the data so the curve stays readable however wide the tolerance is.
+        lo = float(np.nanmin(values - errors))
+        hi = float(np.nanmax(values + errors))
+        if np.isfinite(lo) and np.isfinite(hi):
+            pad = max(0.08 * (hi - lo), 0.005 * max(abs(hi), 1.0))
+            ax.set_ylim(lo - pad, hi + pad)
+        style_axis(ax, ylabel, xlabel="Production time per strain state (ps)")
+        ax.set_title(title, fontsize=17)
+        return save_publication_figure(fig, outdir, stem, formats=formats)
+
+    with plt.rc_context(PUB_RC):
+        # ---- 1) all tracked constants in one overview ----------------------
+        if plotted:
+            fig, ax = plt.subplots(figsize=(8.0, 5.8))
+            for k, name in enumerate(plotted):
+                values, errors = series(name)
+                if np.all(np.abs(values) < 1e-9):
+                    continue
+                colour = SERIES_COLOURS[k % len(SERIES_COLOURS)]
+                # More tracked constants than colours: the second pass is dashed.
+                style = "-" if k < len(SERIES_COLOURS) else "--"
+                ax.plot(times, values, marker="o", ls=style, color=colour,
+                        mfc="white", mew=2.0,
+                        label="$%s_{%s}$" % (name[0], name[1:]), zorder=3)
+                ax.fill_between(times, values - errors, values + errors,
+                                color=colour, alpha=0.15, lw=0, zorder=1)
+                ax.axhline(values[-1], ls=":", lw=1.2, color=colour, alpha=0.6,
+                           zorder=0)
+            style_axis(ax, "Elastic constant (GPa)",
+                       xlabel="Production time per strain state (ps)")
+            ax.legend(ncol=2)
+            ax.set_title("%s - C$_{ij}$ re-fitted from the trajectory so far "
+                         "(%.0f K)" % (basename, temperature_K), fontsize=17)
+            written += save_publication_figure(
+                fig, outdir, "%s_T%sK_convergence_constants" % (basename, tag),
+                formats=formats)
+
+        # ---- 2) one figure per elastic constant ----------------------------
+        # Constants that are zero by symmetry carry no information and would
+        # only fill the folder with flat lines.
+        for k, name in enumerate(c_labels):
+            if abs(final_values.get(name, 0.0)) < CONVERGENCE_REL_FLOOR_GPA:
+                continue
+            values, errors = series(name)
+            pretty = "$%s_{%s}$" % (name[0], name[1:])
+            written += single_quantity_figure(
+                values, errors, "Elastic constant (GPa)", pretty,
+                SERIES_COLOURS[k % len(SERIES_COLOURS)],
+                "%s_T%sK_convergence_%s" % (basename, tag, name),
+                "%s - %s vs production time (%.0f K)"
+                % (basename, pretty, temperature_K))
+
+        # ---- 3) one figure per averaged modulus ----------------------------
+        for key, ylabel, pretty, colour, stem in [
+                ("K", "Bulk modulus $K$ (GPa)", "$K$ (Voigt-Reuss-Hill)",
+                 SERIES_COLOURS[0], "bulk_modulus"),
+                ("G", "Shear modulus $G$ (GPa)", "$G$ (Voigt-Reuss-Hill)",
+                 SERIES_COLOURS[1], "shear_modulus"),
+                ("E", "Young's modulus $E$ (GPa)", "$E$ (Voigt-Reuss-Hill)",
+                 SERIES_COLOURS[2], "youngs_modulus")]:
+            values = np.array([e["moduli"][key] for e in history], dtype=float)
+            errors = np.array([e.get("moduli_err", {}).get(key, 0.0)
+                               for e in history], dtype=float)
+            if not np.any(np.isfinite(values)):
+                continue
+            written += single_quantity_figure(
+                values, errors, ylabel, pretty, colour,
+                "%s_T%sK_convergence_%s" % (basename, tag, stem),
+                "%s - %s vs production time (%.0f K)"
+                % (basename, ylabel.split(" (")[0].replace("$", ""),
+                   temperature_K))
+
+        # ---- 4) the three moduli together, for a quick look -----------------
+        fig, ax = plt.subplots(figsize=(8.0, 5.8))
+        for k, (key, label) in enumerate([("K", "Bulk $K$"), ("G", "Shear $G$"),
+                                          ("E", "Young's $E$")]):
+            values = np.array([e["moduli"][key] for e in history], dtype=float)
+            errors = np.array([e.get("moduli_err", {}).get(key, 0.0)
+                               for e in history], dtype=float)
+            if not np.any(np.isfinite(values)):
+                continue
+            colour = SERIES_COLOURS[k % len(SERIES_COLOURS)]
+            ax.errorbar(times, values, yerr=errors, marker="o", color=colour,
+                        mfc="white", mew=2.0, label=label, zorder=3)
+            ax.axhline(values[-1], ls=":", lw=1.2, color=colour, alpha=0.6)
+        style_axis(ax, "Modulus (GPa)",
+                   xlabel="Production time per strain state (ps)")
+        ax.set_title("%s - Voigt-Reuss-Hill moduli vs production time (%.0f K)"
+                     % (basename, temperature_K), fontsize=17)
+        written += save_publication_figure(
+            fig, outdir, "%s_T%sK_convergence_moduli" % (basename, tag),
+            formats=formats)
+
+        # ---- 5) how much each check moved, against the tolerances -----------
+        if len(history) > 1:
+            fig, axes = plt.subplots(1, 2, figsize=(14.4, 5.4))
+            for k, name in enumerate(plotted + [n for n in labels
+                                                if not n.startswith("C")]):
+                colour = SERIES_COLOURS[k % len(SERIES_COLOURS)]
+                style = "-" if k < len(SERIES_COLOURS) else "--"
+                pts_t, pts_abs, pts_rel = [], [], []
+                for entry in history[1:]:
+                    row = dict((r["quantity"], r) for r in entry["rows"]).get(name)
+                    if row is None:
+                        continue
+                    pts_t.append(entry["production_ps"])
+                    # A change of exactly zero has no place on a log axis.
+                    pts_abs.append(max(row["change_GPa"], 1e-3))
+                    pts_rel.append(max(row["change_percent"], 1e-3)
+                                   if np.isfinite(row["change_percent"])
+                                   else np.nan)
+                if not pts_t:
+                    continue
+                axes[0].plot(pts_t, pts_abs, marker="o", ms=6, lw=1.4, ls=style,
+                             color=colour, mfc="white", alpha=0.85, label=name)
+                axes[1].plot(pts_t, pts_rel, marker="o", ms=6, lw=1.4, ls=style,
+                             color=colour, mfc="white", alpha=0.85, label=name)
+            max_abs = [max(e["max_abs_GPa"], 1e-3) for e in history[1:]]
+            max_rel = [max(e["max_rel_percent"], 1e-3) for e in history[1:]]
+            t_rest = times[1:]
+            axes[0].plot(t_rest, max_abs, color="black", lw=2.6, marker="s",
+                         ms=7, mfc="white", label="max", zorder=4)
+            axes[1].plot(t_rest, max_rel, color="black", lw=2.6, marker="s",
+                         ms=7, mfc="white", label="max", zorder=4)
+            axes[0].axhline(tol_abs, ls="--", lw=2.0, color=SERIES_COLOURS[1],
+                            label="tolerance", zorder=2)
+            axes[1].axhline(tol_rel, ls="--", lw=2.0, color=SERIES_COLOURS[1],
+                            label="tolerance", zorder=2)
+            style_axis(axes[0], "Change since the previous check (GPa)",
+                       xlabel="Production time per strain state (ps)")
+            style_axis(axes[1], "Change since the previous check (%)",
+                       xlabel="Production time per strain state (ps)")
+            # A converged run leaves the drift far below the tolerance, so a
+            # linear axis would squash the interesting part into the baseline.
+            for ax in axes:
+                ax.set_yscale("log")
+                ax.minorticks_off()
+                # Both panels carry the same series, so they share one legend
+                # placed beside the figure - inside, it would cover the very
+                # curves it labels.
+                legend = ax.get_legend()
+                if legend is not None:
+                    legend.remove()
+            handles, legend_labels = axes[0].get_legend_handles_labels()
+            fig.suptitle("%s - drift between consecutive checks at %.0f K "
+                         "(below the dashed line = converged)"
+                         % (basename, temperature_K), fontsize=17)
+            fig.tight_layout(rect=(0, 0, 1, 0.94))
+            if handles:
+                fig.legend(handles, legend_labels,
+                           loc="center left", bbox_to_anchor=(1.005, 0.5),
+                           ncol=1 if len(handles) <= 12 else 2,
+                           fontsize=12, frameon=False)
+            written += save_publication_figure(
+                fig, outdir, "%s_T%sK_convergence_drift" % (basename, tag),
+                formats=formats)
+
+    if final:
+        print("  \U0001f4c1 Wrote the convergence history (%s and %d figures) "
+              "into ./%s/"
+              % (os.path.basename(csv_path), len(written) // len(formats), outdir))
+
+
+def collect_states_sequential(hot_reference, calculator, temperature_K,
+                              components, basename, job=None, checkpoint=None):
+    """Every strain state run to the full production length, one after another."""
     deltas = strain_values()
     n_states = len(components) * len(deltas)
     print("\n=== Strained NVT runs at %.1f K: %d component(s) x %d strain(s) "
           "= %d runs ===" % (temperature_K, len(components), len(deltas), n_states))
 
     states = []
-    columns = {}
-    residual_warning = []
     state_index = 0
     for j in components:
-        per_delta = []
         for d in deltas:
             state_index += 1
             state = None
             if checkpoint is not None:
                 state = restore_state(checkpoint, temperature_K, j, d)
             if state is not None:
-                print("\n  \u267b\ufe0f  [%d/%d] eps_%s = %+.4f at %.1f K - already done, "
+                print("\n  ♻️  [%d/%d] eps_%s = %+.4f at %.1f K - already done, "
                       "loaded from the checkpoint (%d samples, <T> = %.1f K)"
                       % (state_index, n_states, VOIGT_LABELS[j], d, temperature_K,
                          state["n_samples"], state["mean_temperature_K"]))
@@ -1232,25 +2004,320 @@ def run_temperature(hot_reference, calculator, temperature_K, symmetry,
                                          job=job)
                 if checkpoint is not None:
                     store_state(checkpoint, basename, temperature_K, state)
-            per_delta.append(state)
             states.append(state)
+    return states
 
-        x = np.array([s["delta"] for s in per_delta])
-        means = np.array([s["stress_mean_GPa"] for s in per_delta])
-        sems = np.array([s["stress_sem_GPa"] for s in per_delta])
-        slope = np.zeros(6)
-        err = np.zeros(6)
-        for i in range(6):
-            slope[i], err[i], residual = weighted_slope(x, means[:, i], sems[:, i])
-            if residual > 1.0:
-                residual_warning.append(
-                    "sigma_%s vs eps_%s: max fit residual %.2f GPa"
-                    % (VOIGT_LABELS[i], VOIGT_LABELS[j], residual))
-        columns[j] = {"slope": slope, "err": err}
 
-    C, C_err = assemble_tensor(columns, symmetry)
+def collect_states_converged(hot_reference, calculator, temperature_K, symmetry,
+                             components, basename, job=None, checkpoint=None):
+    """Adaptive production: advance every strain state together and stop as soon
+    as C_ij has stopped changing.
 
-    asymmetry = None
+    Returns the finished states plus the convergence history.
+    """
+    deltas = strain_values()
+    n_states = len(components) * len(deltas)
+    n_prod_max = int(finite_t_params.get("nvt_production_steps", 1000))
+    seg = min(convergence_segment_steps(), n_prod_max)
+    log_interval = int(finite_t_params.get("log_interval", 200))
+    timestep_fs = float(finite_t_params["timestep"])
+    min_ps = float(finite_t_params.get("convergence_min_ps", 0.0))
+    needed = max(1, int(finite_t_params.get("convergence_consecutive", 2)))
+    tol_abs = float(finite_t_params.get("convergence_tol_GPa", 5.0))
+    tol_rel = float(finite_t_params.get("convergence_tol_percent", 2.0))
+
+    print("\n=== Strained NVT runs at %.1f K: %d component(s) x %d strain(s) "
+          "= %d runs ===" % (temperature_K, len(components), len(deltas), n_states))
+    print("  Adaptive production length: all %d strain states advance together in "
+          "segments of\n  %d steps (%.2f ps); C_ij is re-fitted after every segment "
+          "and the runs stop after\n  %d consecutive check(s) within %.2f GPa / "
+          "%.2f %% (criterion: %s), never before\n  %.2f ps and never beyond "
+          "%.2f ps of production per strain state."
+          % (n_states, seg, seg * timestep_fs / 1000.0, needed, tol_abs, tol_rel,
+             convergence_criterion_key(), min_ps,
+             n_prod_max * timestep_fs / 1000.0))
+    print("  Watching: " + ", ".join(
+        "C%d%d" % (i + 1, k + 1) for (i, k) in tracked_components(symmetry))
+        + (", K, G" if finite_t_params.get("convergence_include_moduli", True)
+           else ""))
+
+    runs = []
+    index = 0
+    for j in components:
+        for d in deltas:
+            index += 1
+            restored = restore_run(checkpoint, temperature_K, j, d, calculator)
+            if restored is not None:
+                print("  ♻️  [%d/%d] eps_%s = %+.4f - %.2f ps of production "
+                      "restored from the checkpoint%s"
+                      % (index, n_states, VOIGT_LABELS[j], d,
+                         restored["production_steps"] * timestep_fs / 1000.0,
+                         "" if restored.get("complete") else " (unfinished)"))
+            runs.append(StrainRun(hot_reference, calculator, temperature_K, j, d,
+                                  index, n_states, basename, job=job,
+                                  restored=restored))
+
+    if runs and all(r.restored_complete and r.prod_steps > 0 for r in runs):
+        done_steps = min(r.prod_steps for r in runs)
+        print("  ♻️  Every strain state at this temperature is already finished "
+              "(%.2f ps of production each) - nothing left to run."
+              % (done_steps * timestep_fs / 1000.0))
+        if job is not None:
+            for _ in runs:
+                job.complete_run()
+        return ([r.state(complete=True) for r in runs],
+                restore_history(checkpoint, temperature_K, done_steps))
+
+    for run in runs:
+        run.equilibrate(log_interval)
+        if checkpoint is not None and run.prod_steps == 0:
+            store_state(checkpoint, basename, temperature_K,
+                        run.state(complete=False, with_snapshot=True), flush=False)
+    if checkpoint is not None:
+        save_checkpoint(basename, checkpoint)
+
+    for run in runs:
+        run.start_production(n_prod_max, log_interval)
+
+    history = restore_history(checkpoint, temperature_K,
+                              min(r.prod_steps for r in runs))
+    if history:
+        print("  ♻️  %d earlier convergence check(s) restored, the history "
+              "continues from %.2f ps." % (len(history), history[-1]["production_ps"]))
+    streak = 0
+    for past in reversed(history):
+        if not past.get("passed"):
+            break
+        streak += 1
+    converged = False
+
+    while True:
+        common = min(r.prod_steps for r in runs)
+        # Check first, then advance: a run resumed from the checkpoint may
+        # already be sitting on production time that has never been checked.
+        due = (common > 0
+               and len(set(r.prod_steps for r in runs)) == 1
+               and (not history or common > history[-1]["production_steps"]))
+        if due:
+            C, C_err, _cols, _warn = tensor_from_states(
+                [r.state() for r in runs], components, symmetry)
+            moduli = vrh_moduli(C)
+            moduli_err = modulus_uncertainties(
+                C, C_err, rng=np.random.RandomState(
+                    int(finite_t_params.get("seed", 42)) + int(common)))
+            quantities = tracked_quantities(C, C_err, symmetry, moduli=moduli,
+                                            moduli_err=moduli_err)
+            if history:
+                passed, max_abs, max_rel, rows = convergence_verdict(
+                    history[-1]["quantities"], quantities)
+            else:
+                passed, max_abs, max_rel, rows = (False, float("nan"),
+                                                  float("nan"), [])
+
+            entry = {
+                "check": (history[-1]["check"] + 1) if history else 1,
+                "production_steps": int(common),
+                "production_ps": common * timestep_fs / 1000.0,
+                "n_samples": int(min(len(r.samples_GPa) for r in runs)),
+                "quantities": quantities,
+                "rows": rows,
+                "max_abs_GPa": max_abs,
+                "max_rel_percent": max_rel,
+                "passed": bool(passed),
+                "moduli": {"K": moduli["K"], "G": moduli["G"],
+                           "E": moduli["youngs_modulus"]},
+                "moduli_err": {"K": moduli_err.get("K", 0.0),
+                               "G": moduli_err.get("G", 0.0),
+                               "E": moduli_err.get("E", 0.0)},
+                "elastic_tensor_GPa": C.tolist(),
+            }
+            history.append(entry)
+
+            enough_time = entry["production_ps"] >= min_ps - 1e-9
+            streak = streak + 1 if passed else 0
+            entry["converged"] = bool(passed and enough_time and streak >= needed)
+            print_convergence_check(entry, tol_abs, tol_rel, needed, streak)
+            if passed and not enough_time:
+                print("      ⏸  holding: the minimum production time of %.2f ps "
+                      "has not been reached yet." % min_ps)
+            if job is not None:
+                print("      %s" % job.summary(), flush=True)
+
+            if checkpoint is not None:
+                store_history(checkpoint, basename, temperature_K, history)
+                save_checkpoint(basename, checkpoint)
+
+            # Refresh the convergence CSV and figures now, so they can be
+            # watched while the calculation is still running.
+            try:
+                write_convergence_outputs(basename, temperature_K, history,
+                                          symmetry, final=False)
+            except Exception as exc:
+                print("      \u26a0\ufe0f  WARNING: could not refresh the convergence "
+                      "figures: %s" % exc)
+
+            if entry["converged"]:
+                converged = True
+                break
+
+        if common >= n_prod_max:
+            break
+
+        target = min(common + seg, n_prod_max)
+        for run in runs:
+            run.advance_to(target)
+            if checkpoint is not None:
+                store_state(checkpoint, basename, temperature_K,
+                            run.state(complete=False, with_snapshot=True))
+
+    final_steps = min(r.prod_steps for r in runs)
+    if converged:
+        print("\n  ✅ Converged after %.2f ps of production per strain state "
+              "(cap was %.2f ps)."
+              % (final_steps * timestep_fs / 1000.0,
+                 n_prod_max * timestep_fs / 1000.0))
+    else:
+        print("\n  ⚠️  The production cap of %.2f ps was reached before the "
+              "convergence criterion was met - C_ij may still be drifting. "
+              "Raise the NVT production steps (or relax the tolerance) if the "
+              "convergence figures are not flat."
+              % (n_prod_max * timestep_fs / 1000.0))
+
+    states = []
+    for run in runs:
+        state = run.state(complete=True, with_snapshot=True)
+        if checkpoint is not None:
+            store_state(checkpoint, basename, temperature_K, state, flush=False)
+        state.pop("snapshot", None)
+        states.append(state)
+        print("      eps_%s = %+.4f: <T> = %.1f K, %d samples, "
+              "<sigma_%s> = %.3f +- %.3f GPa"
+              % (VOIGT_LABELS[state["voigt_index"]], state["delta"],
+                 state["mean_temperature_K"], state["n_samples"],
+                 VOIGT_LABELS[state["voigt_index"]],
+                 state["stress_mean_GPa"][state["voigt_index"]],
+                 state["stress_sem_GPa"][state["voigt_index"]]))
+    if checkpoint is not None:
+        save_checkpoint(basename, checkpoint)
+
+    if job is not None:
+        unrun = sum(max(0, n_prod_max - r.prod_steps) for r in runs)
+        for _ in runs:
+            job.complete_run()
+        if unrun > 0:
+            job.drop_steps(unrun)
+            print("  ⏱️  %.1f ps of planned MD is no longer needed at this "
+                  "temperature." % (unrun * timestep_fs / 1000.0))
+
+    try:
+        write_convergence_outputs(basename, temperature_K, history, symmetry)
+    except Exception as exc:
+        print("  ⚠️  WARNING: could not write the convergence outputs: %s" % exc)
+
+    return states, history
+
+
+def store_history(checkpoint, basename, temperature_K, history):
+    """Keep the convergence history in the checkpoint.
+
+    Without this a restarted run would begin a fresh history and the figures
+    would only show what happened after the restart.
+    """
+    if checkpoint is None:
+        return
+    entry = checkpoint["temperatures"].setdefault(
+        temperature_key(temperature_K), {"states": {}})
+    entry["convergence_history"] = [
+        {"check": e["check"],
+         "production_steps": e["production_steps"],
+         "production_ps": e["production_ps"],
+         "n_samples": e["n_samples"],
+         "quantities": [[name, value, err] for name, value, err in e["quantities"]],
+         "rows": e["rows"],
+         "max_abs_GPa": e["max_abs_GPa"],
+         "max_rel_percent": e["max_rel_percent"],
+         "passed": bool(e["passed"]),
+         "moduli": e["moduli"],
+         "moduli_err": e.get("moduli_err", {}),
+         "elastic_tensor_GPa": e["elastic_tensor_GPa"],
+         "converged": bool(e.get("converged", False))}
+        for e in history
+    ]
+
+
+def restore_history(checkpoint, temperature_K, up_to_steps):
+    """The convergence history of an interrupted run, up to the steps that
+    actually survived in the stored strain states."""
+    if checkpoint is None:
+        return []
+    entry = checkpoint.get("temperatures", {}).get(temperature_key(temperature_K), {})
+    stored = entry.get("convergence_history") or []
+    history = []
+    for e in stored:
+        if int(e.get("production_steps", 0)) > int(up_to_steps):
+            continue
+        item = dict(e)
+        item["quantities"] = [(str(n), float(v), float(err))
+                              for n, v, err in e.get("quantities", [])]
+        history.append(item)
+    return history
+
+
+def convergence_summary(history):
+    """The convergence history in a form that goes cleanly into JSON."""
+    if not history:
+        return None
+    return {
+        "checks": [
+            {"check": e["check"],
+             "production_ps": e["production_ps"],
+             "production_steps": e["production_steps"],
+             "n_stress_samples": e["n_samples"],
+             "max_change_GPa": (e["max_abs_GPa"]
+                                if np.isfinite(e["max_abs_GPa"]) else None),
+             "max_change_percent": (e["max_rel_percent"]
+                                    if np.isfinite(e["max_rel_percent"]) else None),
+             "within_tolerance": bool(e["passed"]),
+             "bulk_modulus_GPa": e["moduli"]["K"],
+             "bulk_modulus_err_GPa": e.get("moduli_err", {}).get("K", 0.0),
+             "shear_modulus_GPa": e["moduli"]["G"],
+             "shear_modulus_err_GPa": e.get("moduli_err", {}).get("G", 0.0),
+             "youngs_modulus_GPa": e["moduli"]["E"],
+             "youngs_modulus_err_GPa": e.get("moduli_err", {}).get("E", 0.0),
+             "quantities_GPa": dict((n, v) for n, v, _ in e["quantities"])}
+            for e in history
+        ],
+        "converged": bool(history[-1].get("converged", False)),
+        "production_ps_used": history[-1]["production_ps"],
+        "tolerance_GPa": float(finite_t_params.get("convergence_tol_GPa", 5.0)),
+        "tolerance_percent": float(finite_t_params.get("convergence_tol_percent", 2.0)),
+        "criterion": convergence_criterion_key(),
+        "consecutive_required": int(finite_t_params.get("convergence_consecutive", 2)),
+    }
+
+
+def run_temperature(hot_reference, calculator, temperature_K, symmetry,
+                    components, basename, job=None, checkpoint=None):
+    """Full set of strained runs at one temperature -> C_ij and its errors.
+
+    Strain states already present in the checkpoint are loaded instead of rerun.
+    With the convergence check switched on the production part runs adaptively
+    and stops as soon as the constants have settled.
+    """
+    convergence = None
+    if convergence_enabled():
+        states, history = collect_states_converged(
+            hot_reference, calculator, temperature_K, symmetry, components,
+            basename, job=job, checkpoint=checkpoint)
+        convergence = convergence_summary(history)
+    else:
+        states = collect_states_sequential(
+            hot_reference, calculator, temperature_K, components, basename,
+            job=job, checkpoint=checkpoint)
+
+    C, C_err, columns, residual_warning = tensor_from_states(
+        states, components, symmetry)
+
     if symmetry == "triclinic":
         raw = np.zeros((6, 6))
         for j, col in columns.items():
@@ -1259,14 +2326,14 @@ def run_temperature(hot_reference, calculator, temperature_K, symmetry,
         print("\n  Max asymmetry |C_ij - C_ji| before symmetrisation: %.2f GPa"
               % asymmetry)
         if asymmetry > 5.0:
-            print("  \u26a0\ufe0f  WARNING: large asymmetry - the stress averages are not yet "
+            print("  ⚠️  WARNING: large asymmetry - the stress averages are not yet "
                   "converged (longer production runs or a bigger cell needed).")
 
     for msg in residual_warning:
-        print("  \u26a0\ufe0f  WARNING: non-linear stress response - %s "
+        print("  ⚠️  WARNING: non-linear stress response - %s "
               "(consider a smaller strain magnitude)" % msg)
 
-    return C, C_err, columns, states
+    return C, C_err, columns, states, convergence
 
 
 def write_temperature_outputs(basename, temperature_K, states, analysis, C, C_err):
@@ -1486,11 +2553,16 @@ SERIES_COLOURS = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E
 STATIC_COLOUR = "#444444"
 
 
-def save_publication_figure(fig, outdir, stem):
-    """Write one figure as a 300 dpi PNG and as a vector PDF."""
+def save_publication_figure(fig, outdir, stem, formats=("png", "pdf")):
+    """Write one figure as a 300 dpi PNG and as a vector PDF.
+
+    The convergence figures are refreshed after every check while the MD is
+    still running, and ask for the PNG only; the vector copy is written once
+    the temperature is finished.
+    """
     os.makedirs(outdir, exist_ok=True)
     written = []
-    for ext in ("png", "pdf"):
+    for ext in formats:
         path = os.path.join(outdir, "%s.%s" % (stem, ext))
         fig.savefig(path, dpi=300)
         written.append(path)
@@ -1685,6 +2757,10 @@ def write_sweep_outputs(basename, sweep, C_static):
             "debye_temperature_err_K": a.get("debye_temperature_error_K", 0.0),
             "mechanically_stable": a["mechanical_stability"].get("mechanically_stable"),
         }
+        conv = entry.get("convergence")
+        if conv:
+            row["production_ps_used"] = conv["production_ps_used"]
+            row["cij_converged"] = bool(conv["converged"])
         for i in range(6):
             for k in range(i, 6):
                 row["C%d%d_GPa" % (i + 1, k + 1)] = C[i, k]
@@ -1705,6 +2781,7 @@ def write_sweep_outputs(basename, sweep, C_static):
         "temperatures": [
             {"temperature_K": entry["temperature_K"],
              "npt": entry["npt_info"],
+             "convergence": entry.get("convergence"),
              "results": entry["analysis"]}
             for entry in sweep
         ],
@@ -1852,6 +2929,8 @@ total_steps = steps_per_T * len(temperatures)
 
 # Work already in the checkpoint is not going to be repeated, so leave it out of
 # the plan - otherwise the remaining-time estimate would be far too pessimistic.
+_nvt_eq_steps = int(finite_t_params.get("nvt_equilibration_steps", 0))
+_nvt_prod_steps = int(finite_t_params.get("nvt_production_steps", 0))
 skipped_runs = 0
 skipped_steps = 0
 for _T in temperatures:
@@ -1859,9 +2938,17 @@ for _T in temperatures:
     if npt_steps_per_T and _entry.get("ref_cell"):
         skipped_runs += 1
         skipped_steps += npt_steps_per_T
-    _done_states = len(_entry.get("states", {}))
-    skipped_runs += _done_states
-    skipped_steps += _done_states * nvt_steps_per_state
+    for _record in _entry.get("states", {}).values():
+        _done = int(_record.get("production_steps", _nvt_prod_steps))
+        _complete = bool(_record.get("complete", True))
+        _finished = _complete and _done >= _nvt_prod_steps
+        # A half-finished run only saves work if there is a snapshot to
+        # continue it from; without one it has to start over.
+        if not _finished and not _record.get("snapshot_file"):
+            continue
+        if _finished:
+            skipped_runs += 1
+        skipped_steps += min(nvt_steps_per_state, _nvt_eq_steps + _done)
 
 remaining_runs = max(1, total_runs - skipped_runs)
 remaining_steps = max(1, total_steps - skipped_steps)
@@ -1876,6 +2963,13 @@ if skipped_runs:
              total_steps - skipped_steps))
 print("  %.1f ps of simulated time still to run"
       % (remaining_steps * float(finite_t_params["timestep"]) / 1000.0))
+if convergence_enabled():
+    print("  The production part is adaptive: this is the upper bound, the runs "
+          "stop\n  as soon as C_ij is converged (every %.2f ps, tolerance "
+          "%.2f GPa / %.2f %%)."
+          % (float(finite_t_params.get("convergence_interval_ps", 1.0)),
+             float(finite_t_params.get("convergence_tol_GPa", 5.0)),
+             float(finite_t_params.get("convergence_tol_percent", 2.0))))
 job = JobClock(remaining_steps, remaining_runs)
 job.start()
 
@@ -1907,7 +3001,7 @@ for temperature_K in temperatures:
         ref_cell = np.array(hot_reference.get_cell()[:], dtype=float)
         npt_info = {"skipped": True}
 
-    C, C_err, _columns, states = run_temperature(
+    C, C_err, _columns, states, convergence = run_temperature(
         hot_reference, calculator, temperature_K, symmetry, components, basename,
         job=job, checkpoint=checkpoint)
 
@@ -1963,7 +3057,8 @@ for temperature_K in temperatures:
 
     sweep.append({"temperature_K": temperature_K,
                   "analysis": analysis,
-                  "npt_info": npt_info})
+                  "npt_info": npt_info,
+                  "convergence": convergence})
 
     remaining_T = len(temperatures) - len(sweep)
     if remaining_T > 0:
@@ -2026,7 +3121,13 @@ def generate_finite_t_elastic_python_script(finite_t_params, selected_model,
         '  5. C_ij(T) = d<sigma_i>/d eps_j from a (weighted) linear fit, followed by\n'
         '     Voigt-Reuss-Hill moduli, Born stability and the Debye temperature.\n\n'
         'These are the isothermal elastic constants at temperature T.\n\n'
-        '--- SETTINGS ---\n'
+        + ('Adaptive production length: all strain states of one temperature advance\n'
+           'together in segments, C_ij is re-fitted from the trajectory so far after\n'
+           'every segment and the runs stop once the change stays inside the tolerance.\n'
+           'The history (CSV + figures) is written to\n'
+           'elastic_md_results/T_<T>K/convergence/.\n\n'
+           if finite_t_params.get('use_convergence_check') else '')
+        + '--- SETTINGS ---\n'
         f'MLIP Model : {selected_model}\n'
         f'Model Key  : {model_size}\n'
         f'Device     : {device}\n'

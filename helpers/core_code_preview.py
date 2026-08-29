@@ -1396,6 +1396,12 @@ def _finite_t_elastic(p):
     nvt_prod      = p.get('nvt_production_steps', 8000)
     sample_int    = p.get('sample_interval', 10)
     kinetic       = p.get('include_kinetic_stress', True)
+    adaptive      = p.get('use_convergence_check', False)
+    check_ps      = p.get('convergence_interval_ps', 1.0)
+    tol_GPa       = p.get('convergence_tol_GPa', 5.0)
+    tol_pct       = p.get('convergence_tol_percent', 2.0)
+    n_consec      = p.get('convergence_consecutive', 2)
+    seg_steps     = max(1, int(round(check_ps * 1000.0 / timestep)))
 
     if multi:
         strains_repr = f"[-{delta}, -{delta}/2, {delta}/2, {delta}]"
@@ -1476,31 +1482,80 @@ def _finite_t_elastic(p):
             "",
         ]
 
+    if not adaptive:
+        lines += [
+            "# 2) strain the reference cell, run NVT, average the stress",
+            "for T in temperatures:",
+            "    ref_cell, hot = reference_cell_at(T)",
+            "    C = np.zeros((6, 6))",
+            "    for j in components:",
+            "        sigma_of_delta = []",
+            "        for d in strains:",
+            "            a = hot.copy(); a.calc = calculator",
+            "            F = np.eye(3) + voigt_strain(j, d)",
+            "            a.set_cell(np.dot(F, ref_cell.T).T, scale_atoms=True)",
+            "            MaxwellBoltzmannDistribution(a, temperature_K=T); Stationary(a)",
+            "            dyn = build_nvt(a, T)",
+            f"            dyn.run({nvt_eq})                  # discarded burn-in",
+            "            samples = []",
+            f"            dyn.attach(lambda a=a, s=samples: s.append(stress_voigt(a)), interval={sample_int})",
+            f"            dyn.run({nvt_prod})",
+            "            sigma_of_delta.append(np.mean(samples, axis=0) * eV_to_GPa)",
+            "",
+            "        # C_ij = d<sigma_i>/d eps_j",
+            "        sigma_of_delta = np.array(sigma_of_delta)",
+            "        for i in range(6):",
+            "            C[i, j] = np.polyfit(strains, sigma_of_delta[:, i], 1)[0]",
+            "",
+            "    C = (C + C.T) / 2                          # symmetrise",
+        ]
+    else:
+        lines += [
+            "# 2) adaptive production: every strain state is advanced together in",
+            f"#    {seg_steps}-step ({check_ps:g} ps) segments, C_ij is re-fitted after each",
+            f"#    one and the runs stop after {n_consec} check(s) within {tol_GPa:g} GPa / {tol_pct:g} %.",
+            "def tensor_from(samples_of_state):",
+            "    C = np.zeros((6, 6))",
+            "    for j in components:",
+            "        sigma = np.array([np.mean(samples_of_state[(j, d)], axis=0) * eV_to_GPa",
+            "                          for d in strains])",
+            "        for i in range(6):",
+            "            C[i, j] = np.polyfit(strains, sigma[:, i], 1)[0]",
+            "    return (C + C.T) / 2",
+            "",
+            "for T in temperatures:",
+            "    ref_cell, hot = reference_cell_at(T)",
+            "    runs, samples_of_state = {}, {}",
+            "    for j in components:",
+            "        for d in strains:",
+            "            a = hot.copy(); a.calc = calculator",
+            "            F = np.eye(3) + voigt_strain(j, d)",
+            "            a.set_cell(np.dot(F, ref_cell.T).T, scale_atoms=True)",
+            "            MaxwellBoltzmannDistribution(a, temperature_K=T); Stationary(a)",
+            "            dyn = build_nvt(a, T)",
+            f"            dyn.run({nvt_eq})              # discarded burn-in, per strain",
+            "            s = samples_of_state[(j, d)] = []",
+            f"            dyn.attach(lambda a=a, s=s: s.append(stress_voigt(a)), interval={sample_int})",
+            "            runs[(j, d)] = dyn",
+            "",
+            "    previous, streak, done = None, 0, 0",
+            f"    while done < {nvt_prod}:                 # the production cap",
+            f"        step = min({seg_steps}, {nvt_prod} - done)",
+            "        for dyn in runs.values():          # one segment for every strain state",
+            "            dyn.run(step)",
+            "        done += step",
+            "        C = tensor_from(samples_of_state)",
+            "        if previous is not None:",
+            "            change = np.abs(C - previous)",
+            f"            ok = change.max() < {tol_GPa:g}      # (or the relative test, see the script)",
+            "            streak = streak + 1 if ok else 0",
+            f"            if streak >= {n_consec}:",
+            "                break                      # converged - stop every strain state",
+            "        previous = C",
+            "",
+        ]
+
     lines += [
-        "# 2) strain the reference cell, run NVT, average the stress",
-        "for T in temperatures:",
-        "    ref_cell, hot = reference_cell_at(T)",
-        "    C = np.zeros((6, 6))",
-        "    for j in components:",
-        "        sigma_of_delta = []",
-        "        for d in strains:",
-        "            a = hot.copy(); a.calc = calculator",
-        "            F = np.eye(3) + voigt_strain(j, d)",
-        "            a.set_cell(np.dot(F, ref_cell.T).T, scale_atoms=True)",
-        "            MaxwellBoltzmannDistribution(a, temperature_K=T); Stationary(a)",
-        "            dyn = build_nvt(a, T)",
-        f"            dyn.run({nvt_eq})                  # discarded burn-in",
-        "            samples = []",
-        f"            dyn.attach(lambda a=a, s=samples: s.append(stress_voigt(a)), interval={sample_int})",
-        f"            dyn.run({nvt_prod})",
-        "            sigma_of_delta.append(np.mean(samples, axis=0) * eV_to_GPa)",
-        "",
-        "        # C_ij = d<sigma_i>/d eps_j",
-        "        sigma_of_delta = np.array(sigma_of_delta)",
-        "        for i in range(6):",
-        "            C[i, j] = np.polyfit(strains, sigma_of_delta[:, i], 1)[0]",
-        "",
-        "    C = (C + C.T) / 2                          # symmetrise",
         "    K = (C[0,0] + C[1,1] + C[2,2] + 2*(C[0,1] + C[0,2] + C[1,2])) / 9",
         "    G = (C[0,0] + C[1,1] + C[2,2] - C[0,1] - C[0,2] - C[1,2]",
         "         + 3*(C[3,3] + C[4,4] + C[5,5])) / 15",

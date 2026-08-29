@@ -5341,7 +5341,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.11.1 · 8/28/2026
+            v0.11.2 · 8/29/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6740,6 +6740,15 @@ with tab1:
                             <name>_T300K_stress_strain.png          fits
                             <name>_T300K_stress_convergence.png     running averages
                             <name>_T300K_npt_reference.xyz          equilibrated cell
+                            convergence/                            only with the convergence check
+                              <name>_T300K_convergence.csv            C_ij after every check
+                              <name>_T300K_convergence_constants.png  all C_ij vs production time
+                              <name>_T300K_convergence_C11.png        one figure per constant
+                              <name>_T300K_convergence_bulk_modulus.png    K vs production time
+                              <name>_T300K_convergence_shear_modulus.png   G vs production time
+                              <name>_T300K_convergence_youngs_modulus.png  E vs production time
+                              <name>_T300K_convergence_moduli.png     K, G, E together
+                              <name>_T300K_convergence_drift.png      change vs the tolerance
                             trajectories/                           one .xyz per strain state
                           T_600K/  ...
                         ```
@@ -6747,6 +6756,16 @@ with tab1:
                         **Reading the output:** check `*_stress_convergence.png` first — if the
                         running stress averages have not flattened, extend the NVT production
                         steps (or enlarge the supercell) before trusting C_ij.
+
+                        **Adaptive production length:** with the convergence check switched on,
+                        all strain states of one temperature advance together and C_ij is
+                        re-fitted after every check interval; the runs stop once the change
+                        stays below the tolerance, and the NVT production steps only act as an
+                        upper limit. The `convergence/` folder shows how the constants settled —
+                        if the drift figure never drops below the dashed tolerance line, raise
+                        the production cap. Those files (CSV and PNGs) are rewritten after every
+                        check, so you can watch the constants settle while the run is still
+                        going; the vector PDFs are added when the temperature finishes.
 
                         **Interrupted?** Just run the script again — it reloads every finished
                         strained run from the checkpoint and computes only what is missing.

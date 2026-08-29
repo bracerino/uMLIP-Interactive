@@ -14,6 +14,11 @@ The calculation is the explicit stress-strain (direct) method:
   5. C_ij = d<sigma_i> / d eps_j from a linear fit (or central difference),
      with block-averaged uncertainties propagated into every C_ij.
 
+Optionally the production part is run adaptively: all strained cells are
+advanced together in segments, C_ij is re-evaluated from the trajectory so far
+after every segment, and the runs stop as soon as C_ij stops changing by more
+than the requested tolerance.
+
 This gives the isothermal elastic constants at temperature T. The panel below
 only collects the settings; the run itself happens in the standalone script
 built by helpers/generate_finite_t_elastic_script.py.
@@ -36,6 +41,13 @@ NPT_BAROSTATS = [
     "Berendsen (anisotropic)",
     "Nose-Hoover / Parrinello-Rahman",
 ]
+CONVERGENCE_CRITERIA = [
+    "Both — absolute and relative must pass",
+    "Either — absolute or relative, whichever passes first",
+    "Absolute only (GPa)",
+    "Relative only (%)",
+]
+
 SYMMETRY_MODES = [
     "Triclinic — all 6 strain components",
     "Cubic — 2 strain components (C11, C12, C44)",
@@ -90,9 +102,19 @@ def _defaults():
 
         # strain sampling
         'strain_magnitude': 0.01,
-        'use_multi_strain': False,
+        'use_multi_strain': True,
         'symmetry_mode': SYMMETRY_MODES[0],
         'include_kinetic_stress': True,
+
+        # adaptive production length
+        'use_convergence_check': False,
+        'convergence_interval_ps': 1.0,
+        'convergence_min_ps': 5.0,
+        'convergence_tol_GPa': 5.0,
+        'convergence_tol_percent': 2.0,
+        'convergence_criterion': CONVERGENCE_CRITERIA[0],   # "Both"
+        'convergence_consecutive': 3,
+        'convergence_include_moduli': True,
 
         # extras
         'resume_from_checkpoint': True,
@@ -141,6 +163,25 @@ def strain_magnitudes(params):
     if params.get('use_multi_strain', False):
         return [-delta, -delta / 2.0, delta / 2.0, delta]
     return [-delta, delta]
+
+
+def convergence_criterion_key(label):
+    """Map the verbose criterion label onto the short key used by the script."""
+    text = str(label).lower()
+    if text.startswith('both'):
+        return 'both'
+    if text.startswith('absolute'):
+        return 'absolute'
+    if text.startswith('relative'):
+        return 'relative'
+    return 'either'
+
+
+def convergence_segment_steps(params):
+    """MD steps between two convergence checks (at least one step)."""
+    interval_ps = float(params.get('convergence_interval_ps', 1.0))
+    timestep_fs = float(params.get('timestep', 1.0))
+    return max(1, int(round(interval_ps * 1000.0 / timestep_fs)))
 
 
 def estimate_md_steps(params):
@@ -652,6 +693,166 @@ def setup_finite_t_elastic_ui(default_settings=None, save_settings_function=None
         else:
             traj_interval = int(defaults['traj_interval'])
 
+    st.markdown("---")
+    st.markdown("**⏱️ Adaptive production length — convergence check**")
+    use_convergence_check = st.checkbox(
+        "Stop the production runs once C_ij stops changing",
+        value=bool(defaults['use_convergence_check']),
+        help=(
+            "Instead of running every strained cell for the full production "
+            "length, all strain states of one temperature are advanced *together* "
+            "in segments. After each segment the full C_ij is re-evaluated from "
+            "the trajectory accumulated so far and compared with the previous "
+            "check; once the change stays below the tolerance the production "
+            "stops for every strain state at once.\n\n"
+            "This is exactly the 'recompute C_ij from the first 10, 20, 50 ps of "
+            "the same trajectory and see whether it still moves' test, done "
+            "automatically and used to end the run early. The NVT production "
+            "steps set above become the *maximum* length; the equilibration "
+            "steps are still discarded after each strain is applied.\n\n"
+            "The dynamics are unchanged — running a trajectory in segments gives "
+            "the identical trajectory — so results are directly comparable with "
+            "a fixed-length run."
+        )
+    )
+
+    if use_convergence_check:
+        cc1, cc2, cc3 = st.columns(3)
+
+        with cc1:
+            convergence_interval_ps = st.number_input(
+                "Check Interval (ps)",
+                min_value=0.05,
+                max_value=1000.0,
+                value=float(defaults['convergence_interval_ps']),
+                step=0.5,
+                format="%.2f",
+                help=(
+                    "How much production time every strain state gets between "
+                    "two convergence checks. 1–5 ps is a sensible window: short "
+                    "enough to stop soon after convergence, long enough that the "
+                    "change between checks is not pure noise."
+                )
+            )
+
+            convergence_min_ps = st.number_input(
+                "Minimum Production Before Stopping (ps)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=float(defaults['convergence_min_ps']),
+                step=1.0,
+                format="%.2f",
+                help=(
+                    "No early stop before this much production time, however "
+                    "flat the constants look. Guards against a spuriously quiet "
+                    "stretch at the very beginning of the run."
+                )
+            )
+
+        with cc2:
+            convergence_tol_GPa = st.number_input(
+                "Tolerance |ΔC_ij| (GPa)",
+                min_value=0.01,
+                max_value=200.0,
+                value=float(defaults['convergence_tol_GPa']),
+                step=0.5,
+                format="%.2f",
+                help=(
+                    "Largest change any tracked C_ij may show between two "
+                    "consecutive checks. 5 GPa is a good default when the "
+                    "differences you want to resolve between potentials are "
+                    "well above that."
+                )
+            )
+
+            convergence_tol_percent = st.number_input(
+                "Tolerance |ΔC_ij| / C_ij (%)",
+                min_value=0.01,
+                max_value=100.0,
+                value=float(defaults['convergence_tol_percent']),
+                step=0.5,
+                format="%.2f",
+                help=(
+                    "The same test in relative terms, applied only to components "
+                    "large enough for a percentage to mean anything (|C_ij| above "
+                    "1 GPa). 2–3 % is the usual target."
+                )
+            )
+
+        with cc3:
+            convergence_criterion = st.selectbox(
+                "Criterion",
+                CONVERGENCE_CRITERIA,
+                index=(CONVERGENCE_CRITERIA.index(defaults['convergence_criterion'])
+                       if defaults['convergence_criterion'] in CONVERGENCE_CRITERIA else 0),
+                help=(
+                    "Which of the two tolerances has to be satisfied. 'Both' is "
+                    "the strict default: a constant has to be settled in GPa *and* "
+                    "in relative terms before it counts as converged. 'Either' is "
+                    "the forgiving choice — stiff constants usually pass the "
+                    "percentage first, soft ones the absolute limit — and stops "
+                    "the runs sooner."
+                )
+            )
+
+            convergence_consecutive = st.number_input(
+                "Consecutive Passing Checks Required",
+                min_value=1,
+                max_value=20,
+                value=int(defaults['convergence_consecutive']),
+                step=1,
+                help=(
+                    "How many checks in a row must pass before the runs stop. "
+                    "3 is a safe default — it avoids stopping on one or two "
+                    "lucky segments; drop it to 2 if you are in a hurry."
+                )
+            )
+
+            convergence_include_moduli = st.checkbox(
+                "Also require K and G to be converged",
+                value=bool(defaults['convergence_include_moduli']),
+                help=(
+                    "Applies the same two tolerances to the Voigt-Reuss-Hill bulk "
+                    "and shear moduli, which is what most of the downstream "
+                    "numbers are derived from."
+                )
+            )
+
+        _seg = convergence_segment_steps({
+            'convergence_interval_ps': convergence_interval_ps,
+            'timestep': timestep})
+        _max_checks = max(1, int(nvt_production_steps // _seg))
+        _first_ps = max(convergence_min_ps,
+                        convergence_interval_ps * max(2, convergence_consecutive))
+        st.caption(
+            f"🔁 Every strain state advances {_seg:,} steps "
+            f"({convergence_interval_ps:g} ps) per round; C_ij is re-fitted after "
+            f"each round, at most {_max_checks:,} times "
+            f"({nvt_production_steps * timestep / 1000.0:g} ps cap per state). "
+            f"The earliest possible stop is around {_first_ps:g} ps of production. "
+            "Convergence tables, CSV and figures are written to "
+            "`elastic_md_results/T_<T>K/convergence/`."
+        )
+        if convergence_min_ps * 1000.0 > nvt_production_steps * timestep:
+            st.warning(
+                "⚠️ The minimum production time is longer than the production "
+                "cap — the runs can never stop early and will always use the "
+                "full production length."
+            )
+    else:
+        convergence_interval_ps = float(defaults['convergence_interval_ps'])
+        convergence_min_ps = float(defaults['convergence_min_ps'])
+        convergence_tol_GPa = float(defaults['convergence_tol_GPa'])
+        convergence_tol_percent = float(defaults['convergence_tol_percent'])
+        convergence_criterion = defaults['convergence_criterion']
+        convergence_consecutive = int(defaults['convergence_consecutive'])
+        convergence_include_moduli = bool(defaults['convergence_include_moduli'])
+        st.caption(
+            "Every strain state runs for the full production length set above. "
+            "Switch this on to have the script decide when C_ij has stopped "
+            "changing and end the runs there."
+        )
+
     params = {
         'temperature_start': float(temperature_start),
         'temperature_end': float(temperature_end),
@@ -692,6 +893,16 @@ def setup_finite_t_elastic_ui(default_settings=None, save_settings_function=None
         'strain_components': list(components),
         'include_kinetic_stress': bool(include_kinetic_stress),
 
+        'use_convergence_check': bool(use_convergence_check),
+        'convergence_interval_ps': float(convergence_interval_ps),
+        'convergence_min_ps': float(convergence_min_ps),
+        'convergence_tol_GPa': float(convergence_tol_GPa),
+        'convergence_tol_percent': float(convergence_tol_percent),
+        'convergence_criterion': convergence_criterion,
+        'convergence_criterion_key': convergence_criterion_key(convergence_criterion),
+        'convergence_consecutive': int(convergence_consecutive),
+        'convergence_include_moduli': bool(convergence_include_moduli),
+
         'resume_from_checkpoint': bool(resume_from_checkpoint),
         'compute_static_reference': bool(compute_static_reference),
         'static_ion_relax': bool(static_ion_relax),
@@ -715,12 +926,17 @@ def setup_finite_t_elastic_ui(default_settings=None, save_settings_function=None
 
     n_runs, n_steps = estimate_md_steps(params)
     total_ps = n_steps * timestep / 1000.0
+    _budget_word = "at most " if use_convergence_check else ""
     st.info(
         f"Method: explicit stress–strain MD, "
         f"{len(components)} strained Voigt component(s) × "
         f"{len(strain_magnitudes(params))} strain magnitude(s)"
         f"{' × ' + str(len(temperature_list)) + ' temperatures' if len(temperature_list) > 1 else ''}\n\n"
-        f"MD runs: {n_runs:,} — total {n_steps:,} MD steps ({total_ps:,.1f} ps of simulated time)\n\n"
+        f"MD runs: {n_runs:,} — {_budget_word}{n_steps:,} MD steps "
+        f"({total_ps:,.1f} ps of simulated time)"
+        + (" — the production part ends as soon as C_ij is converged, so the "
+           "real cost is usually lower\n\n" if use_convergence_check else "\n\n")
+        +
         f"Reference cell: "
         + ("NPT-equilibrated at "
            f"{', '.join(f'{t:g}' for t in temperature_list)} K and {pressure_GPa:g} GPa"
