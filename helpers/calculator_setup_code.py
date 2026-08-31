@@ -22,6 +22,7 @@ from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
+    nequip_accel_preamble, nequip_accel_apply_code,
 )
 
 
@@ -40,7 +41,8 @@ def build_calculator_code(selected_model, model_size, device, dtype,
                           custom_sevennet_path=None, custom_grace_path=None,
                           custom_mace_path=None, mace_enable_cueq=False,
                           sevennet_enable_cueq=False, mace_head=None,
-                          mace_dispersion=False, mace_dispersion_xc="pbe"):
+                          mace_dispersion=False, mace_dispersion_xc="pbe",
+                          nequip_accel=None):
     model_imports = ""
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
@@ -51,6 +53,13 @@ def build_calculator_code(selected_model, model_size, device, dtype,
     _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
     _7net_kw = f", {_7net_arg}" if _7net_arg else ""
     _cq = f", {_cq_kw}" if _cq_kw else ""
+
+    # NequIP / Allegro kernel modifier (CUDA only). The preamble sits at module
+    # level; the modify() call goes inside the try block, between loading the
+    # model and building the calculator.
+    _nq_pre = nequip_accel_preamble(nequip_accel, device)
+    _nq_apply = nequip_accel_apply_code(nequip_accel, device, model_var="_model",
+                                        indent="    ")
 
     is_custom_mace = ("MACE" in selected_model and "OFF" not in selected_model
                       and is_custom_mace_model(model_size=model_size,
@@ -369,12 +378,12 @@ except Exception as e:
         exit()
 """
     elif selected_model.startswith(("Allegro", "NequIP")):
-        calculator_setup_str = f"""
+        calculator_setup_str = f"""{_nq_pre}
 print("Setting up Allegro / NequIP calculator...")
 print("First use downloads the model from nequip.net, then it is cached.")
 try:
     _model = _nequip_load_saved_model("{model_size}")
-    _model.eval()
+{_nq_apply}    _model.eval()
     _md = _model.metadata
     _type_names = _md["type_names"]
     if isinstance(_type_names, str):

@@ -22,6 +22,7 @@ from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
+    nequip_accel_preamble, nequip_accel_apply_code,
 )
 from datetime import datetime
 
@@ -174,7 +175,8 @@ def _neb_force_norms(neb_obj, n_inner, natoms):
 def _calc_block(selected_model, model_size, device, dtype,
                 mace_head=None, mace_dispersion=False, mace_dispersion_xc='pbe',
                 custom_mace_path=None, indent="    ", custom_sevennet_path=None, custom_grace_path=None,
-                mace_enable_cueq=False, sevennet_enable_cueq=False):
+                mace_enable_cueq=False, sevennet_enable_cueq=False,
+                nequip_accel=None):
     """Return Python source-code string that creates `calculator`."""
     i = indent
     # cuEquivariance (MACE + CUDA only).
@@ -185,6 +187,9 @@ def _calc_block(selected_model, model_size, device, dtype,
     _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device, indent=i)
     _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
     _7net = f", {_7net_arg}" if _7net_arg else ""
+    # NequIP / Allegro kernel modifier (CUDA only).
+    _nq_pre = nequip_accel_preamble(nequip_accel, device, indent=i)
+    _nq_apply = nequip_accel_apply_code(nequip_accel, device, model_var="_model", indent=i)
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         return generate_qe_calculator_code(get_active_qe_settings(), indent=i)
@@ -273,11 +278,13 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}print('ORB ready')\n")
     if is_allegro:
         # Loaded eagerly from nequip.net; downloaded once, then cached.
-        return (f"{i}from nequip.model.saved_models.load_utils import load_saved_model\n"
+        return (_nq_pre
+                + f"{i}from nequip.model.saved_models.load_utils import load_saved_model\n"
                 f"{i}from nequip.integrations.ase import NequIPCalculator\n"
                 f"{i}from nequip.integrations.utils import basic_transforms, handle_chemical_species_map\n"
                 f"{i}_model = load_saved_model('{model_size}')\n"
-                f"{i}_model.eval()\n"
+                + _nq_apply
+                + f"{i}_model.eval()\n"
                 f"{i}_md = _model.metadata\n"
                 f"{i}_type_names = _md['type_names']\n"
                 f"{i}if isinstance(_type_names, str):\n"
@@ -795,13 +802,15 @@ def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
                         custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                        mace_enable_cueq=False, sevennet_enable_cueq=False):
+                        mace_enable_cueq=False, sevennet_enable_cueq=False,
+                        nequip_accel=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
                                custom_mace_path, custom_sevennet_path=custom_sevennet_path,
                                custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
-                               sevennet_enable_cueq=sevennet_enable_cueq)
+                               sevennet_enable_cueq=sevennet_enable_cueq,
+                               nequip_accel=nequip_accel)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1264,13 +1273,15 @@ def generate_neb_script_minimal(neb_params, selected_model, model_size, device, 
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',
                                  custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                                 mace_enable_cueq=False, sevennet_enable_cueq=False):
+                                 mace_enable_cueq=False, sevennet_enable_cueq=False,
+                                 nequip_accel=None):
 
     calc_src     = _calc_block(selected_model, model_size, device, dtype,
                                mace_head, mace_dispersion, mace_dispersion_xc,
                                custom_mace_path, custom_sevennet_path=custom_sevennet_path,
                                custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
-                               sevennet_enable_cueq=sevennet_enable_cueq)
+                               sevennet_enable_cueq=sevennet_enable_cueq,
+                               nequip_accel=nequip_accel)
     climb        = neb_params.get('climb', True)
     ci_from_start= neb_params.get('climb_from_start', False)
 
@@ -1529,7 +1540,8 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
                               thread_count=4, mace_head=None,
                               mace_dispersion=False, mace_dispersion_xc='pbe',
                               custom_mace_path=None, custom_sevennet_path=None, custom_grace_path=None,
-                              mace_enable_cueq=False, sevennet_enable_cueq=False):
+                              mace_enable_cueq=False, sevennet_enable_cueq=False,
+                              nequip_accel=None):
     st.markdown("---")
     st.subheader("📝 Generate Standalone NEB Scripts")
     st.info(
@@ -1542,7 +1554,7 @@ def render_neb_script_button(neb_params, selected_model, model_size, device, dty
               mace_dispersion=mace_dispersion, mace_dispersion_xc=mace_dispersion_xc,
               custom_mace_path=custom_mace_path, custom_sevennet_path=custom_sevennet_path,
               custom_grace_path=custom_grace_path, mace_enable_cueq=mace_enable_cueq,
-              sevennet_enable_cueq=sevennet_enable_cueq)
+              sevennet_enable_cueq=sevennet_enable_cueq, nequip_accel=nequip_accel)
 
     col_a, col_b = st.columns(2)
 

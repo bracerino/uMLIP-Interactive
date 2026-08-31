@@ -11,7 +11,8 @@ def generate_tensile_test_python_script(tensile_params, selected_model, model_si
                                         custom_sevennet_path=None, custom_grace_path=None,
                                         custom_mace_path=None, mace_enable_cueq=False,
                                         sevennet_enable_cueq=False, mace_head=None,
-                                        mace_dispersion=False, mace_dispersion_xc="pbe"):
+                                        mace_dispersion=False, mace_dispersion_xc="pbe",
+                                        nequip_accel=None):
 
     imports_str = f"""
 import os
@@ -94,6 +95,7 @@ torch.set_num_threads({thread_count})
         mace_head=mace_head,
         mace_dispersion=mace_dispersion,
         mace_dispersion_xc=mace_dispersion_xc,
+        nequip_accel=nequip_accel,
     )
     imports_str += model_imports
 

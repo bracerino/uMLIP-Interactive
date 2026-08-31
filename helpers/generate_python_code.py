@@ -5,6 +5,7 @@ from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
+    nequip_accel_preamble, nequip_accel_apply_code,
 )
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
@@ -155,7 +156,8 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
                            mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                            custom_mace_path=None, custom_upet_path=None, polar_settings=None,
                            custom_sevennet_path=None, custom_grace_path=None,
-                           mace_enable_cueq=False, sevennet_enable_cueq=False):
+                           mace_enable_cueq=False, sevennet_enable_cueq=False,
+                           nequip_accel=None):
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     is_orbmol = (selected_model_key is not None and "ORBMOL" in selected_model_key.upper()) or \
                 (isinstance(model_size, str) and model_size.lower().startswith("orbmol"))
@@ -173,6 +175,7 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
         sevennet_enable_cueq=sevennet_enable_cueq,
+        nequip_accel=nequip_accel,
     )
 
     if calc_type == "Energy Only":
@@ -326,7 +329,8 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
                                        mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                        custom_mace_path=None,custom_upet_path=None, polar_settings=None,
                                        custom_sevennet_path=None, custom_grace_path=None,
-                                       mace_enable_cueq=False, sevennet_enable_cueq=False):
+                                       mace_enable_cueq=False, sevennet_enable_cueq=False,
+                                       nequip_accel=None):
     """
     Generate a complete Python script for MACE calculations that reads POSCAR files from the local directory.
     """
@@ -347,6 +351,7 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
         sevennet_enable_cueq=sevennet_enable_cueq,
+        nequip_accel=nequip_accel,
     )
 
     if calc_type == "Energy Only":
@@ -1937,7 +1942,8 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                                     mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                                     custom_mace_path=None, custom_upet_path=None,
                                     polar_settings=None, custom_sevennet_path=None, custom_grace_path=None,
-                                    mace_enable_cueq=False, sevennet_enable_cueq=False
+                                    mace_enable_cueq=False, sevennet_enable_cueq=False,
+                                    nequip_accel=None
                                     ):
     """Generate calculator setup code with support for all MLIP models."""
     # cuEquivariance (MACE + CUDA only); '' / None when it does not apply.
@@ -1949,6 +1955,12 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     _7net_pre_i4 = sevennet_cueq_preamble(sevennet_enable_cueq, device, indent="    ")
     _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
     _7net_kw = f", {_7net_arg}" if _7net_arg else ""
+
+    # NequIP / Allegro kernel modifier (CUDA only). This builder emits its
+    # calculator block indented into main(), so both pieces get 8 spaces.
+    _nq_pre_i8 = nequip_accel_preamble(nequip_accel, device, indent="        ")
+    _nq_apply_i8 = nequip_accel_apply_code(nequip_accel, device, model_var="_model",
+                                           indent="        ")
 
     # Quantum ESPRESSO is an external DFT binary rather than an MLIP, so it
     # short-circuits the whole model-detection chain below.
@@ -2110,11 +2122,12 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         from nequip.integrations.ase import NequIPCalculator
         from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
 
+{_nq_pre_i8}
         print(f"🎯 Using model: {model_size}")
         print("   First use downloads from nequip.net, then it is cached.")
 
         _model = load_saved_model("{model_size}")
-        _model.eval()
+{_nq_apply_i8}        _model.eval()
         _md = _model.metadata
         _type_names = _md["type_names"]
         if isinstance(_type_names, str):

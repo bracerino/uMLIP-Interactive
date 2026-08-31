@@ -524,6 +524,7 @@ def generate_eos_script(
     custom_grace_path=None,
     mace_enable_cueq=False,
     sevennet_enable_cueq=False,
+    nequip_accel=None,
 ):
     """Return a fully self-contained Birch–Murnaghan EOS script as a string.
 
@@ -559,6 +560,7 @@ def generate_eos_script(
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
         sevennet_enable_cueq=sevennet_enable_cueq,
+        nequip_accel=nequip_accel,
     )
     mlip_imports_code = _generate_mlip_imports()
 

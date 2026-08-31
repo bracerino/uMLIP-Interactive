@@ -1,3 +1,9 @@
+# First statement in the file on purpose: TensorFlow reads its logging settings
+# once, when it is imported, and GRACE (tensorpotential) imports it further down.
+# Anything placed above this line risks pulling TF in before it is configured.
+from helpers.quiet_tensorflow import configure_tf_logging, quiet_stderr
+configure_tf_logging()
+
 from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
@@ -109,7 +115,10 @@ from helpers.tensile_test import (
 )
 
 from helpers.generate_md_script import generate_md_python_script
-from helpers.custom_model_paths import SEVENNET_CUEQ_MODULE, SEVENNET_CUEQ_INSTALL
+from helpers.custom_model_paths import (
+    SEVENNET_CUEQ_MODULE, SEVENNET_CUEQ_INSTALL,
+    nequip_accelerators_for, nequip_accel_info,
+)
 from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
 import helpers.quantum_espresso as qe
@@ -193,7 +202,10 @@ except ImportError:
     UPET_AVAILABLE = False
 
 try:
-    from tensorpotential.calculator.foundation_models import grace_fm
+    # quiet_stderr, not just the env vars: the remaining lines come from absl in
+    # TF's C++ layer and are written straight to fd 2.
+    with quiet_stderr():
+        from tensorpotential.calculator.foundation_models import grace_fm
     GRACE_AVAILABLE = True
 except ImportError:
     GRACE_AVAILABLE = False
@@ -2457,13 +2469,40 @@ except ImportError:
     ALLEGRO_AVAILABLE = False
 
 
-def build_allegro_calculator(model_id, device):
+def build_allegro_calculator(model_id, device, accel_modifier=None, log=None):
     """Build an ASE calculator for an Allegro / NequIP model from nequip.net.
 
     The model is run eagerly. nequip-compile would be faster, but it must run on
     the same hardware the model runs on, so it is not usable from the GUI.
+
+    ``accel_modifier`` is a nequip model modifier name (see NEQUIP_ACCELERATORS /
+    ALLEGRO_ACCELERATORS) that replaces the tensor-product submodules with CUDA
+    kernels — same weights, same energies, faster. It is ignored off CUDA, and a
+    missing kernel package raises rather than silently running unaccelerated, so
+    the user is not told a speed-up is on when it is not.
     """
     model = _nequip_load_saved_model(model_id)
+    if accel_modifier and device == "cuda":
+        from nequip.model.modify_utils import modify as _nequip_modify, get_all_modifiers
+        available = get_all_modifiers(model)
+        if accel_modifier not in available:
+            # Wrong table for this architecture (an Allegro modifier on a NequIP
+            # model or vice versa) — name what the model actually offers.
+            raise RuntimeError(
+                f"'{accel_modifier}' is not available for this model. "
+                f"It offers: {sorted(k for k in available if k.startswith('enable_'))}"
+            )
+        info = nequip_accel_info(accel_modifier) or {}
+        try:
+            model = _nequip_modify(model, [dict(modifier=accel_modifier)])
+        except ImportError as e:
+            raise RuntimeError(
+                f"{info.get('label', accel_modifier)} could not be enabled: {e}. "
+                f"Install it with: {'; '.join(info.get('install', []))} "
+                f"— or switch GPU acceleration off in the sidebar."
+            ) from e
+        if log:
+            log(f"⚡ {info.get('label', accel_modifier)} enabled ({accel_modifier})")
     model.eval()
     metadata = model.metadata
     type_names = metadata["type_names"]
@@ -3625,7 +3664,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                          custom_upet_path=None,
                          polar_settings=None, eos_params=None, custom_sevennet_path=None,
                          custom_grace_path=None, custom_mace_path=None,
-                         mace_enable_cueq=False, sevennet_enable_cueq=False):
+                         mace_enable_cueq=False, sevennet_enable_cueq=False,
+                         nequip_accel=None):
     import time
     eos_b0_collected = []  # bulk moduli (GPa) from successful Birch-Murnaghan fits
     try:
@@ -3812,7 +3852,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             log_queue.put("First use downloads the model from nequip.net (then cached).")
 
             try:
-                calculator = build_allegro_calculator(model_size, device)
+                calculator = build_allegro_calculator(
+                    model_size, device, accel_modifier=nequip_accel,
+                    log=log_queue.put,
+                )
                 log_queue.put(f"✅ {selected_model} initialized successfully")
 
             except Exception as e:
@@ -5865,6 +5908,50 @@ with st.sidebar:
                 "or untick the box above to run without acceleration."
             )
 
+    # GPU acceleration for NequIP / Allegro: nequip applies these as "model
+    # modifiers" to the loaded model, swapping the tensor-product submodules for
+    # CUDA kernels while keeping the weights. Which ones exist depends on the
+    # architecture, so the table is picked per model family. A selectbox rather
+    # than a checkbox because there is more than one kernel backend to choose
+    # from, and no single one is right for every install.
+    nequip_accel = None
+    _nequip_accels = {} if use_qe else nequip_accelerators_for(selected_model)
+    if _nequip_accels and device == "cuda":
+        import importlib.util as _ilu
+        _accel_keys = [None] + list(_nequip_accels)
+        # Allegro and NequIP offer disjoint modifiers, so switching family leaves
+        # the widget's remembered value outside the new option list — which
+        # Streamlit rejects outright. Drop it and fall back to `index` instead.
+        if "nequip_accel" in st.session_state and st.session_state.nequip_accel not in _accel_keys:
+            del st.session_state["nequip_accel"]
+
+        def _accel_label(key):
+            if key is None:
+                return "None (plain e3nn kernels)"
+            _info = _nequip_accels[key]
+            _mark = "✅" if _ilu.find_spec(_info["module"]) else "⬇️"
+            return f"⚡ {_info['label']} ({key}) {_mark}"
+
+        nequip_accel = st.selectbox(
+            "⚡ GPU acceleration (nequip model modifier)",
+            _accel_keys,
+            # Default to the first entry in the family's table: Triton for
+            # Allegro, cuEquivariance for NequIP. Whether the kernel package is
+            # actually present here is shown by the ✅ / ⬇️ mark on each option.
+            index=1,
+            format_func=_accel_label,
+            key="nequip_accel",
+            help=(
+                "Replaces the tensor product kernels with CUDA implementations — "
+                "same model, same weights, same energies, only faster. Measured "
+                "on a 216-atom Si cell: Allegro-MP-L 262 → 33 ms/step, "
+                "NequIP-OAM-S ~10 → 8.4 ms/step. ✅ means the kernel package is "
+                "already installed here; ⬇️ means it still has to be installed, "
+                "and the run will stop with an error rather than quietly running "
+                "unaccelerated."
+            ),
+        )
+
     col_mult1, col_mult2 = st.columns([1, 1])
     # Only show for MACE models (not other calculators)
 
@@ -6046,6 +6133,9 @@ with st.sidebar:
     # Rewritten on every rerun so a stale pick cannot survive a switch to CPU or
     # to a non-SevenNet model (the widget's own key would keep the old value).
     st.session_state.sevennet_config = {'enable_cueq': sevennet_enable_cueq}
+    # Same reason as above: rewritten every rerun so a modifier picked for an
+    # Allegro model cannot leak into a NequIP run (or into a CPU run).
+    st.session_state.nequip_config = {'accel': nequip_accel}
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.session_state.thread_count = st.number_input(
@@ -6515,6 +6605,7 @@ with tab1:
                             mace_dispersion_xc=mace_dispersion_xc_for_script,
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                            nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                             custom_mace_path=custom_mace_path,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get('polar_settings', {}),
@@ -6713,6 +6804,7 @@ with tab1:
                         custom_grace_path=custom_grace_path if is_custom_grace else None,
                         mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                         sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                        nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                         mace_head=st.session_state.get('mace_config', {}).get('head'),
                         mace_dispersion=st.session_state.get('mace_config', {}).get('dispersion', False),
@@ -6779,6 +6871,7 @@ with tab1:
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                            nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                             mace_head=st.session_state.get('mace_config', {}).get('head'),
                             mace_dispersion=st.session_state.get('mace_config', {}).get('dispersion', False),
                             mace_dispersion_xc=st.session_state.get('mace_config', {}).get('dispersion_xc', 'pbe'),
@@ -6904,6 +6997,7 @@ with tab1:
                             mace_dispersion_xc=mace_config.get("dispersion_xc", "pbe"),
                             mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                             sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                            nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                             custom_mace_path=custom_mace_path if is_custom_mace else None,
                             custom_upet_path=custom_upet_path if is_custom_upet else None,
                             polar_settings=st.session_state.get("polar_settings", {}),
@@ -6963,6 +7057,7 @@ with tab1:
                 mace_dispersion_xc=mace_dispersion_xc,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_sevennet_path=custom_sevennet_path if is_custom_sevennet else None,
                 custom_grace_path=custom_grace_path if is_custom_grace else None,
@@ -7028,6 +7123,7 @@ with tab1:
                         mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
                         mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                         sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                        nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                         custom_mace_path=custom_mace_path if is_custom_mace else None,
                         custom_upet_path=custom_upet_path if is_custom_upet else None,
                         polar_settings=st.session_state.get('polar_settings', {}),
@@ -8903,6 +8999,7 @@ with tab_st:
                 mace_dispersion_xc=mace_cfg.get('dispersion_xc', 'pbe'),
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings'),
@@ -8940,6 +9037,7 @@ with tab_st:
                 mace_dispersion_xc=mace_config.get('dispersion_xc', 'pbe'),
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                 custom_mace_path=custom_mace_path if is_custom_mace else None,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -9023,6 +9121,7 @@ with tab_st:
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                 custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -9119,6 +9218,7 @@ with tab_st:
                 mace_dispersion_xc=mace_dispersion_xc_for_script,
                 mace_enable_cueq=st.session_state.get('mace_config', {}).get('enable_cueq', False),
                 sevennet_enable_cueq=st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                nequip_accel=st.session_state.get('nequip_config', {}).get('accel'),
                 #custom_mace_path=custom_mace_path_for_script,
                 custom_upet_path=custom_upet_path if is_custom_upet else None,
                 polar_settings=st.session_state.get('polar_settings', {}),
@@ -9202,7 +9302,8 @@ with tab_st:
                       custom_grace_path if is_custom_grace else None,
                       custom_mace_path if is_custom_mace else None,
                       st.session_state.get('mace_config', {}).get('enable_cueq', False),
-                      st.session_state.get('sevennet_config', {}).get('enable_cueq', False),)
+                      st.session_state.get('sevennet_config', {}).get('enable_cueq', False),
+                      st.session_state.get('nequip_config', {}).get('accel'),)
             )
             thread.start()
             st.rerun()

@@ -9,6 +9,7 @@ from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
+    nequip_accel_preamble, nequip_accel_apply_code,
 )
 
 
@@ -23,7 +24,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
                           custom_mace_path=None, custom_upet_path=None,
                           polar_settings=None, custom_sevennet_path=None,
                           custom_grace_path=None, mace_enable_cueq=False,
-                          sevennet_enable_cueq=False):
+                          sevennet_enable_cueq=False, nequip_accel=None):
 
     use_fairchem = False
     if md_params and md_params.get('use_fairchem', False):
@@ -42,6 +43,7 @@ def generate_core_preview(calc_type, selected_model, model_size, device, dtype,
             custom_grace_path=custom_grace_path,
             mace_enable_cueq=mace_enable_cueq,
             sevennet_enable_cueq=sevennet_enable_cueq,
+            nequip_accel=nequip_accel,
         )
         effective_model_label = selected_model or model_size
 
@@ -116,7 +118,7 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                         custom_mace_path, custom_upet_path,
                         polar_settings=None, custom_sevennet_path=None,
                         custom_grace_path=None, mace_enable_cueq=False,
-                        sevennet_enable_cueq=False):
+                        sevennet_enable_cueq=False, nequip_accel=None):
 
     # cuEquivariance (MACE + CUDA only).
     _cq_pre = mace_cueq_preamble(mace_enable_cueq, device)
@@ -125,6 +127,9 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
     _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device)
     _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
     _7net = f", {_7net_arg}" if _7net_arg else ""
+    # NequIP / Allegro kernel modifier (CUDA only).
+    _nq_pre = nequip_accel_preamble(nequip_accel, device)
+    _nq_apply = nequip_accel_apply_code(nequip_accel, device, model_var="model")
 
     if is_qe_model(selected_model, model_size):
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
@@ -205,10 +210,12 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
 
     if (selected_model or "").startswith(("Allegro", "NequIP")):
         return (
+            f'{_nq_pre}'
             f'from nequip.model.saved_models.load_utils import load_saved_model\n'
             f'from nequip.integrations.ase import NequIPCalculator\n'
             f'from nequip.integrations.utils import basic_transforms, handle_chemical_species_map\n'
             f'model = load_saved_model("{model_size}")\n'
+            f'{_nq_apply}'
             f'model.eval()\n'
             f'md = model.metadata\n'
             f'types = md["type_names"]\n'

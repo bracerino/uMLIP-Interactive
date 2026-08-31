@@ -10,6 +10,7 @@ from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
     sevennet_cueq_preamble, sevennet_cueq_arg,
+    nequip_accel_preamble, nequip_accel_apply_code,
 )
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
@@ -21,7 +22,7 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
                               custom_mace_path=None, custom_upet_path=None,
                               polar_settings=None, custom_sevennet_path=None,
                               custom_grace_path=None, mace_enable_cueq=False,
-                              sevennet_enable_cueq=False):
+                              sevennet_enable_cueq=False, nequip_accel=None):
     # A UMA model picked in the sidebar feeds the same fairchem path that this
     # panel's manual "Override with Fairchem" checkbox uses. The explicit
     # override still wins, so a hand-typed checkpoint name keeps working.
@@ -66,6 +67,11 @@ def generate_md_python_script(md_params, selected_model, model_size, device, dty
     _7net_pre = sevennet_cueq_preamble(sevennet_enable_cueq, device)
     _7net_arg = sevennet_cueq_arg(sevennet_enable_cueq, device)
     _7net_kw = f", {_7net_arg}" if _7net_arg else ""
+
+    # NequIP / Allegro kernel modifier (CUDA only).
+    _nq_pre = nequip_accel_preamble(nequip_accel, device)
+    _nq_apply = nequip_accel_apply_code(nequip_accel, device, model_var="_model",
+                                        indent="    ")
 
     calculator_setup_str = ""
     imports_str = f"""
@@ -719,12 +725,12 @@ except Exception as e:
         exit()
 """
     elif actual_selected_model.startswith(("Allegro", "NequIP")):
-        calculator_setup_str = f"""
+        calculator_setup_str = f"""{_nq_pre}
 print("Setting up Allegro / NequIP calculator...")
 print("First use downloads the model from nequip.net, then it is cached.")
 try:
     _model = _nequip_load_saved_model("{actual_model_size}")
-    _model.eval()
+{_nq_apply}    _model.eval()
     _md = _model.metadata
     _type_names = _md["type_names"]
     if isinstance(_type_names, str):

@@ -1211,6 +1211,7 @@ def generate_energy_grid_scan_script(
     custom_grace_path=None,
     mace_enable_cueq=False,
     sevennet_enable_cueq=False,
+    nequip_accel=None,
 ):
     """Build a fully self-contained Python script as a string.
 
@@ -1256,6 +1257,7 @@ def generate_energy_grid_scan_script(
         custom_grace_path=custom_grace_path,
         mace_enable_cueq=mace_enable_cueq,
         sevennet_enable_cueq=sevennet_enable_cueq,
+        nequip_accel=nequip_accel,
     )
     mlip_imports_code = _generate_mlip_imports()
 

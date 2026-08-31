@@ -3087,7 +3087,8 @@ def generate_finite_t_elastic_python_script(finite_t_params, selected_model,
                                             sevennet_enable_cueq=False,
                                             mace_head=None,
                                             mace_dispersion=False,
-                                            mace_dispersion_xc="pbe"):
+                                            mace_dispersion_xc="pbe",
+                                            nequip_accel=None):
     """Return the full source of the standalone finite-T elastic script."""
     imports_str = _base_imports(thread_count)
 
@@ -3101,6 +3102,7 @@ def generate_finite_t_elastic_python_script(finite_t_params, selected_model,
         mace_head=mace_head,
         mace_dispersion=mace_dispersion,
         mace_dispersion_xc=mace_dispersion_xc,
+        nequip_accel=nequip_accel,
     )
     imports_str += model_imports
 

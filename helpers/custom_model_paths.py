@@ -138,3 +138,120 @@ def is_custom_mace_model(model_size=None, selected_model_key=None, custom_mace_p
     if model_size == "custom":
         return True
     return bool(selected_model_key) and "Custom MACE" in str(selected_model_key)
+
+
+# ---------------------------------------------------------------------------
+# GPU acceleration for NequIP / Allegro
+# ---------------------------------------------------------------------------
+# nequip ships its accelerated kernels as "model modifiers": functions that swap
+# the tensor-product submodules of an already-loaded model for CUDA kernel
+# implementations and copy the weights across untouched. They are applied with
+# ``nequip.model.modify_utils.modify(model, [dict(modifier=...)])`` and every one
+# of them is CUDA-only.
+#
+# Which modifiers a model offers depends on its architecture, not on its name in
+# the app, so the two tables below are kept separate:
+#   NequIP-*  message-passing models -> the TensorProductScatter modifiers
+#   Allegro-* strictly-local models  -> the Contracter modifiers
+# ``get_all_modifiers()`` on the loaded model is the real authority; these tables
+# only decide what the sidebar offers and which package to check for first.
+#
+# Measured on an RTX 5060 Ti, 216-atom Si cell, energy+forces (identical energies
+# to 6 decimals in every case):
+#   NequIP-OAM-S   eager 9-10 ms -> cuEquivariance 8.4 ms, OpenEquivariance 7.0 ms
+#   Allegro-MP-L   eager 262 ms  -> Triton 33 ms, cuEquivariance 27 ms
+
+# Ordered: the first entry is the default offered in the sidebar.
+NEQUIP_ACCELERATORS = {
+    "enable_CuEquivariance": {
+        "label": "cuEquivariance kernels (alpha)",
+        "module": "cuequivariance_torch",
+        "install": [
+            "pip install cuequivariance-torch cuequivariance-ops-torch-cu12",
+        ],
+    },
+    "enable_OpenEquivariance": {
+        "label": "OpenEquivariance kernels",
+        "module": "openequivariance",
+        "install": ["pip install openequivariance"],
+    },
+}
+
+ALLEGRO_ACCELERATORS = {
+    "enable_TritonContracter": {
+        "label": "Triton contracter kernels",
+        # Triton ships with the CUDA builds of PyTorch, so this one costs no
+        # extra install — which is why it is the default offered for Allegro.
+        "module": "triton",
+        "install": ["pip install triton    # normally already there with a CUDA PyTorch build"],
+    },
+    "enable_CuEquivarianceContracter": {
+        "label": "cuEquivariance contracter kernels",
+        "module": "cuequivariance_torch",
+        "install": [
+            "pip install cuequivariance-torch cuequivariance-ops-torch-cu12",
+        ],
+    },
+}
+
+
+def nequip_accelerators_for(selected_model):
+    """The accelerator table that applies to ``selected_model``, or ``{}``.
+
+    Allegro and NequIP are different architectures with disjoint sets of
+    modifiers, so offering the wrong table would produce a `modify()` error at
+    calculator-build time rather than a useful sidebar.
+    """
+    name = str(selected_model or "")
+    if name.startswith("Allegro"):
+        return ALLEGRO_ACCELERATORS
+    if name.startswith("NequIP"):
+        return NEQUIP_ACCELERATORS
+    return {}
+
+
+def nequip_accel_info(modifier):
+    """Table entry for a modifier name, or None if it is not one of ours."""
+    return NEQUIP_ACCELERATORS.get(modifier) or ALLEGRO_ACCELERATORS.get(modifier)
+
+
+def nequip_accel_preamble(modifier, device="cpu", indent=""):
+    """Code that checks the accelerator's package before the model is built.
+
+    Emitted only on CUDA. Like the MACE and SevenNet options, the generated
+    script stops with an explicit message instead of quietly running unaccelerated.
+    """
+    info = nequip_accel_info(modifier) if device == "cuda" else None
+    if not info:
+        return ""
+    hint_lines = "\n".join(f'    print("     " + {cmd!r})' for cmd in info["install"])
+    body = f'''# {info["label"]}: same weights, faster CUDA kernels.
+try:
+    import {info["module"]}  # noqa: F401
+except ImportError:
+    print("❌ {info["label"]} were requested, but the '{info["module"]}' package is not installed.")
+    print("   Install it with:")
+{hint_lines}
+    print("   ...or re-generate this script with GPU acceleration switched off.")
+    raise SystemExit(1)
+'''
+    return textwrap.indent(body, indent)
+
+
+def nequip_accel_apply_code(modifier, device="cpu", model_var="_model", indent=""):
+    """The ``modify()`` call that swaps in the accelerated kernels.
+
+    Goes between loading the model and handing it to ``NequIPCalculator``. Only
+    valid next to :func:`nequip_accel_preamble` output, and never on a CPU path.
+
+    ``dict(modifier=...)`` rather than a literal so the snippet can be pasted
+    into the f-string templates the script builders use without escaping braces.
+    """
+    info = nequip_accel_info(modifier) if device == "cuda" else None
+    if not info:
+        return ""
+    body = f'''from nequip.model.modify_utils import modify as _nequip_modify
+{model_var} = _nequip_modify({model_var}, [dict(modifier="{modifier}")])
+print("⚡ {info["label"]} enabled ({modifier})")
+'''
+    return textwrap.indent(body, indent)

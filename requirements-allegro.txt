@@ -23,3 +23,27 @@ nequip-allegro==0.8.3
 # Models are downloaded from nequip.net on first use and cached; nothing to
 # install per model. nequip-compile is NOT required: the app runs these models
 # eagerly, since compiling must happen on the same hardware that runs them.
+
+# GPU acceleration — the "⚡ GPU acceleration (nequip model modifier)" option in
+# the sidebar. nequip applies these as model modifiers to the already-loaded
+# model: the tensor-product submodules are swapped for CUDA kernels and the
+# weights are carried over untouched, so the energies are unchanged. CUDA only.
+#
+#   Allegro-*  enable_TritonContracter        needs only triton, which the CUDA
+#                                             build of torch above already
+#                                             installs — nothing to add here.
+#              enable_CuEquivarianceContracter needs the cuequivariance wheels
+#   NequIP-*   enable_OpenEquivariance        needs openequivariance
+#              enable_CuEquivariance          needs the cuequivariance wheels
+#
+# Measured on an RTX 5060 Ti, 216-atom Si cell, energy + forces:
+#   Allegro-MP-L  262 ms/step eager -> 33 ms with Triton, 27 ms with cuEq
+#   NequIP-OAM-S  9.2 ms/step eager -> 7.0 ms with OpenEquivariance
+openequivariance==0.6.8
+
+# The cuEquivariance kernels are left commented out on purpose: the
+# cuequivariance-ops wheels pin their own CUDA/PyTorch build and installing them
+# pulls a newer torch over the 2.8.0 pinned above. Uncomment only if you are
+# prepared for that, and re-pin torch to whatever they bring in.
+# cuequivariance-torch
+# cuequivariance-ops-torch-cu12
