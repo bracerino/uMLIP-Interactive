@@ -47,7 +47,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [NequIP](https://github.com/mir-group/nequip)
 - [UPET](https://github.com/lab-cosmo/pet-mad)  
 - [GRACE](https://github.com/ICAMS/grace-tensorpotential)
-- [UMA (Meta FAIR)](https://github.com/facebookresearch/fairchem) — generated scripts only; weights are gated on Hugging Face
+- [UMA (Meta FAIR)](https://github.com/facebookresearch/fairchem) — generated scripts only; weights are gated on Hugging Face, requires key
 
 
 ---
