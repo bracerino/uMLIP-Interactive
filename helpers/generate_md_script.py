@@ -15,6 +15,7 @@ from helpers.custom_model_paths import (
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
+from helpers.sevennet_dispersion import sevennet_d3_code
 
 
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
@@ -631,6 +632,7 @@ except Exception as e:
         print(f"❌ SevenNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
+        calculator_setup_str += sevennet_d3_code(device, indent="")
     elif "ORB" in actual_selected_model.upper() or is_orbmol:
         imports_str += """
 try:

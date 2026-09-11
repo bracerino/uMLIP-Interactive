@@ -14,6 +14,7 @@ from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
 )
+from helpers.sevennet_dispersion import sevennet_d3_code
 
 
 def _generate_mlip_imports():
@@ -2632,6 +2633,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             print("✅ Custom SevenNet initialized successfully on CPU (fallback)")
         else:
             raise e'''
+        calc_code += sevennet_d3_code(device, indent="    ")
 
     elif is_sevennet:
         calc_code = f'''    device = "{device}"
@@ -2677,6 +2679,10 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
                 raise cpu_error
         else:
             raise e'''
+        # Sum the D3 term on afterwards: one path for the keyword, modal and
+        # custom-checkpoint branches alike. This block sits inside main(), so
+        # it takes the same 4-space indent as calc_code above.
+        calc_code += sevennet_d3_code(device, indent="    ")
 
     elif is_chgnet:
         # CHGNet setup
@@ -6367,6 +6373,76 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                              supercell_matrix=supercell_matrix,
                              primitive_matrix=None if _manual_kpath_selected else "auto")
 
+            # A centred cell (R, I, F, C, …) only collapses onto its primitive
+            # cell while spglib can still see the centring at phonopy's 1e-5 Å
+            # tolerance, and that is easy to lose: relaxing the cell without
+            # FixSymmetry drifts it enough. The run then treats the centred cell
+            # as primitive and says nothing, while both the cost and the output
+            # change a lot -- measured on R-3m NiBr2 (9-atom hexagonal cell):
+            # 27 branches instead of 9, 54 displacements instead of 3, and no
+            # Γ-point irreps. Never silent.
+            #
+            # The tolerance is scanned rather than fixed because how far the
+            # symmetry has drifted is exactly what the user needs to know: a
+            # cell that only recovers its space group at 0.1 Å has been
+            # distorted, not merely rounded.
+            try:
+                from pymatgen.symmetry.analyzer import SpacegroupAnalyzer as _SGA_chk
+                _n_prim_used = len(phonon.primitive)
+                _chk_hit = None
+                for _chk_tol in (1e-4, 1e-3, 1e-2, 1e-1):
+                    try:
+                        _chk = _SGA_chk(pmg_structure, symprec=_chk_tol)
+                        _n_chk = len(_chk.get_primitive_standard_structure())
+                    except Exception:
+                        continue
+                    if _n_chk < _n_prim_used:
+                        _chk_hit = (_chk_tol, _chk.get_space_group_symbol(), _n_chk)
+                        break
+                if _chk_hit is not None:
+                    _chk_tol, _chk_sg, _n_chk = _chk_hit
+                    log(f"  ⚠️  Cell is not primitive: phonopy is treating "
+                        f"{{_n_prim_used}} atoms as the primitive cell, but at a "
+                        f"{{_chk_tol:g}} Å tolerance this is {{_chk_sg}}, whose "
+                        f"primitive cell has {{_n_chk}} atoms.")
+                    log(f"     Consequences: {{3 * _n_prim_used}} phonon branches "
+                        f"instead of {{3 * _n_chk}} — the extra ones are "
+                        f"zone-folded, not new physics —")
+                    log(f"     more displacements to compute, and Γ-point irreps "
+                        f"will be skipped.")
+                    if _manual_kpath_selected:
+                        log("     Cause: a manual k-path pins the cell basis, so the "
+                            "supplied cell is used as-is.")
+                        log("     Fix: use the automatic k-path, or supply the "
+                            "primitive cell as the input structure.")
+                    elif _chk_tol >= 1e-2:
+                        # Only recoverable at a loose tolerance: this is a real
+                        # distortion, not round-off, and it is worth saying so
+                        # because it also degrades the forces and the k-path.
+                        log(f"     Cause: the structure has drifted well off its "
+                            f"symmetry — it is only {{_chk_sg}} within {{_chk_tol:g}} Å.")
+                        if not pre_relax_fix_symmetry:
+                            log("     Fix: enable 'Fix symmetry' for the "
+                                "pre-relaxation (it holds the space group exactly), "
+                                "or supply")
+                            log("     an already-symmetrised primitive cell.")
+                        else:
+                            log("     Fix: supply an already-symmetrised primitive "
+                                "cell.")
+                    else:
+                        log("     Cause: the centring is no longer exact to "
+                            "phonopy's 1e-5 Å tolerance, though the structure is "
+                            "still essentially symmetric.")
+                        if not pre_relax_fix_symmetry:
+                            log("     Fix: enable 'Fix symmetry' for the "
+                                "pre-relaxation, or supply the primitive cell.")
+                        else:
+                            log("     Fix: supply the primitive cell as the input "
+                                "structure.")
+            except Exception:
+                # Diagnostic only — never let it stop the calculation.
+                pass
+
             log(f"  Generating displacements (distance={{displacement_distance}} Å)...")
             phonon.generate_displacements(distance=displacement_distance)
             supercells = phonon.supercells_with_displacements
@@ -6851,6 +6927,112 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     )
                     _ir.run()
 
+                    # --- readable Γ-point mode table -------------------------
+                    # phonopy's own output is the full character table, which is
+                    # not what you want when the question is just "which
+                    # frequency is which mode". Write a plain table (one row per
+                    # irrep) plus a CSV, in all three units so neither file
+                    # depends on the chosen plot unit.
+                    #
+                    # _ir_labels / _freqs / _pointgroup_symbol are phonopy
+                    # internals with no public accessor, so every read is
+                    # guarded: a phonopy that renames them costs the table, not
+                    # the run (gamma_irreps.txt/.yaml are written regardless).
+                    _deg_sets  = [list(_d) for _d in (getattr(_ir, "band_indices", None) or [])]
+                    _ir_labels = getattr(_ir, "_ir_labels", None)
+                    _ir_freqs  = getattr(_ir, "_freqs", None)
+                    _ptg       = getattr(_ir, "_pointgroup_symbol", None) or "?"
+                    if _deg_sets and _ir_freqs is not None:
+                        # Back to THz first: _freqs carries the plot-unit factor.
+                        _f_thz = np.asarray(_ir_freqs, dtype=float) / plot_freq_factor
+                        # At Γ the three modes closest to zero are the acoustic
+                        # ones. They transform as a vector, so they always fill
+                        # whole irreps and a degenerate set never straddles the
+                        # acoustic/optic split.
+                        _ac_idx = set(int(_i) for _i in np.argsort(np.abs(_f_thz))[:3])
+                        _rows = []
+                        for _si, _ds in enumerate(_deg_sets):
+                            _lab = None
+                            if _ir_labels is not None and _si < len(_ir_labels):
+                                _lab = _ir_labels[_si]
+                            _i0 = int(_ds[0])
+                            _rows.append({{
+                                "modes": (str(_ds[0] + 1) if len(_ds) == 1
+                                          else f"{{_ds[0] + 1}}-{{_ds[-1] + 1}}"),
+                                "irrep": _lab if _lab else "?",
+                                "degeneracy": len(_ds),
+                                "frequency_THz":  float(_f_thz[_i0]),
+                                "frequency_meV":  float(_f_thz[_i0]) * 4.136,
+                                "frequency_cm-1": float(_f_thz[_i0]) * 33.35641,
+                                "branch": ("acoustic"
+                                           if all(int(_m) in _ac_idx for _m in _ds)
+                                           else "optic"),
+                            }})
+
+                        def _mode_formula(_sel):
+                            """'A1g + A2g + 2A2u + ...' over the chosen rows.
+
+                            The multiplicity counts irreps, not modes, which is
+                            the convention used in the spectroscopy literature
+                            (3Eu means three doubly-degenerate Eu modes)."""
+                            _cnt = {{}}
+                            for _r in _sel:
+                                _cnt[_r["irrep"]] = _cnt.get(_r["irrep"], 0) + 1
+                            return " + ".join(
+                                (f"{{_n}}{{_l}}" if _n > 1 else _l)
+                                for _l, _n in sorted(_cnt.items())
+                            ) or "(none)"
+
+                        _tbl = [
+                            "Gamma-point phonon modes and their symmetry",
+                            "",
+                            f"Structure:      {{base_name}}",
+                            f"Point group:    {{_ptg}}",
+                            f"IrReps symprec: {{irreps_symprec:g}} A",
+                            f"Degeneracy tol: {{irreps_tol_thz:g}} THz",
+                            "",
+                            "  Mode(s)  Irrep   Deg        THz         meV       cm^-1   Branch",
+                            "  -------  ------  ---  ----------  ----------  ----------  --------",
+                        ]
+                        for _r in _rows:
+                            _tbl.append(
+                                f"  {{_r['modes']:>7}}  {{_r['irrep']:<6}}  {{_r['degeneracy']:>3}}"
+                                f"  {{_r['frequency_THz']:>10.4f}}  {{_r['frequency_meV']:>10.4f}}"
+                                f"  {{_r['frequency_cm-1']:>10.3f}}  {{_r['branch']}}"
+                            )
+                        _tbl += [
+                            "",
+                            f"Gamma = {{_mode_formula(_rows)}}",
+                            f"  acoustic: {{_mode_formula([_r for _r in _rows if _r['branch'] == 'acoustic'])}}",
+                            f"  optic:    {{_mode_formula([_r for _r in _rows if _r['branch'] == 'optic'])}}",
+                            "",
+                            "Multiplicities count irreps, not modes: 3Eu means three",
+                            "doubly-degenerate Eu modes (6 modes in total).",
+                            "Negative frequencies are imaginary modes. The acoustic rows",
+                            "are the three modes closest to zero and should sit at ~0.",
+                            "'?' in the Irrep column means phonopy could not match a label",
+                            "(point group missing from its character table, or the",
+                            "tolerance is off) - try a different irreps_symprec.",
+                            "",
+                            "Full character tables: gamma_irreps.txt / gamma_irreps.yaml",
+                            "",
+                        ]
+                        _tbl_path = out_folder / "gamma_irreps_table.txt"
+                        _tbl_path.write_text("\\n".join(_tbl))
+                        log(f"  💾 gamma_irreps_table.txt (readable) → {{_tbl_path}}")
+
+                        _ircsv_path = out_folder / "gamma_irreps.csv"
+                        pd.DataFrame(_rows).to_csv(_ircsv_path, index=False)
+                        log(f"  💾 gamma_irreps.csv → {{_ircsv_path}}")
+
+                        for _line in _tbl[7:9 + len(_rows)]:
+                            log(f"    {{_line}}")
+                        log(f"    Gamma = {{_mode_formula(_rows)}}")
+                    else:
+                        log("  ⚠️  Could not build the readable irrep table "
+                            "(phonopy internals changed?) — "
+                            "gamma_irreps.txt/.yaml are still written")
+
                     _irreps_buf = io.StringIO()
                     with _ctxlib.redirect_stdout(_irreps_buf):
                         _ir.show(show_irreps=True)
@@ -6899,7 +7081,31 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                             "(try a looser irreps_symprec)")
                 except Exception as _irreps_err:
                     log(f"  ⚠️  Γ-point irreps assignment failed: {{_irreps_err}}")
-                    log("  (Try increasing irreps_symprec — band/DOS data is unaffected.)")
+                    # Two different causes, two different fixes. Phonopy raises
+                    # "Non-primitve cell is used" when phonon.primitive is not
+                    # actually primitive, which happens here only on the manual
+                    # k-path branch: that pins primitive_matrix=None to keep the
+                    # q-points in the supplied cell's basis, so a conventional
+                    # (or super-) cell is never reduced. A looser symprec cannot
+                    # fix that, so do not suggest it.
+                    if "primitve" in str(_irreps_err) or "primitive" in str(_irreps_err):
+                        log("  Cause: irreps need a primitive cell, but phonopy is "
+                            "using a non-primitive one.")
+                        if _manual_kpath_selected:
+                            log("  A manual k-path pins primitive_matrix=None, so the "
+                                "supplied cell is")
+                            log("  used as-is. Switch to the automatic k-path, or "
+                                "supply the primitive cell.")
+                        else:
+                            # The automatic path does pass primitive_matrix="auto",
+                            # so reaching here means spglib could not see the
+                            # centring at phonopy's 1e-5 Å tolerance -- see the
+                            # "Cell is not primitive" warning emitted earlier.
+                            log("  primitive_matrix='auto' could not reduce the cell "
+                                "-- see the 'Cell is not")
+                            log("  primitive' warning above for the cause and the fix.")
+                    else:
+                        log("  (Try increasing irreps_symprec — band/DOS data is unaffected.)")
 
             dos_csv_path = out_folder / "phonon_dos.csv"
             pd.DataFrame({{

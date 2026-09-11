@@ -18,6 +18,7 @@ from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
 )
+from helpers.sevennet_dispersion import sevennet_d3_code
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
@@ -245,13 +246,15 @@ def _calc_block(selected_model, model_size, device, dtype,
                 f"{i}from sevenn.calculator import SevenNetCalculator\n"
                 f"{_7net_pre}"
                 f"{i}calculator = SevenNetCalculator(model={model_expr}, device='{device}'{_7net})\n"
-                f"{i}print('Custom SevenNet ready')\n")
+                f"{i}print('Custom SevenNet ready')\n"
+                + sevennet_d3_code(device, indent=i))
     if is_sevennet:
         return (f"{i}import torch; torch.serialization.add_safe_globals([slice])\n"
                 f"{i}from sevenn.calculator import SevenNetCalculator\n"
                 f"{_7net_pre}"
                 f"{i}calculator = SevenNetCalculator(model='{model_size}', device='{device}'{_7net})\n"
-                f"{i}print('SevenNet ready')\n")
+                f"{i}print('SevenNet ready')\n"
+                + sevennet_d3_code(device, indent=i))
     if is_mattersim:
         mp = "MatterSim-v1.0.0-5M.pth" if "5m" in model_size else "MatterSim-v1.0.0-1M.pth"
         return (f"{i}from mattersim.forcefield import MatterSimCalculator\n"

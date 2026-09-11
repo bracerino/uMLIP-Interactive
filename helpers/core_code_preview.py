@@ -5,6 +5,7 @@ from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
 )
+from helpers.sevennet_dispersion import sevennet_d3_preview
 from helpers.custom_model_paths import (
     mace_model_resolution_code, is_custom_mace_model,
     mace_cueq_preamble, mace_cueq_arg,
@@ -262,6 +263,7 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
             f'from sevenn.calculator import SevenNetCalculator\n'
             f'{_7net_pre}'
             f'calculator = SevenNetCalculator({model_expr}, device="{device}"{_7net})'
+        + sevennet_d3_preview(device)
         )
 
     if "SevenNet" in (selected_model or ""):
@@ -272,23 +274,27 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
                 f'from sevenn.calculator import SevenNetCalculator\n'
                 f'{_7net_pre}'
                 f'calculator = SevenNetCalculator(model="7net-omni", modal="{modal}", device="{device}"{_7net})'
+            + sevennet_d3_preview(device)
             )
         if model_size == "7net-mf-ompa-mpa":
             return (
                 f'from sevenn.calculator import SevenNetCalculator\n'
                 f'{_7net_pre}'
                 f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="mpa", device="{device}"{_7net})'
+            + sevennet_d3_preview(device)
             )
         if model_size == "7net-mf-ompa-omat24":
             return (
                 f'from sevenn.calculator import SevenNetCalculator\n'
                 f'{_7net_pre}'
                 f'calculator = SevenNetCalculator(model="7net-mf-ompa", modal="omat24", device="{device}"{_7net})'
+            + sevennet_d3_preview(device)
             )
         return (
             f'from sevenn.calculator import SevenNetCalculator\n'
             f'{_7net_pre}'
             f'calculator = SevenNetCalculator(model="{model_size}", device="{device}"{_7net})'
+        + sevennet_d3_preview(device)
         )
 
     if "MatterSim" in (selected_model or ""):
@@ -811,6 +817,15 @@ def _phonon(p):
             f"# {irreps_tol:g} THz → {plot_unit_label}",
             ")",
             "ir.run()",
+            "",
+            "# The readable table the script actually writes: one row per irrep,",
+            "# frequency in THz / meV / cm-1, plus the Gamma = ... decomposition.",
+            "for lbl, ds in zip(ir._ir_labels, ir.band_indices):",
+            f"    f_thz = ir._freqs[ds[0]] / {plot_unit_factor:g}",
+            "    print(f'{ds[0]+1:>3}  {lbl or \"?\":<5} deg={len(ds)}  "
+            "{f_thz:9.4f} THz  {f_thz*4.136:9.4f} meV  {f_thz*33.35641:9.3f} cm-1')",
+            "# -> gamma_irreps_table.txt and gamma_irreps.csv",
+            "",
             "buf = io.StringIO()",
             "with contextlib.redirect_stdout(buf):",
             "    ir.show(show_irreps=True)",
@@ -819,8 +834,8 @@ def _phonon(p):
             "ir.write_yaml(show_irreps=True)  # writes irreps.yaml in cwd",
             "if os.path.exists('irreps.yaml'):",
             "    os.replace('irreps.yaml', 'gamma_irreps.yaml')",
-            f"print('Γ-point irreps saved ({plot_unit_label}) "
-            f"→ gamma_irreps.txt, gamma_irreps.yaml')",
+            f"print('Γ-point irreps saved → gamma_irreps_table.txt (readable), "
+            f"gamma_irreps.csv, gamma_irreps.txt / .yaml (full character tables)')",
         ]
 
     return "\n".join(lines) + "\n"

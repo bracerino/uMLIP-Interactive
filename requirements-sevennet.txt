@@ -31,3 +31,8 @@ sevenn @ git+https://github.com/MDIL-SNU/SevenNet.git@main
 cuequivariance>=0.6.0,<0.10.0
 cuequivariance-torch>=0.6.0,<0.10.0
 cuequivariance-ops-torch-cu12>=0.6.0,<0.10.0
+
+# D3 dispersion. SevenNet's own D3 is a CUDA kernel that ships with `sevenn`
+# and is GPU-only ("CPU + D3 is not implemented yet"), so torch-dftd provides
+# the same correction when the app runs on CPU.
+torch-dftd

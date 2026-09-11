@@ -24,6 +24,7 @@ from helpers.custom_model_paths import (
     sevennet_cueq_preamble, sevennet_cueq_arg,
     nequip_accel_preamble, nequip_accel_apply_code,
 )
+from helpers.sevennet_dispersion import sevennet_d3_code
 
 
 def is_url_mace_model(model_size):
@@ -327,6 +328,9 @@ except Exception as e:
         print(f"❌ SevenNet CPU fallback failed: {{cpu_e}}")
         exit()
 """
+        # Sum the D3 term on after the calculator exists, so the custom-path
+        # and keyword branches above (and their CPU fallbacks) share one path.
+        calculator_setup_str += sevennet_d3_code(device, indent="")
     elif "ORB" in selected_model:
         model_imports += """
 try:

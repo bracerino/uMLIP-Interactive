@@ -130,6 +130,10 @@ from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
     is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
 )
+from helpers.sevennet_dispersion import (
+    setup_sevennet_d3_ui, set_active_sevennet_d3_settings,
+    attach_sevennet_d3, sevennet_d3_enabled, sevennet_d3_summary,
+)
 from helpers.postprocessing_scripts import render_postprocessing_panel
 from helpers.birch_murnaghan_eos import (
     setup_eos_ui,
@@ -4145,10 +4149,23 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                         else:
                             calculator = SevenNetCalculator(model=model_size, device="cpu")
                         log_queue.put("✅ SevenNet initialized successfully on CPU (fallback)")
+                        device = "cpu"
                     except Exception as cpu_error:
                         log_queue.put(f"❌ CPU fallback also failed: {str(cpu_error)}")
                         return
                 else:
+                    return
+
+            # D3 dispersion, if the sidebar asked for it. Applied after the
+            # calculator exists so the GPU path and the CPU fallback above are
+            # both covered; raises rather than silently running uncorrected.
+            if sevennet_d3_enabled():
+                try:
+                    calculator = attach_sevennet_d3(
+                        calculator, device, log=log_queue.put)
+                except Exception as _d3_err:
+                    log_queue.put(f"❌ {_d3_err}")
+                    log_queue.put("CALCULATION_FINISHED")
                     return
         elif is_mace_polar:
             log_queue.put("Setting up MACE-POLAR-1 calculator...")
@@ -5386,7 +5403,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.11.2 · 8/29/2026
+            v0.11.3 · 9/11/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6008,7 +6025,7 @@ with st.sidebar:
                 if mace_dispersion:
                     mace_dispersion_xc = st.selectbox(
                         "Functional",
-                        ["pbe", "pbesol", "rpbe", "blyp", "revpbe"],
+                        ["pbe", "pbesol", "rpbe", "b-lyp", "revpbe"],
                         index=0
                     )
                     st.caption(f"D3-{mace_dispersion_xc} will be applied")
@@ -6114,7 +6131,7 @@ with st.sidebar:
             if mace_dispersion:
                 mace_dispersion_xc = st.selectbox(
                     "Functional",
-                    ["r2scan", "pbe", "pbesol", "blyp", "revpbe"],
+                    ["r2scan", "pbe", "pbesol", "b-lyp", "revpbe"],
                     index=0,
                     key="upet_dispersion_xc",
                     help="r2scan matches PET-MAD-1.5 training functional.",
@@ -6133,6 +6150,16 @@ with st.sidebar:
     # Rewritten on every rerun so a stale pick cannot survive a switch to CPU or
     # to a non-SevenNet model (the widget's own key would keep the old value).
     st.session_state.sevennet_config = {'enable_cueq': sevennet_enable_cueq}
+
+    # SevenNet D3 dispersion. Same rule as the cuEquivariance pick above: the
+    # panel is only drawn for a SevenNet model, and the cached settings are
+    # cleared otherwise so a leftover choice cannot follow the user to another
+    # model family.
+    if is_sevennet and not use_qe:
+        setup_sevennet_d3_ui(device=device,
+                             default_settings=st.session_state.default_settings)
+    else:
+        set_active_sevennet_d3_settings(None)
     # Same reason as above: rewritten every rerun so a modifier picked for an
     # Allegro model cannot leak into a NequIP run (or into a CPU run).
     st.session_state.nequip_config = {'accel': nequip_accel}
@@ -7594,6 +7621,7 @@ with tab1:
 
                 BCT1_SYSTEM = "Tetragonal I (BCT1, c < a)"
                 BCT2_SYSTEM = "Tetragonal I (BCT2, c > a)"
+                TRIGR_SYSTEM = "Trigonal R (R-3m #166 etc., hexagonal setting)"
 
                 # ── Lattice-aware high-symmetry point library ──────────────
                 # Coordinates follow the Setyawan-Curtarolo (2010) convention.
@@ -7665,6 +7693,22 @@ with tab1:
                         "R": (0.5, 0.5, 0.5),
                     },
                     "Hexagonal": {
+                        "Γ": (0.0, 0.0, 0.0),
+                        "M": (0.5, 0.0, 0.0),
+                        "K": (1.0 / 3.0, 1.0 / 3.0, 0.0),
+                        "A": (0.0, 0.0, 0.5),
+                        "L": (0.5, 0.0, 0.5),
+                        "H": (1.0 / 3.0, 1.0 / 3.0, 0.5),
+                    },
+                    # Rhombohedral (R-centred) groups — R-3m #166, R-3c #167,
+                    # R-3 #148, … — described in their HEXAGONAL setting. The
+                    # triple hexagonal cell has a hexagonal reciprocal basis, so
+                    # the points are the hexagonal ones; this entry exists
+                    # because an R-3m user has no reason to guess that
+                    # "Hexagonal" is the table they want. NOTE: this is for the
+                    # hexagonal cell, not the primitive rhombohedral one — see
+                    # the caption drawn when it is selected.
+                    TRIGR_SYSTEM: {
                         "Γ": (0.0, 0.0, 0.0),
                         "M": (0.5, 0.0, 0.0),
                         "K": (1.0 / 3.0, 1.0 / 3.0, 0.0),
@@ -7810,6 +7854,28 @@ with tab1:
                         f"space in the path string below)."
                     )
 
+                # ── Rhombohedral groups: which cell the coordinates belong to ──
+                # The distinction is not cosmetic. A manual k-path makes the run
+                # pin primitive_matrix=None, so the q-points are read in the
+                # basis of the cell that is actually loaded. These coordinates
+                # only mean Γ-M-K-… if that cell is the hexagonal one.
+                if _cur_system == TRIGR_SYSTEM:
+                    st.caption(
+                        "📐 These are the **hexagonal-setting** points, so load the "
+                        "structure as its **hexagonal (triple) cell** — the one with "
+                        "γ = 120°. That cell is 3× the primitive rhombohedral cell, "
+                        "so you get 3× the phonon branches (zone-folded); that is "
+                        "consistent and is what band structures of layered R-3m "
+                        "materials are normally plotted against."
+                    )
+                    st.caption(
+                        "If you would rather use the **primitive rhombohedral cell**, "
+                        "these labels do not apply to it — press *🔍 Detect points "
+                        "from structure* instead, which returns the RHL1/RHL2 set "
+                        "(L, B, B₁, Z, X, Q, F, P, P₁) and its path "
+                        "`Γ-L-B₁ | B-Z-Γ-X | Q-F-P₁-Z | L-P`."
+                    )
+
                 # ── BCT: cell-dependent η / ζ ─────────────────────────────────
                 if _cur_system in (BCT1_SYSTEM, BCT2_SYSTEM):
                     def _on_bct_param_change():
@@ -7894,6 +7960,7 @@ with tab1:
                 _ORT = KPATH_BRAVAIS_LIBRARY["Orthorhombic P"]
                 _BC1 = KPATH_BRAVAIS_LIBRARY[BCT1_SYSTEM]
                 _BC2 = KPATH_BRAVAIS_LIBRARY[BCT2_SYSTEM]
+                _TRG = KPATH_BRAVAIS_LIBRARY[TRIGR_SYSTEM]
 
                 def _seg_chain(pts, labels):
                     """Segments along `labels`; a repeated-but-not-matching start
@@ -7938,6 +8005,22 @@ with tab1:
                             _seg("Y", _ORT["Y"], "Γ", _ORT["Γ"]),
                             _seg("Γ", _ORT["Γ"], "Z", _ORT["Z"]),
                         ],
+                    },
+                    "Γ→M→K→Γ→A→L→H→A  (Trigonal R — R-3m #166, hexagonal setting)": {
+                        "system": TRIGR_SYSTEM,
+                        "segments": _seg_chain(
+                            _TRG, ["Γ", "M", "K", "Γ", "A", "L", "H", "A"]),
+                    },
+                    # The same path continued through its two discontinuous
+                    # branches — the complete Setyawan-Curtarolo path for a
+                    # hexagonal reciprocal basis.
+                    "Γ→M→K→Γ→A→L→H→A ∣ L→M ∣ K→H  (Trigonal R, full SC path)": {
+                        "system": TRIGR_SYSTEM,
+                        "segments": (
+                            _seg_chain(_TRG, ["Γ", "M", "K", "Γ", "A", "L", "H", "A"])
+                            + _seg_chain(_TRG, ["L", "M"])
+                            + _seg_chain(_TRG, ["K", "H"])
+                        ),
                     },
                     # Full Setyawan-Curtarolo BCT paths, including the trailing
                     # X-P branch that sits behind a `|` discontinuity.
