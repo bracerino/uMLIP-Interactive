@@ -281,6 +281,39 @@ def normalize_pw_binary(path):
     return expanded
 
 
+def normalize_pseudo_dir(path):
+    """The pseudopotential directory, exactly as typed (only ``~`` expanded).
+
+    Nothing is ever prepended. An earlier version made a relative path absolute
+    against the app's working directory, which turned a path that had merely
+    lost its leading "/" into a silently wrong one somewhere under the app
+    folder. pw.x does run with ``cwd=work_dir``, so a genuinely relative path
+    will not resolve — but that is now reported (see the sidebar warning and
+    validate_qe_settings) rather than guessed at.
+    """
+    if not path:
+        return path
+    return os.path.expanduser(str(path).strip())
+
+
+def pseudo_dir_problem(path):
+    """Why ``path`` cannot work as a pseudo dir, or None. UI + validation share it."""
+    text = normalize_pseudo_dir(path)
+    if not text:
+        return None
+    if not os.path.isabs(text):
+        hint = ""
+        # Much the most common cause: a full path that lost its leading "/".
+        if os.path.isdir("/" + text.lstrip("/")):
+            hint = f" Did you mean `/{text.lstrip('/')}`?"
+        return (f"`{text}` is a relative path. pw.x is launched from the work "
+                f"directory, so it will not resolve — give the full path "
+                f"starting with `/`.{hint}")
+    if not os.path.isdir(text):
+        return f"`{text}` does not exist."
+    return None
+
+
 def _merged(settings):
     merged = dict(QE_DEFAULTS)
     merged.update(settings or {})
@@ -471,8 +504,10 @@ def validate_qe_settings(settings):
 
     if not s['pseudo_dir']:
         problems.append("No pseudopotential directory given.")
-    elif not os.path.isdir(s['pseudo_dir']):
-        problems.append(f"Pseudopotential directory not found: {s['pseudo_dir']}")
+    elif pseudo_dir_problem(s['pseudo_dir']):
+        problems.append(
+            "Pseudopotential directory: "
+            + pseudo_dir_problem(s['pseudo_dir']).replace("`", "'"))
     elif not find_pseudopotentials(s['pseudo_dir']):
         problems.append(f"No .UPF files found in {s['pseudo_dir']}")
 
@@ -1419,6 +1454,21 @@ import math as _qemath
 import os as _qeos
 import threading as _qethreading
 import time as _qetime
+import warnings as _qewarnings
+
+# ase.io.espresso only knows how to write FixAtoms / FixCartesian into the
+# pw.x input (as if_pos flags) and warns about anything else. FixSymmetry is
+# not a positional constraint: it symmetrises forces and stress inside the ASE
+# optimiser, after pw.x has returned, so it has nothing to write and "ignored"
+# here does not mean "not applied". The warning fires on every single pw.x
+# call, which buries the SCF log, so silence just this one. Every other
+# unwritable constraint still warns -- for those, "ignored" really does mean
+# pw.x never hears about it.
+_qewarnings.filterwarnings(
+    "ignore",
+    message=r"Ignored unknown constraint .*FixSymmetry",
+    category=UserWarning,
+)
 
 # Live progress is on by default; QE_SCF_PROGRESS=0 silences it.
 QE_PROGRESS_ENABLED = _qeos.environ.get("QE_SCF_PROGRESS", "1").lower() not in (
@@ -2351,7 +2401,7 @@ def qe_settings_fingerprint(settings=None, structure_name=None):
     back the numbers from the old settings.
     """
     s = _merged(settings if settings is not None else get_active_qe_settings())
-    pseudo_dir = os.path.abspath(s['pseudo_dir']) if s['pseudo_dir'] else ''
+    pseudo_dir = normalize_pseudo_dir(s['pseudo_dir']) if s['pseudo_dir'] else ''
     try:
         pseudopotentials = resolve_pseudopotentials(pseudo_dir, s['pseudo_overrides'])
     except Exception:
@@ -2460,7 +2510,7 @@ def build_qe_calculator(settings=None, directory=None, calculation='scf', log=No
 
     # pw.x is launched with cwd=directory, so a relative pseudo_dir would be
     # resolved against the wrong folder.
-    pseudo_dir = os.path.abspath(s['pseudo_dir']) if s['pseudo_dir'] else ''
+    pseudo_dir = normalize_pseudo_dir(s['pseudo_dir']) if s['pseudo_dir'] else ''
 
     pseudopotentials = resolve_pseudopotentials(pseudo_dir, s['pseudo_overrides'])
     if not pseudopotentials:
@@ -2518,6 +2568,12 @@ def generate_qe_calculator_code(settings=None, indent="    ", calculation='scf')
     input_data = build_qe_input_data(s, calculation=calculation)
     kpoint_kwargs = build_qe_kpoint_kwargs(s)
     threads = max(1, int(s['omp_threads']))
+    # A full path is embedded verbatim, so what the script uses is exactly what
+    # was typed in the sidebar. Only a relative path still needs resolving, and
+    # that has to happen at run time (pw.x runs with cwd=QE_WORK_DIR).
+    # Written out exactly as typed: the script's QE_PSEUDO_DIR is the path the
+    # user gave, with nothing prepended to it.
+    _pseudo_dir_expr = repr(normalize_pseudo_dir(s['pseudo_dir']) or '')
     diagnostics = (QE_OVERRIDES_SRC.strip() + "\n\n\n"
                    + QE_DIAGNOSTICS_SRC.strip())
     overrides_config = overrides_runtime_config(s)
@@ -2535,8 +2591,9 @@ from ase.calculators.espresso import Espresso, EspressoProfile
 from ase.data import chemical_symbols
 
 QE_COMMAND = {command!r}
-# pw.x is launched with cwd=QE_WORK_DIR, so the pseudo dir must be absolute.
-QE_PSEUDO_DIR = _qe_os.path.abspath({s['pseudo_dir']!r})
+# Exactly the path given in the app. pw.x runs with cwd=QE_WORK_DIR, so this
+# needs to be a full path starting with "/" -- nothing is prepended for you.
+QE_PSEUDO_DIR = {_pseudo_dir_expr}
 QE_WORK_DIR = {(s['work_dir'] or 'qe_calc')!r}
 QE_PSEUDO_OVERRIDES = {dict(s['pseudo_overrides'])!r}
 QE_INPUT_DATA = {input_data!r}
@@ -2787,8 +2844,16 @@ def render_qe_settings(saved=None, symbols=None, structure_names=None,
                 value=s['pseudo_dir'],
                 placeholder="/opt/qe-7.4/pseudo",
                 help="Folder holding the .UPF files (e.g. SSSP, PSLibrary, SG15, "
-                     "GBRV) — the QE counterpart of the VASP POTCAR library.",
+                     "GBRV) — the QE counterpart of the VASP POTCAR library. "
+                     "A full path is used exactly as typed; only a relative "
+                     "path is resolved, because pw.x runs from the work "
+                     "directory.",
             )
+            # Only ~ is expanded; the path is otherwise used exactly as typed.
+            s['pseudo_dir'] = normalize_pseudo_dir(s['pseudo_dir'])
+            _pd_problem = pseudo_dir_problem(s['pseudo_dir'])
+            if _pd_problem:
+                st.warning(f"⚠️ {_pd_problem}")
             available = find_pseudopotentials(s['pseudo_dir'])
             if s['pseudo_dir']:
                 if available:
