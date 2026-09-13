@@ -292,4 +292,51 @@ def create_citation_info():
                 </a>
             </div>
         </div>
+
+        <div class="model-section" style="border-left-color: #E8710A;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣3️⃣</span>
+                <span>DPA (DeePMD-kit large atomic models)</span>
+            </div>
+            <p style="margin:4px 0 10px 0; color:#2c3e50; font-size:14px;">
+                Cite the paper for the generation you actually used, plus DeePMD-kit
+                itself. DPA4 and DPA4C are <b>separate papers</b>, and the dataset
+                behind the checkpoint (OMat24 or OMol25) is acknowledged separately.
+            </p>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2312.15492" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DPA-2 &mdash; npj Comput. Mater. 10, 293 (2024)
+                </a>
+                <a href="https://arxiv.org/abs/2506.01686" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DPA-3 &mdash; arXiv:2506.01686 (2025)
+                </a>
+                <a href="https://arxiv.org/abs/2606.02419" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DPA4 &mdash; arXiv:2606.02419 (2026)
+                </a>
+                <a href="https://arxiv.org/abs/2608.19041" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DPA4C &mdash; arXiv:2608.19041 (2026)
+                </a>
+            </div>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2502.19161" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DeePMD-kit v3 &mdash; JCTC (2025)
+                </a>
+                <a href="https://doi.org/10.1016/j.cpc.2018.03.016" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> DeePMD-kit &mdash; Comput. Phys. Commun. 228, 178 (2018)
+                </a>
+                <a href="https://github.com/deepmodeling/deepmd-kit" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+                <a href="https://huggingface.co/deepmodelingcommunity" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Weights
+                </a>
+            </div>
+            <p style="margin:10px 0 0 0; color:#2c3e50; font-size:13px;">
+                Datasets: OMat24 &mdash;
+                <a href="https://arxiv.org/abs/2410.12771" target="_blank">Barroso-Luque et al., Nat. Comput. Sci. 6, 642 (2026)</a>;
+                OMol25 &mdash;
+                <a href="https://arxiv.org/abs/2505.08762" target="_blank">Levine et al., arXiv:2505.08762 (2025)</a>.
+                DPA4 / DPA4C weights are CC-BY-NC-4.0 (non-commercial); DPA-2 / DPA-3 are CC-BY-4.0.
+            </p>
+        </div>
         """, unsafe_allow_html=True)

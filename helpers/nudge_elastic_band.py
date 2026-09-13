@@ -14,6 +14,10 @@ import json
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.dpa_models import (
+    DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
+    is_dpa_model, generate_dpa_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -201,6 +205,10 @@ def _calc_block(selected_model, model_size, device, dtype,
         _uma["model_id"] = uma_checkpoint_name(model_size)
         _uma["device"] = device
         return generate_uma_calculator_code(_uma, indent=i)
+
+    if is_dpa_model(selected_model, model_size):
+        # DPA: a DeePMD-kit checkpoint plus an optional model branch.
+        return generate_dpa_calculator_code(model_size, device=device, indent=i)
 
     is_chgnet    = selected_model.startswith("CHGNet")
     is_sevennet  = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")

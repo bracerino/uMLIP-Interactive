@@ -10,6 +10,10 @@ from helpers.custom_model_paths import (
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.dpa_models import (
+    DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
+    is_dpa_model, generate_dpa_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -101,6 +105,17 @@ try:
 except ImportError:
     GRACE_AVAILABLE = False
 
+# DPA imports (DeePMD-kit). Only the presence of the package is probed here;
+# the checkpoint downloads later, in the calculator block.
+try:
+    from deepmd.calculator import DP as _dpa_probe
+    DPA_AVAILABLE = True
+except Exception:
+    # Not just ImportError: a deepmd-kit built against a different torch raises
+    # RuntimeError on import. This probe runs for every model, so it must never
+    # be able to take down a run that has nothing to do with DPA.
+    DPA_AVAILABLE = False
+
 # UMA imports (Meta FAIR Chemistry). Only the presence of the package is probed
 # here; the checkpoint itself downloads later, once the HF token is in place.
 try:
@@ -110,7 +125,7 @@ except ImportError:
     UMA_AVAILABLE = False
 
 # Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE or UMA_AVAILABLE):
+if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE or UMA_AVAILABLE or DPA_AVAILABLE):
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
     print("  - MACE: pip install mace-torch")
@@ -123,6 +138,7 @@ if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILAB
     print("  - PET-MAD: pip install pet-mad")
     print("  - UPET: pip install upet")
     print("  - UMA (Meta FAIR): pip install fairchem-core")
+    print("  - DPA (DeePMD-kit): pip install deepmd-kit  (needs its own env, see requirements-dpa.txt)")
     exit(1)
 else:
     available_models = []
@@ -148,6 +164,8 @@ else:
         available_models.append("UPET")
     if UMA_AVAILABLE:
         available_models.append("UMA")
+    if DPA_AVAILABLE:
+        available_models.append("DPA")
     print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
 
 
@@ -1975,6 +1993,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         _uma["model_id"] = uma_checkpoint_name(model_size)
         _uma["device"] = device
         return generate_uma_calculator_code(_uma, indent="    ")
+
+    # DPA checkpoints come from Hugging Face and are driven by
+    # deepmd.calculator.DP, which shares nothing with the keyword-based MLIPs.
+    if is_dpa_model(selected_model_key, model_size):
+        return generate_dpa_calculator_code(model_size, device=device, indent="    ")
 
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     if is_mace_polar:

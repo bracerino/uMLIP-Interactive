@@ -126,6 +126,11 @@ from helpers.quantum_espresso import (
     QE_FAMILY_NAME, QE_MODEL_KEY, QE_MODEL_VALUE, QE_DEFAULTS, QE_ENV_SETUP,
     is_qe_model, build_qe_calculator, set_active_qe_settings,
 )
+from helpers.dpa_models import (
+    DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
+    is_dpa_model, build_dpa_calculator, dpa_is_noncommercial,
+    dpa_needs_charge_spin, set_active_dpa_settings, get_active_dpa_settings,
+)
 from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
     is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
@@ -2967,12 +2972,21 @@ MODEL_FAMILIES = {
     },
     # Script-only: gated weights + its own torch pin, see helpers/uma_models.py.
     UMA_FAMILY_NAME: UMA_MODELS,
+    # Script-only by default: deepmd-kit pins its own torch, so it only runs
+    # in-process when the app itself is started from the DPA environment.
+    DPA_FAMILY_NAME: DPA_MODELS,
 }
 
 # Which model a family opens on when it is selected. Keyed on the model id
 # rather than its menu label, so re-wording a label cannot silently break it.
 # A saved selected_model belonging to the family still takes precedence.
 FAMILY_DEFAULT_MODEL = {
+    # The DPA list is ordered by reported accuracy, so slot 0 is DPA4-Plus --
+    # the heaviest model in the family. Open on Neo instead: it is what the
+    # model card recommends for general use, at ~1/8 the parameters and
+    # 12.1 vs 10.0 meV/atom. Both are CC-BY-NC-4.0; DPA-3.3-1M (Omat24) is the
+    # one to switch to when the licence has to be permissive.
+    DPA_FAMILY_NAME:  "dpa:deepmodelingcommunity/DPA4-OMat24|DPA4-Neo-OMat24-v20260805.pt||",
     "GRACE":          "GRACE-2L-OMAT-medium-ft-AM",
     "MatterSim":      "mattersim-5m",
     "UPET / PET-MAD": "upet:pet-mad-s:1.5.0",
@@ -3044,6 +3058,7 @@ FAMILY_ENV_SETUP = {
         "note": "GRACE needs tensorpotential on torch 2.8 (and ASE 3.27).",
     },
     UMA_FAMILY_NAME: UMA_ENV_SETUP,
+    DPA_FAMILY_NAME: DPA_ENV_SETUP,
 }
 
 
@@ -3718,6 +3733,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_nequix = selected_model.startswith("Nequix")
         is_allegro = selected_model.startswith(("Allegro", "NequIP"))
         is_deepmd = selected_model.startswith("DeePMD")
+        is_dpa = is_dpa_model(selected_model, model_size)
         is_alignn = selected_model.startswith("AlignN")
 
         #GRACE
@@ -3727,7 +3743,35 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_custom_upet_model = (model_size == "upet:custom")
         is_mace_polar = is_polar_model(selected_model)
 
-        if is_qe:
+        if is_dpa:
+            # DPA runs in-process only when the app itself was started from an
+            # environment carrying deepmd-kit and its pinned torch (see
+            # requirements-dpa.txt). That is a supported setup, so try it
+            # rather than refusing outright, and say what is wrong on failure.
+            log_queue.put("Setting up DPA (DeePMD-kit) calculator...")
+            if dpa_is_noncommercial(model_size):
+                log_queue.put("   ⚠️ DPA4 weights are CC-BY-NC-4.0 — non-commercial use only.")
+            try:
+                _dpa_cfg = get_active_dpa_settings()
+                calculator = build_dpa_calculator(
+                    model_size, device=device, charge=_dpa_cfg["charge"],
+                    spin=_dpa_cfg["spin"], log=log_queue.put)
+                log_queue.put("✅ DPA calculator initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ DPA initialization failed: {e}")
+                log_queue.put(
+                    "   deepmd-kit pins the exact torch it was compiled against, so it "
+                    "cannot share this app's environment unless the app itself was "
+                    "started from the DPA one."
+                )
+                log_queue.put(
+                    "   Either run the app from a DPA environment "
+                    "(pip install -r requirements-dpa.txt), or generate a standalone "
+                    "script and run it there."
+                )
+                log_queue.put("CALCULATION_FINISHED")
+                return
+        elif is_qe:
             log_queue.put("Setting up Quantum ESPRESSO (pw.x) calculator...")
             qe_settings = qe.get_active_qe_settings()
 
@@ -5412,7 +5456,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.11.3 · 9/11/2026
+            v0.12.0 · 9/13/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5612,6 +5656,34 @@ with st.sidebar:
     use_uma = is_uma_model(selected_model, model_size)
     if not use_uma:
         set_active_uma_settings(None)
+
+    # DPA: only some checkpoints were trained with a frame-level total charge
+    # and spin multiplicity as inputs. Ask for them just for those -- the rest
+    # ignore the values entirely, so a box there would be misleading.
+    if is_dpa_model(selected_model, model_size):
+        if dpa_needs_charge_spin(model_size):
+            _dpa_saved = get_active_dpa_settings()
+            st.markdown("---")
+            st.markdown("### ⚡ DPA charge / spin")
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _dpa_charge = st.number_input(
+                    "Total charge", value=int(_dpa_saved["charge"]), step=1,
+                    min_value=-10, max_value=10, key="dpa_charge",
+                    help="Net charge of the whole cell, in units of e.")
+            with _c2:
+                _dpa_spin = st.number_input(
+                    "Spin multiplicity", value=int(_dpa_saved["spin"]), step=1,
+                    min_value=1, max_value=11, key="dpa_spin",
+                    help="2S+1: 1 = closed shell, 2 = doublet (one unpaired "
+                         "electron), 3 = triplet, ...")
+            set_active_dpa_settings({"charge": int(_dpa_charge),
+                                     "spin": int(_dpa_spin)})
+        else:
+            # Single-task DPA4-OMat24 / DPA-3.1 / DPA-2.4: no such input.
+            set_active_dpa_settings(None)
+    else:
+        set_active_dpa_settings(None)
 
     is_custom_mace = (not use_qe) and (selected_model == "Custom MACE Model 🔧")
     custom_mace_path = None

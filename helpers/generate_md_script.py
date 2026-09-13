@@ -12,6 +12,10 @@ from helpers.custom_model_paths import (
     sevennet_cueq_preamble, sevennet_cueq_arg,
     nequip_accel_preamble, nequip_accel_apply_code,
 )
+from helpers.dpa_models import (
+    DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
+    is_dpa_model, generate_dpa_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
@@ -192,6 +196,10 @@ except ImportError:
         # Quantum ESPRESSO: external DFT binary, no MLIP setup applies.
         calculator_setup_str = generate_qe_calculator_code(
             get_active_qe_settings(), indent="")
+    elif is_dpa_model(actual_selected_model, actual_model_size):
+        # DPA: a DeePMD-kit checkpoint plus an optional model branch.
+        calculator_setup_str = generate_dpa_calculator_code(
+            actual_model_size, device=device, indent="")
     elif "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
         calculator_setup_str = f"""

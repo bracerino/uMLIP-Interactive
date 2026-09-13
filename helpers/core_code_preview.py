@@ -1,6 +1,10 @@
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
+from helpers.dpa_models import (
+    DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
+    is_dpa_model, generate_dpa_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -145,6 +149,9 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         _uma["device"] = device
         _uma["embed_token"] = False
         return generate_uma_calculator_code(_uma, indent="")
+
+    if is_dpa_model(selected_model, model_size):
+        return generate_dpa_calculator_code(model_size, device=device, indent="")
 
     if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
                             custom_mace_path=custom_mace_path):

@@ -1,0 +1,60 @@
+# DPA (DeePMD-kit) environment — DPA-2 / DPA-3 / DPA4 large atomic models.
+#
+# DPA needs a virtual environment of its own. The deepmd-kit wheel ships a
+# compiled PyTorch operator library that is welded to one exact torch version
+# (3.2.0 → torch 2.11) and refuses to load against any other one:
+#
+#   RuntimeError: The version of PyTorch used to compile this deepmd-kit
+#   package is 2.11.0, but the version of PyTorch runtime you are using is
+#   2.8.0.
+#
+# The rest of this app runs on torch 2.8, so the two cannot share an env.
+#
+#   python3 -m venv dpa_env
+#   source dpa_env/bin/activate      # Windows: dpa_env\Scripts\activate
+#   pip install -r requirements-dpa.txt
+#   streamlit run app.py
+#
+# Checkpoints download from the `deepmodelingcommunity` Hugging Face org on
+# first use and are cached in ~/.cache/dpa_models/. They are NOT gated, so no
+# token is needed — but note DPA4 weights are CC-BY-NC-4.0 (non-commercial),
+# while DPA-2 / DPA-3 are CC-BY-4.0.
+
+streamlit==1.57.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26+
+ase==3.28.0
+phonopy==2.41.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+seekpath==2.2.1
+
+# The exact torch the deepmd-kit 3.2.0 wheel was compiled against. Install the
+# CUDA build for GPU runs, e.g.
+#   pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0
+
+deepmd-kit==3.2.0
+
+# Three packages deepmd-kit imports but does not declare:
+#   mpich       — the PyPI wheel is built with cibuildwheel, which re-links the
+#                 MPI library out of the wheel; deepmd.pt then loads it from
+#                 the `mpich` distribution at import time and raises
+#                 "No package metadata was found for mpich" without it.
+#   e3nn        — imported by the DPA4 / SeZM descriptor.
+#   vesin +     — DPA4 / SeZM builds its neighbor list with vesin (or
+#   vesin-torch   nvalchemiops) and refuses to run when neither is importable.
+#                 BOTH are needed: the vesin-torch wheel installs only a
+#                 `vesin_torch` module, while deepmd imports plain `vesin`, so
+#                 vesin-torch alone still fails with "requires either
+#                 'nvalchemiops' or 'vesin', but neither is importable".
+mpich
+e3nn
+vesin
+vesin-torch
+
+# Fetches the checkpoints from huggingface.co/deepmodelingcommunity.
+huggingface_hub
