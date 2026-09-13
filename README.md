@@ -48,7 +48,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [UPET](https://github.com/lab-cosmo/pet-mad)  
 - [GRACE](https://github.com/ICAMS/grace-tensorpotential)
 - [UMA (Meta FAIR)](https://github.com/facebookresearch/fairchem) — generated scripts only; weights are gated on Hugging Face, requires key
-- [DPA (DeePMD-kit)](https://github.com/deepmodeling/deepmd-kit) — DPA-2 / DPA-3 / DPA4 / DPA4C; needs its own environment (deepmd-kit pins its torch), DPA4 weights are non-commercial
+- [DPA (DeePMD-kit)](https://github.com/deepmodeling/deepmd-kit)
 
 
 ---
@@ -108,7 +108,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
-   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment) or **pip install -r requirements-sevennet.txt** (for SevenNet in its own environment) or **pip install -r requirements-uma.txt** (for UMA / fairchem in its own environment — needs Python 3.11–3.13, and the weights are gated on Hugging Face, see the notes inside that file) or **pip install -r requirements-dpa.txt** (for DPA / DeePMD-kit in its own environment — the deepmd-kit wheel is compiled against one exact torch, so it cannot share an environment with the other potentials)  
+   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment) or **pip install -r requirements-sevennet.txt** (for SevenNet in its own environment) or **pip install -r requirements-uma.txt** (for UMA / fairchem in its own environment — needs Python 3.11–3.13, and the weights are gated on Hugging Face, see the notes inside that file) or **pip install -r requirements-dpa.txt** (for DPA / DeePMD-kit)  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  
