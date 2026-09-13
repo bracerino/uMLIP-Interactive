@@ -7520,11 +7520,12 @@ with tab1:
             _unit_idx = next((i for i, lbl in enumerate(_unit_labels)
                               if _PLOT_UNIT_OPTIONS[lbl] == _saved_unit), 0)
             _unit_label = st.selectbox(
-                "Y-axis units in saved phonon_bands.png and phonon_dos.png",
+                "Y-axis units in saved phonon_bands.png, phonon_dos.png and phonon_bands_dos.png",
                 options=_unit_labels,
                 index=_unit_idx,
-                help="Applies only to the band-structure and DOS PNG images written "
-                     "by the standalone Python script. The CSV outputs always include "
+                help="Applies to the band-structure and DOS images written "
+                     "by the standalone Python script, including the combined "
+                     "phonon_bands_dos.png/.pdf figure. The CSV outputs always include "
                      "THz, meV, and cm⁻¹ columns. "
                      "Conversions used: 1 THz = 4.13567 meV = 33.35641 cm⁻¹.",
             )
@@ -8492,14 +8493,25 @@ with tab1:
                     st.warning("No valid segments defined — automatic path will be used as fallback.")
 
             st.write("### 📊 Density of States")
-            col_dos1, col_dos2, col_dos3 = st.columns(3)
+            col_dos1, col_dos2, col_dos3, col_dos4 = st.columns(4)
             with col_dos1:
                 dos_nx = st.number_input("DOS mesh Nx", min_value=5, max_value=100, value=30, step=5)
             with col_dos2:
                 dos_ny = st.number_input("DOS mesh Ny", min_value=5, max_value=100, value=30, step=5)
             with col_dos3:
                 dos_nz = st.number_input("DOS mesh Nz", min_value=5, max_value=100, value=30, step=5)
+            with col_dos4:
+                styled_line_width = st.number_input(
+                    "Line thickness (pt)",
+                    min_value=0.2, max_value=6.0,
+                    value=float(_pg('styled_line_width', 1.7)), step=0.1, format="%.1f",
+                    help="Thickness of the curves in the combined phonon_bands_dos.png/.pdf "
+                         "figure. Sets the dispersion curves directly; the DOS total and the "
+                         "per-species partials scale with it, staying slightly thinner. "
+                         "1.7 reproduces the default appearance. Does not affect "
+                         "phonon_bands.png or phonon_dos.png.")
             phonon_params["dos_mesh"] = (int(dos_nx), int(dos_ny), int(dos_nz))
+            phonon_params["styled_line_width"] = float(styled_line_width)
 
             st.write("### 🔧 Brief pre-optimisation")
             pre_relax = st.checkbox(

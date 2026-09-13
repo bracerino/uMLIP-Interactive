@@ -5853,6 +5853,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     pre_relax_symprec   = float(phonon_params.get('pre_relax_symprec', 1e-2))
     imag_tol_mev        = phonon_params.get('imaginary_mode_tol_mev',
                           -phonon_params.get('imaginary_freq_threshold', 0.1))
+    styled_line_width   = float(phonon_params.get('styled_line_width', 1.7))
     calc_gamma_irreps   = bool(phonon_params.get('calc_gamma_irreps', False))
     irreps_tol_thz      = float(phonon_params.get('irreps_degeneracy_tolerance', 1e-3))
     irreps_symprec_val  = float(phonon_params.get('irreps_symprec', 1e-3))
@@ -6095,6 +6096,10 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     # total path length. Set to 0.0 to butt the two branches together on a
     # single merged tick (e.g. "Z|X") instead of leaving a gap.
     KPATH_BREAK_GAP_FRAC    = 0.03
+    # Line thickness (pt) of the curves in the combined phonon_bands_dos figure.
+    # The dispersion curves use this value; the DOS total and the per-species
+    # partials are drawn slightly thinner, in fixed proportion to it.
+    STYLED_LINE_WIDTH       = {styled_line_width}
     dos_mesh                = {dos_mesh_str}
     pre_relax               = {pre_relax_str}
     pre_relax_optimizer     = "{pre_relax_optimizer}"
@@ -6811,7 +6816,15 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                 dist_array_plot = dist_array
 
             log(f"  Calculating phonon DOS (mesh {{dos_mesh}})...")
-            phonon.run_mesh(dos_mesh, with_eigenvectors=False)
+            # Eigenvectors are what the species-projected DOS of the combined
+            # figure is built from. They cost memory, so ask for them only when
+            # the mesh is small enough; run_total_dos() is unaffected either way.
+            _ev_bytes        = int(np.prod(dos_mesh)) * (3 * len(phonon.primitive)) ** 2 * 16
+            _mesh_eigvecs_ok = _ev_bytes < 2_000_000_000
+            if not _mesh_eigvecs_ok:
+                log(f"  Mesh eigenvectors skipped (~{{_ev_bytes / 1e9:.1f}} GB) - the "
+                    f"combined figure will show the total DOS only")
+            phonon.run_mesh(dos_mesh, with_eigenvectors=_mesh_eigvecs_ok)
             phonon.run_total_dos()
             dos_dict     = phonon.get_total_dos_dict()
             dos_freq_thz = np.array(dos_dict["frequency_points"])
@@ -7181,6 +7194,207 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
 
             except Exception as plot_err:
                 log(f"  ⚠️ Plot generation failed: {{plot_err}}")
+
+            # ------------------------------------------------------------------
+            # Combined dispersion + DOS figure, presentation style.
+            # Written IN ADDITION to phonon_bands.png / phonon_dos.png above -
+            # neither of those is changed. Branches are coloured by index along
+            # a perceptual ramp (the band structure is already computed with
+            # is_band_connection=True, so a colour follows one branch through
+            # crossings); the k-path discontinuities become real breaks in the
+            # x-axis, marked with the conventional slashes.
+            # ------------------------------------------------------------------
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                from matplotlib import colormaps as _colormaps
+                from matplotlib.colors import to_hex as _to_hex
+                from matplotlib.gridspec import GridSpec as _GridSpec
+                from matplotlib.lines import Line2D as _Line2D
+                from matplotlib.ticker import MaxNLocator as _MaxNLocator
+
+                _SURF, _INK, _INK2, _GRID = "#ffffff", "#0b0b0b", "#52514e", "#dcdcd8"
+
+                _d  = np.asarray(dist_array_plot, dtype=float)
+                _fr = np.asarray(freq_thz_plot, dtype=float) * plot_freq_factor
+                _nb = _fr.shape[1]
+
+                # The script has already opened a blank gap at every k-path
+                # discontinuity, so a jump in the distance array is exactly where
+                # the axis must be broken.
+                _dd   = np.diff(_d)
+                _pdd  = _dd[_dd > 0]
+                _med  = float(np.median(_pdd)) if _pdd.size else 0.0
+                _brk  = np.where(_dd > 3.0 * _med)[0].tolist() if _med > 0 else []
+                _gaps = [(float(_d[i]), float(_d[i + 1])) for i in _brk]
+                _pieces, _pstart = [], float(_d[0])
+                for _gl, _gr in _gaps:
+                    _pieces.append((_pstart, _gl))
+                    _pstart = _gr
+                _pieces.append((_pstart, float(_d[-1])))
+
+                # phonopy restarts its band ordering at each segment, and
+                # consecutive segments share an x value, so a plain concatenation
+                # would draw a vertical connector at every junction. Break the
+                # polyline wherever x does not advance.
+                _stall = np.where(np.diff(_d) <= 0.0)[0]
+                if _stall.size:
+                    _dl  = np.insert(_d, _stall + 1, _d[_stall])
+                    _frl = np.insert(_fr, _stall + 1, np.nan, axis=0)
+                else:
+                    _dl, _frl = _d, _fr
+
+                # Tick labels: keep the positions the script computed, but centre
+                # a merged "A|B" label inside its gap and drop its tick mark.
+                _tpos = [float(p) for p in unique_pos]
+                _tlab = [str(l).replace("Γ", r"$\\Gamma$") for l in unique_labels]
+                _tgap = set()
+                for _k, _lab in enumerate(unique_labels):
+                    if "|" in str(_lab) and _gaps and _k < len(_tpos):
+                        _near = min(_gaps, key=lambda e: abs(0.5 * (e[0] + e[1]) - _tpos[_k]))
+                        _tpos[_k] = 0.5 * (_near[0] + _near[1])
+                        _tgap.add(_k)
+
+                # Species-projected DOS from the mesh eigenvectors. |e_k|^2 is an
+                # exact, complete partition (it sums to 1 per mode), so the
+                # partials add up to the total drawn here.
+                _sdos, _dos_tot = {{}}, None
+                if _mesh_eigvecs_ok:
+                    try:
+                        _md   = phonon.get_mesh_dict()
+                        _mf   = np.asarray(_md["frequencies"])
+                        _mev  = np.asarray(_md["eigenvectors"])
+                        _w    = np.asarray(_md["weights"], dtype=float)
+                        _w    = _w / _w.sum()
+                        _sym  = [str(x) for x in phonon.primitive.symbols]
+                        _na   = len(_sym)
+                        _sig  = max(1.5 * float(dos_freq_thz[1] - dos_freq_thz[0]),
+                                    0.002 * float(dos_freq_thz[-1] - dos_freq_thz[0]))
+                        _prj  = (np.abs(_mev) ** 2).reshape(
+                            len(_mf), _na, 3, 3 * _na).sum(axis=2).transpose(0, 2, 1)
+                        _acc  = np.zeros((len(dos_freq_thz), _na))
+                        _nrm  = 1.0 / (_sig * np.sqrt(2.0 * np.pi))
+                        for _iq in range(len(_mf)):
+                            _g = _nrm * np.exp(-0.5 * (
+                                (dos_freq_thz[:, None] - _mf[_iq][None, :]) / _sig) ** 2)
+                            _acc += _w[_iq] * (_g @ _prj[_iq])
+                        for _sp in sorted(set(_sym)):
+                            _sdos[_sp] = _acc[:, [i for i, x in enumerate(_sym)
+                                                  if x == _sp]].sum(axis=1)
+                        _dos_tot = _acc.sum(axis=1)
+                        log(f"  Combined figure: species-projected DOS "
+                            f"(Gaussian sigma = {{_sig:.4f}} THz, partials sum to the total)")
+                    except Exception as _pdos_err:
+                        log(f"  ⚠️ Species-projected DOS unavailable ({{_pdos_err}}) - "
+                            f"drawing the total DOS only")
+                        _sdos, _dos_tot = {{}}, None
+                if _dos_tot is None:
+                    _dos_tot = np.asarray(dos_values, dtype=float)
+
+                _bcol = [_to_hex(_colormaps["viridis"](x))
+                         for x in np.linspace(0.0, 0.78, max(_nb, 2))][:_nb]
+                _pal  = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                         "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+                _scol = {{sp: _pal[i % len(_pal)] for i, sp in enumerate(sorted(_sdos))}}
+
+                _lw_band = float(STYLED_LINE_WIDTH)
+                _lw_tot   = _lw_band * (1.6 / 1.7)   # keeps the default look at 1.7
+                _lw_part  = _lw_band * (1.5 / 1.7)
+
+                _rc = {{"font.family": "DejaVu Sans", "font.size": 14,
+                       "axes.edgecolor": _INK2, "axes.linewidth": 0.8,
+                       "xtick.color": _INK2, "ytick.color": _INK2,
+                       "xtick.direction": "in", "ytick.direction": "in",
+                       "mathtext.default": "regular"}}
+                with plt.rc_context(_rc):
+                    _fig = plt.figure(figsize=(9.6, 5.2), facecolor=_SURF)
+                    _gs  = _GridSpec(1, 2, width_ratios=[3.1, 1.0], wspace=0.04,
+                                     left=0.105, right=0.975, bottom=0.145, top=0.965)
+                    _axb = _fig.add_subplot(_gs[0], facecolor=_SURF)
+                    _axd = _fig.add_subplot(_gs[1], facecolor=_SURF, sharey=_axb)
+
+                    for _b in range(_nb):
+                        _axb.plot(_dl, _frl[:, _b], color=_bcol[_b], lw=_lw_band,
+                                  solid_capstyle="round", zorder=3 + _b * 0.01)
+                    _fmin = float(np.nanmin(_fr))
+                    _fmax = float(np.nanmax(_fr))
+                    if _fmin < -1e-6:
+                        _axb.axhline(0.0, color=_INK2, lw=0.7, ls=(0, (4, 3)), zorder=2)
+                    for _k, _x in enumerate(_tpos):
+                        if _k not in _tgap and _k not in (0, len(_tpos) - 1):
+                            _axb.axvline(_x, color=_GRID, lw=0.7, zorder=1)
+
+                    # frame drawn piecewise so the axis is genuinely broken
+                    _axb.spines["top"].set_visible(False)
+                    _axb.spines["bottom"].set_visible(False)
+                    _xtr = _axb.get_xaxis_transform()
+                    for _x0, _x1 in _pieces:
+                        for _y in (0.0, 1.0):
+                            _axb.plot([_x0, _x1], [_y, _y], transform=_xtr, color=_INK2,
+                                      lw=0.8, clip_on=False, solid_capstyle="butt", zorder=6)
+                    for _gl, _gr in _gaps:
+                        for _x in (_gl, _gr):
+                            _axb.plot([_x, _x], [0.0, 1.0], transform=_xtr, color=_INK2,
+                                      lw=0.8, clip_on=False, solid_capstyle="butt", zorder=6)
+                        for _y in (0.0, 1.0):
+                            _axb.plot([_gl, _gr], [_y, _y], transform=_xtr,
+                                      marker=[(-1, -2.6), (1, 2.6)], markersize=7,
+                                      linestyle="none", color=_INK2, mec=_INK2, mew=0.9,
+                                      clip_on=False, zorder=7)
+
+                    if _tpos:
+                        _axb.set_xticks(_tpos)
+                        _axb.set_xticklabels(_tlab, color=_INK, fontsize=16)
+                        for _k, _t in enumerate(_axb.xaxis.get_major_ticks()):
+                            if _k in _tgap:
+                                _t.tick1line.set_visible(False)
+                                _t.tick2line.set_visible(False)
+                    _axb.set_xlim(float(_d[0]), float(_d[-1]))
+                    _pad = 0.05 * (_fmax - _fmin if _fmax > _fmin else 1.0)
+                    _axb.set_ylim(min(_fmin, 0.0) - _pad, _fmax + _pad)
+                    _axb.set_ylabel(f"Frequency ({{plot_freq_label_mpl}})",
+                                    color=_INK, fontsize=16)
+                    _axb.tick_params(axis="y", labelcolor=_INK)
+
+                    _dfreq = np.asarray(dos_freq_thz, dtype=float) * plot_freq_factor
+                    _dtot  = _dos_tot / plot_freq_factor
+                    _axd.plot(_dtot, _dfreq, color=_INK, lw=_lw_tot, zorder=5)
+                    for _sp in sorted(_sdos):
+                        _c = _scol[_sp]
+                        _axd.fill_betweenx(_dfreq, 0, _sdos[_sp] / plot_freq_factor,
+                                           color=_c, alpha=0.22, lw=0, zorder=3)
+                        _axd.plot(_sdos[_sp] / plot_freq_factor, _dfreq, color=_c,
+                                  lw=_lw_part, zorder=4)
+                    if _fmin < -1e-6:
+                        _axd.axhline(0.0, color=_INK2, lw=0.7, ls=(0, (4, 3)), zorder=2)
+                    _axd.set_xlim(0, float(np.max(_dtot)) * 1.20 if np.max(_dtot) > 0 else 1.0)
+                    _axd.set_xlabel(f"DOS (states/{{plot_freq_label_mpl}})",
+                                    color=_INK, fontsize=14)
+                    _axd.xaxis.set_major_locator(_MaxNLocator(nbins=3, prune="lower"))
+                    _axd.tick_params(axis="x", labelcolor=_INK, labelsize=12)
+                    _axd.tick_params(axis="y", labelleft=False, labelright=False)
+
+                    if _sdos:
+                        _hd = [_Line2D([], [], color=_INK, lw=2.0)] + \
+                              [_Line2D([], [], color=_scol[s], lw=2.0) for s in sorted(_sdos)]
+                        _lg = _axd.legend(_hd, ["total"] + sorted(_sdos), loc="upper right",
+                                          frameon=True, framealpha=0.92, edgecolor=_GRID,
+                                          facecolor=_SURF, handlelength=1.1,
+                                          handletextpad=0.5, borderpad=0.45, fontsize=13)
+                        for _t in _lg.get_texts():
+                            _t.set_color(_INK)
+
+                    _comb_png = out_folder / "phonon_bands_dos.png"
+                    _comb_pdf = out_folder / "phonon_bands_dos.pdf"
+                    _fig.savefig(_comb_png, dpi=300, facecolor=_SURF)
+                    _fig.savefig(_comb_pdf, facecolor=_SURF)
+                    plt.close(_fig)
+                log(f"  💾 phonon_bands_dos.png ({{plot_freq_label_log}}) → {{_comb_png}}")
+                log(f"  💾 phonon_bands_dos.pdf ({{plot_freq_label_log}}) → {{_comb_pdf}}")
+
+            except Exception as _combined_err:
+                log(f"  ⚠️ Combined band+DOS figure failed: {{_combined_err}}")
 
             final_energy    = atoms.get_potential_energy()
             freq_all        = freq_thz.flatten()
