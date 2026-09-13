@@ -144,20 +144,22 @@ from ase.md.logger import MDLogger
 from collections import deque
 import io
 
+# Optional model backends: import them if present and stay quiet if not, so a
+# run that does not use them is not cluttered with warnings about them.
 try:
     from nequix.calculator import NequixCalculator
 except ImportError:
-    print("Warning: Nequix (from atomicarchitects) not found. Will fail if Nequix model is selected.")
+    pass
 try:
     from nequip.model.saved_models.load_utils import load_saved_model as _nequip_load_saved_model
     from nequip.integrations.ase import NequIPCalculator
     from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
 except ImportError:
-    print("Warning: nequip-allegro not found. Will fail if an Allegro / NequIP model is selected.")
+    pass
 try:
     from deepmd.calculator import DP
 except ImportError:
-    print("Warning: DeePMD-kit not found. Will fail if DeePMD model is selected.")
+    pass
 
 try:
     import GPUtil
@@ -1023,13 +1025,25 @@ except Exception as e:
 
     custom_classes_str = """
 class ConsoleMDLogger:
-    def __init__(self, atoms, total_steps, log_interval=10, steps_for_avg=10,device=None):
+    def __init__(self, atoms, total_steps, log_interval=10, steps_for_avg=100,device=None,
+                 timestep_fs=None):
         self.atoms = atoms
         self.total_steps = total_steps
         self.log_interval = log_interval
+        # Rolling window the speed and ETA are averaged over. 100 steps rides
+        # out per-step jitter (neighbour-list rebuilds, GPU scheduling) while
+        # still tracking a real change in pace.
         self.step_times = deque(maxlen=steps_for_avg)
         self.step_count = 0
         self.averaging_started = False
+        self.timestep_fs = timestep_fs
+        # (step, wall-clock seconds, steps/s) at every log point, for the
+        # throughput chart written when the run finishes.
+        self.speed_history = []
+        # Same, for whichever memory figure this run can read: GPU memory when
+        # running on CUDA with GPUtil present, otherwise system RAM.
+        self.memory_history = []
+        self.memory_kind = None
         self.start_time = time.perf_counter()
         self.last_log_time = time.perf_counter()
         self.step_start_time = time.perf_counter()
@@ -1096,17 +1110,27 @@ class ConsoleMDLogger:
                     if self.device_id < len(gpus):
                         gpu = gpus[self.device_id]
                         log_str += f" | GPU Mem: {gpu.memoryUsed:.0f} MB"
+                        self.memory_history.append(
+                            (self.step_count, elapsed_time, float(gpu.memoryUsed)))
+                        self.memory_kind = "gpu"
                 except Exception:
                     pass # Fail silently if GPU read fails mid-run
             elif PSUTIL_AVAILABLE and (not self.is_cuda or self.device_str == "cpu"):
                 try:
                     mem = psutil.virtual_memory()
                     log_str += f" | RAM Used: {mem.percent:.1f}%"
+                    self.memory_history.append(
+                        (self.step_count, elapsed_time, float(mem.percent)))
+                    self.memory_kind = "ram"
                 except Exception:
                     pass # Fail silently if RAM read fails mid-run
 
             if estimated_remaining_time is not None:
-                log_str += f" | Avg/step: {avg_step_time:.2f}s"
+                if avg_step_time > 0:
+                    steps_per_sec = 1.0 / avg_step_time
+                    self.speed_history.append(
+                        (self.step_count, elapsed_time, steps_per_sec))
+                    log_str += f" | Speed: {self._fmt_speed(steps_per_sec)} steps/s"
                 log_str += f" | Est. time: {self._format_time(estimated_remaining_time)}"
                 log_str += f" | Elapsed: {self._format_time(elapsed_time)}"
             elif self.step_count <= self.log_interval:
@@ -1114,6 +1138,155 @@ class ConsoleMDLogger:
 
             print(log_str)
             self.last_log_time = current_time
+
+    @staticmethod
+    def _fmt_speed(value):
+        # Three significant figures at any rate: 670, 33.5, 2.51, 0.084.
+        if value >= 100:
+            return f"{value:.0f}"
+        if value >= 10:
+            return f"{value:.1f}"
+        if value >= 1:
+            return f"{value:.2f}"
+        return f"{value:.3f}"
+
+    def save_speed_report(self, basename, output_dir="md_results"):
+        # Write the throughput history to CSV and chart it. The curve is the
+        # rolling mean actually printed during the run; the dashed line is the
+        # overall average, total steps / total wall time.
+        if len(self.speed_history) < 2:
+            print("  ... throughput chart skipped (too few logged points)")
+            return
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            steps = np.array([p[0] for p in self.speed_history], dtype=float)
+            wall  = np.array([p[1] for p in self.speed_history], dtype=float)
+            sps   = np.array([p[2] for p in self.speed_history], dtype=float)
+
+            total_elapsed = time.perf_counter() - self.start_time
+            overall = self.step_count / total_elapsed if total_elapsed > 0 else 0.0
+
+            if self.timestep_fs:
+                x_vals = steps * float(self.timestep_fs) / 1000.0
+                x_label = "Simulation time (ps)"
+            else:
+                x_vals = steps
+                x_label = "MD step"
+
+            csv_path = os.path.join(output_dir, f"md_{basename}_speed.csv")
+            pd.DataFrame({
+                "step": steps.astype(int),
+                "time_ps": steps * float(self.timestep_fs or 0.0) / 1000.0,
+                "elapsed_s": wall,
+                "steps_per_second": sps,
+            }).to_csv(csv_path, index=False)
+
+            with plt.rc_context({
+                    "font.size": 22, "axes.titlesize": 26, "axes.labelsize": 24,
+                    "xtick.labelsize": 20, "ytick.labelsize": 20,
+                    "legend.fontsize": 20, "figure.figsize": (15, 10)}):
+                fig, ax = plt.subplots()
+                ax.plot(x_vals, sps, color="#2a78d6", linewidth=2.0,
+                        label=f"rolling mean over {self.step_times.maxlen} steps")
+                ax.axhline(overall, color="#0b0b0b", linewidth=2.0, linestyle="--",
+                           label=f"overall average: {self._fmt_speed(overall)} steps/s")
+                ax.annotate(f"{self._fmt_speed(overall)} steps/s",
+                            xy=(1.0, overall), xycoords=("axes fraction", "data"),
+                            xytext=(-8, 8), textcoords="offset points",
+                            ha="right", va="bottom", fontsize=20, color="#0b0b0b")
+                ax.set_xlabel(x_label)
+                ax.set_ylabel("Speed (steps/s)")
+                ax.set_title(f"MD throughput - {basename}")
+                ax.set_ylim(bottom=0)
+                ax.grid(alpha=0.3)
+                ax.legend(loc="lower right")
+                fig.tight_layout()
+                png_path = os.path.join(output_dir, f"md_{basename}_speed.png")
+                fig.savefig(png_path, dpi=200)
+                plt.close(fig)
+
+            print(f"  ... throughput chart saved to {png_path}")
+            print(f"  ... overall average: {self._fmt_speed(overall)} steps/s "
+                  f"({self.step_count} steps in {total_elapsed:.1f} s)")
+        except Exception as e:
+            print(f"  Warning: could not save throughput chart: {e}")
+
+    def save_memory_report(self, basename, output_dir="md_results"):
+        # Chart the memory figure already printed in the log line: GPU memory on
+        # CUDA, otherwise system RAM. Dashed line is the mean over the run,
+        # dotted line the peak - the one that decides whether it fits.
+        if len(self.memory_history) < 2:
+            return
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            steps = np.array([p[0] for p in self.memory_history], dtype=float)
+            wall  = np.array([p[1] for p in self.memory_history], dtype=float)
+            vals  = np.array([p[2] for p in self.memory_history], dtype=float)
+
+            if self.memory_kind == "gpu":
+                y_label, unit, what = "GPU memory used (MB)", "MB", "GPU memory"
+                fmt = "{:.0f}"
+            else:
+                y_label, unit, what = "System RAM used (%)", "%", "RAM"
+                fmt = "{:.1f}"
+
+            mean_v, peak_v = float(np.mean(vals)), float(np.max(vals))
+
+            if self.timestep_fs:
+                x_vals = steps * float(self.timestep_fs) / 1000.0
+                x_label = "Simulation time (ps)"
+            else:
+                x_vals = steps
+                x_label = "MD step"
+
+            csv_path = os.path.join(output_dir, f"md_{basename}_memory.csv")
+            pd.DataFrame({
+                "step": steps.astype(int),
+                "time_ps": steps * float(self.timestep_fs or 0.0) / 1000.0,
+                "elapsed_s": wall,
+                y_label.replace(" ", "_"): vals,
+            }).to_csv(csv_path, index=False)
+
+            with plt.rc_context({
+                    "font.size": 22, "axes.titlesize": 26, "axes.labelsize": 24,
+                    "xtick.labelsize": 20, "ytick.labelsize": 20,
+                    "legend.fontsize": 20, "figure.figsize": (15, 10)}):
+                fig, ax = plt.subplots()
+                ax.plot(x_vals, vals, color="#1baf7a", linewidth=2.0, label=what)
+                ax.axhline(mean_v, color="#0b0b0b", linewidth=2.0, linestyle="--",
+                           label=f"average: {fmt.format(mean_v)} {unit}")
+                ax.axhline(peak_v, color="#eb6834", linewidth=2.0, linestyle=":",
+                           label=f"peak: {fmt.format(peak_v)} {unit}")
+                for value, colour in ((mean_v, "#0b0b0b"), (peak_v, "#eb6834")):
+                    ax.annotate(f"{fmt.format(value)} {unit}",
+                                xy=(1.0, value), xycoords=("axes fraction", "data"),
+                                xytext=(-8, 8), textcoords="offset points",
+                                ha="right", va="bottom", fontsize=20, color=colour)
+                ax.set_xlabel(x_label)
+                ax.set_ylabel(y_label)
+                ax.set_title(f"{what} - {basename}")
+                # Memory sits on a large offset, so a zero-based axis would flatten
+                # the very fluctuation this plot exists to show. Frame the data
+                # instead, with a floor so a perfectly flat trace still gets a scale.
+                lo, hi = float(np.min(vals)), float(np.max(vals))
+                span = hi - lo
+                pad = span * 0.12 if span > 0 else max(abs(hi) * 0.02, 1.0)
+                y_lo, y_hi = lo - pad, hi + pad
+                if self.memory_kind == "ram":      # a percentage cannot leave 0-100
+                    y_lo, y_hi = max(0.0, y_lo), min(100.0, y_hi)
+                ax.set_ylim(y_lo, y_hi)
+                ax.grid(alpha=0.3)
+                ax.legend(loc="lower right")
+                fig.tight_layout()
+                png_path = os.path.join(output_dir, f"md_{basename}_memory.png")
+                fig.savefig(png_path, dpi=200)
+                plt.close(fig)
+
+            print(f"  ... {what} chart saved to {png_path}")
+            print(f"  ... {what}: average {fmt.format(mean_v)} {unit}, "
+                  f"peak {fmt.format(peak_v)} {unit}")
+        except Exception as e:
+            print(f"  Warning: could not save memory chart: {e}")
 
     def _format_time(self, seconds):
         if seconds < 0: return "N/A"
@@ -1846,7 +2019,8 @@ def run_md_simulation(atoms, basename, calculator):
         interval=md_params['log_interval']
     )
 
-    console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'],device="{device}")
+    console_logger = ConsoleMDLogger(atoms, md_params['n_steps'], md_params['log_interval'],device="{device}",
+                                     timestep_fs=md_params.get('timestep'))
     md.attach(console_logger, interval=1)
     # -- CLeaning the GPU RAM during the run
     def clear_torch_cache():
@@ -1901,6 +2075,8 @@ def run_md_simulation(atoms, basename, calculator):
     end_time = time.perf_counter()
     elapsed = end_time - start_time
     print(f"\\n--- MD for {{basename}} finished in {{elapsed:.2f}} seconds ---")
+    console_logger.save_speed_report(basename)
+    console_logger.save_memory_report(basename)
 
 def generate_plots(basename):
     print(f"  Generating plots for: {{basename}}")

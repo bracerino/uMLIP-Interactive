@@ -2969,6 +2969,15 @@ MODEL_FAMILIES = {
     UMA_FAMILY_NAME: UMA_MODELS,
 }
 
+# Which model a family opens on when it is selected. Keyed on the model id
+# rather than its menu label, so re-wording a label cannot silently break it.
+# A saved selected_model belonging to the family still takes precedence.
+FAMILY_DEFAULT_MODEL = {
+    "GRACE":          "GRACE-2L-OMAT-medium-ft-AM",
+    "MatterSim":      "mattersim-5m",
+    "UPET / PET-MAD": "upet:pet-mad-s:1.5.0",
+}
+
 # Flat dict kept for backward compatibility (script generation, etc.)
 MACE_MODELS = {k: v for family in MODEL_FAMILIES.values() for k, v in family.items()}
 
@@ -5556,6 +5565,12 @@ with st.sidebar:
     model_keys = list(family_models.keys())
 
     default_model_index = 0
+    _family_pick = FAMILY_DEFAULT_MODEL.get(selected_family)
+    if _family_pick is not None:
+        for _i, _label in enumerate(model_keys):
+            if family_models[_label] == _family_pick:
+                default_model_index = _i
+                break
     if defaults.get('selected_model') in model_keys:
         default_model_index = model_keys.index(defaults['selected_model'])
 
