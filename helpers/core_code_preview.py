@@ -308,7 +308,7 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         path = "MatterSim-v1.0.0-5M.pth" if "5m" in model_size else "MatterSim-v1.0.0-1M.pth"
         return (
             f'from mattersim.forcefield import MatterSimCalculator\n'
-            f'calculator = MatterSimCalculator(model_path="{path}", device="{device}")'
+            f'calculator = MatterSimCalculator(load_path="{path}", device="{device}")'
         )
 
     if "ORB" in (selected_model or ""):

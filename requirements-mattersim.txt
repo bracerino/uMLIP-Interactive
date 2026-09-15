@@ -10,7 +10,10 @@ psutil
 gputil
 
 torch
-mattersim
+# mattersim>=1.2.3 adds a phono3py dependency, and every phono3py release
+# requires phonopy>=3.5 -- that is unsatisfiable against the phonopy pin
+# above, and pip backtracks into an old phono3py sdist that fails to build.
+mattersim==1.2.0  # 1.2.2 is the last phono3py-free release
 
 #cuequivariance
 #cuequivariance-torch

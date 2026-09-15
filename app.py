@@ -3050,8 +3050,15 @@ FAMILY_ENV_SETUP = {
         "note": "nequip-allegro on torch 2.8; models download from nequip.net on first use.",
     },
     "MatterSim": {
-        "pip": f"pip install torch mattersim {_CORE_SCI}",
-        "note": "mattersim needs its own environment.",
+        # mattersim 1.2.3+ pulls in phono3py, which needs phonopy>=3.5 and so
+        # cannot coexist with the phonopy this app uses; 1.2.2 is the last
+        # phono3py-free release. MatterSim also does not support ASE 3.27+ yet.
+        # matscipy is dropped here on purpose: it needs ase>=3.26, which
+        # MatterSim's ase==3.25 pin rules out, and only NequIP/Allegro use it.
+        "pip": ("pip install torch \"mattersim==1.2.0\" ase==3.25.0 "
+                "pymatgen==2025.10.7 phonopy==2.41.0 "
+                "numpy pandas matplotlib"),
+        "note": "mattersim needs its own environment (pinned to 1.2.0 on ASE 3.25).",
     },
     "GRACE": {
         "pip": f"pip install tensorpotential torch==2.8.0 scipy==1.17.1 {_CORE_SCI_ASE327}",
@@ -4079,7 +4086,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(f"Model path: {model_path}")
 
                 calculator = MatterSimCalculator(
-                    model_path=model_path,
+                    load_path=model_path,
                     device=device
                 )
                 log_queue.put(f"✅ MatterSim {model_path} initialized successfully on {device}")
@@ -4090,7 +4097,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put("⚠️ GPU initialization failed, falling back to CPU...")
                     try:
                         calculator = MatterSimCalculator(
-                            model_path=model_path,
+                            load_path=model_path,
                             device="cpu"
                         )
                         log_queue.put("✅ MatterSim initialized successfully on CPU (fallback)")

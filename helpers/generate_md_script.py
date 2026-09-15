@@ -296,6 +296,35 @@ except Exception as e:
 
 
 
+    elif "MatterSim" in actual_selected_model:
+        imports_str += """
+try:
+    from mattersim.forcefield import MatterSimCalculator
+except ImportError:
+    print("Error: MatterSim not found. Please install with: pip install mattersim")
+    exit()
+"""
+        _ms_path = {"mattersim-1m": "MatterSim-v1.0.0-1M.pth",
+                    "mattersim-5m": "MatterSim-v1.0.0-5M.pth"}.get(
+            actual_model_size, actual_model_size)
+        calculator_setup_str = f"""
+print("Setting up MatterSim calculator...")
+print(f"  Model: {_ms_path}")
+print(f"  Device: {device}")
+try:
+    calculator = MatterSimCalculator(load_path="{_ms_path}", device="{device}")
+    print(f"✅ MatterSim {_ms_path} initialized on {device}")
+except Exception as e:
+    print(f"❌ MatterSim initialization failed on {device}: {{e}}")
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = MatterSimCalculator(load_path="{_ms_path}", device="cpu")
+        print("✅ MatterSim initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MatterSim CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
+
     elif is_mace_polar:
         imports_str += """
 try:

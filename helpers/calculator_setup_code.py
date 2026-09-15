@@ -133,13 +133,13 @@ except ImportError:
         calculator_setup_str = f"""
 print("Setting up MatterSim calculator...")
 try:
-    calculator = MatterSimCalculator(model_path="{_ms_path}", device="{device}")
+    calculator = MatterSimCalculator(load_path="{_ms_path}", device="{device}")
     print(f"✅ MatterSim {_ms_path} initialized on {device}")
 except Exception as e:
     print(f"❌ MatterSim initialization failed on {device}: {{e}}")
     print("Attempting fallback to CPU...")
     try:
-        calculator = MatterSimCalculator(model_path="{_ms_path}", device="cpu")
+        calculator = MatterSimCalculator(load_path="{_ms_path}", device="cpu")
         print("✅ MatterSim initialized on CPU (fallback)")
     except Exception as cpu_e:
         print(f"❌ MatterSim CPU fallback failed: {{cpu_e}}")

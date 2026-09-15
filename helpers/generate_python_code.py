@@ -2588,7 +2588,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
         print(f"📁 Model path: {{model_path}}")
 
         calculator = MatterSimCalculator(
-            model_path=model_path,
+            load_path=model_path,
             device=device
         )
         print(f"✅ MatterSim {{model_path}} initialized successfully on {{device}}")
@@ -2599,7 +2599,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
             print("⚠️ GPU initialization failed, falling back to CPU...")
             try:
                 calculator = MatterSimCalculator(
-                    model_path=model_path,
+                    load_path=model_path,
                     device="cpu"
                 )
                 print("✅ MatterSim initialized successfully on CPU (fallback)")

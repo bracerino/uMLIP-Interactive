@@ -266,7 +266,7 @@ def _calc_block(selected_model, model_size, device, dtype,
     if is_mattersim:
         mp = "MatterSim-v1.0.0-5M.pth" if "5m" in model_size else "MatterSim-v1.0.0-1M.pth"
         return (f"{i}from mattersim.forcefield import MatterSimCalculator\n"
-                f"{i}calculator = MatterSimCalculator(model_path='{mp}', device='{device}')\n"
+                f"{i}calculator = MatterSimCalculator(load_path='{mp}', device='{device}')\n"
                 f"{i}print('MatterSim ready')\n")
     if is_orb:
         return (f"{i}from orb_models.forcefield import pretrained\n"
