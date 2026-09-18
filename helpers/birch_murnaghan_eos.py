@@ -19,6 +19,8 @@ import os
 from datetime import datetime
 
 import numpy as np
+from helpers.script_pruning import pruned_script
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 try:
     import streamlit as st
@@ -507,6 +509,8 @@ def render_eos_results(results):
 # ---------------------------------------------------------------------------
 # Standalone-script generator
 # ---------------------------------------------------------------------------
+@grace_gpu_memory_growth
+@pruned_script
 def generate_eos_script(
     eos_params,
     model_size,
@@ -562,7 +566,7 @@ def generate_eos_script(
         sevennet_enable_cueq=sevennet_enable_cueq,
         nequip_accel=nequip_accel,
     )
-    mlip_imports_code = _generate_mlip_imports()
+    mlip_imports_code = _generate_mlip_imports(selected_model_key, model_size, custom_mace_path)
 
     grid = volume_percent_grid(volume_range_pct, volume_step_pct)
 

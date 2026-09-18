@@ -20,6 +20,7 @@ DEFAULT_GEOMETRY_SETTINGS = {
     'stress_threshold': 0.1,
     'fix_symmetry': False,
     'preserve_atom_order': False,
+    'print_interval': 1,
     'calculate_rmscd': False,
     'rmscd_include_hydrogen': False,
 }
@@ -42,7 +43,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
     if not cell_opt_available:
         st.error("⚠️ Cell optimization features require ASE constraints. Some features may be limited.")
 
-    col_opt1, col_opt2, col_opt3, col_opt4, col_opt5 = st.columns(5)
+    col_opt1, col_opt2, col_opt3, col_opt4, col_opt5, col_opt6 = st.columns(6)
 
     with col_opt1:
         optimizer_options = [
@@ -107,6 +108,17 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             value=geom_defaults.get('force_divergence_threshold', 500),
             step=10,
             help="Stop optimization immediately if max force exceeds this value. Prevents runaway calculations."
+        )
+    with col_opt6:
+        print_interval = st.number_input(
+            "Print progress every N steps",
+            min_value=1,
+            max_value=1000,
+            value=int(geom_defaults.get('print_interval', 1)),
+            step=1,
+            help="Console output only: with N=10 the generated script prints every 10th step "
+                 "(the first and last step are always printed). Trajectories, the convergence "
+                 "CSV and the plots still record every step."
         )
     st.subheader("Cell Optimization Parameters")
 
@@ -253,6 +265,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'save_trajectory': save_trajectory,
         'fix_symmetry': fix_symmetry,
         'preserve_atom_order': preserve_atom_order,
+        'print_interval': int(print_interval),
         'calculate_rmscd': calculate_rmscd,
     }
 

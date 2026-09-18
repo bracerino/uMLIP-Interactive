@@ -20,8 +20,12 @@ from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
 from helpers.sevennet_dispersion import sevennet_d3_code
+from helpers.script_pruning import pruned_script
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 
+@grace_gpu_memory_growth
+@pruned_script
 def generate_md_python_script(md_params, selected_model, model_size, device, dtype, thread_count,
                               mace_head=None, mace_dispersion=False, mace_dispersion_xc="pbe",
                               custom_mace_path=None, custom_upet_path=None,

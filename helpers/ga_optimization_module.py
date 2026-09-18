@@ -1952,31 +1952,44 @@ def display_ga_results(ga_results):
 
     st.markdown("""
     <style>
-    div.stButton > button[kind="primary"] {
+    div.stButton > button[kind="primary"],
+    div.stButton button[data-testid="stBaseButton-primary"] {
         background-color: #0099ff; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="primary"]:active, div.stButton > button[kind="primary"]:focus {
+    div.stButton > button[kind="primary"]:active,
+    div.stButton > button[kind="primary"]:focus,
+    div.stButton button[data-testid="stBaseButton-primary"]:active,
+    div.stButton button[data-testid="stBaseButton-primary"]:focus {
         background-color: #007acc !important; color: white !important; box-shadow: none !important;
     }
 
-    div.stButton > button[kind="secondary"] {
+    div.stButton > button[kind="secondary"],
+    div.stButton button[data-testid="stBaseButton-secondary"] {
         background-color: #dc3545; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="secondary"]:active, div.stButton > button[kind="secondary"]:focus {
+    div.stButton > button[kind="secondary"]:active,
+    div.stButton > button[kind="secondary"]:focus,
+    div.stButton button[data-testid="stBaseButton-secondary"]:active,
+    div.stButton button[data-testid="stBaseButton-secondary"]:focus {
         background-color: #c82333 !important; color: white !important; box-shadow: none !important;
     }
 
-    div.stButton > button[kind="tertiary"] {
+    div.stButton > button[kind="tertiary"],
+    div.stButton button[data-testid="stBaseButton-tertiary"] {
         background-color: #6f42c1; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="tertiary"]:active, div.stButton > button[kind="tertiary"]:focus {
+    div.stButton > button[kind="tertiary"]:active,
+    div.stButton > button[kind="tertiary"]:focus,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:active,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:focus {
         background-color: #5a2d91 !important; color: white !important; box-shadow: none !important;
     }
 
-    div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
+    div[data-testid="stDataFrameContainer"] table td,
+    div[data-testid="stDataFrame"] table td { font-size: 16px !important; }
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)

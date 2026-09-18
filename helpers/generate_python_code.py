@@ -19,156 +19,124 @@ from helpers.uma_models import (
     uma_checkpoint_name,
 )
 from helpers.sevennet_dispersion import sevennet_d3_code
+from helpers.script_pruning import prune_unused_definitions
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 
-def _generate_mlip_imports():
-    return """# MACE imports
-try:
-    from mace.calculators import mace_mp, mace_off
-    MACE_AVAILABLE = True
-except ImportError:
-    try:
-        from mace.calculators import MACECalculator
-        MACE_AVAILABLE = True
-    except ImportError:
-        MACE_AVAILABLE = False
+# Per MLIP family: (label, module to probe, install hint). The calculator blocks
+# import the classes they use themselves, so the probe only checks that the
+# package imports and binds no names of its own.
+_MLIP_PACKAGES = {
+    "mace": ("MACE", "mace.calculators", "pip install mace-torch"),
+    "upet": ("UPET", "upet.calculator", "pip install upet"),
+    "chgnet": ("CHGNet", "chgnet.model.dynamics", "pip install chgnet"),
+    "sevennet": ("SevenNet", "sevenn.calculator", "pip install sevenn"),
+    "mattersim": ("MatterSim", "mattersim.forcefield", "pip install mattersim"),
+    "orb": ("ORB", "orb_models.forcefield", "pip install orb-models"),
+    "nequix": ("Nequix", "nequix.calculator", "pip install nequix"),
+    "allegro": ("Allegro / NequIP", "nequip.integrations.ase", "pip install nequip-allegro"),
+    "petmad": ("PET-MAD", "pet_mad.calculator", "pip install pet-mad"),
+    "grace": ("GRACE", "tensorpotential.calculator.foundation_models", "pip install tensorpotential"),
+    "uma": ("UMA", "fairchem.core", "pip install fairchem-core"),
+    "dpa": ("DPA", "deepmd.calculator",
+            "pip install deepmd-kit  (needs its own env, see requirements-dpa.txt)"),
+}
 
-# UPET imports (successor of PET-MAD)
-try:
-    from upet.calculator import UPETCalculator
-    UPET_AVAILABLE = True
-except ImportError:
-    UPET_AVAILABLE = False
-# CHGNet imports
-try:
-    from chgnet.model.model import CHGNet
-    from chgnet.model.dynamics import CHGNetCalculator
-    CHGNET_AVAILABLE = True
-except ImportError:
-    CHGNET_AVAILABLE = False
+# Run before the probe. SevenNet checkpoints need slice allow-listed on torch 2.6.
+_MLIP_PROBE_PREAMBLE = {
+    "sevennet": "torch.serialization.add_safe_globals([slice])  # Required for torch 2.6\n",
+}
 
-# SevenNet imports (requires torch 2.6 compatibility)
-try:
-    torch.serialization.add_safe_globals([slice])  # Required for torch 2.6
-    from sevenn.calculator import SevenNetCalculator
-    SEVENNET_AVAILABLE = True
-except ImportError:
-    SEVENNET_AVAILABLE = False
+# A deepmd-kit built against a different torch raises RuntimeError, not
+# ImportError, on import.
+_MLIP_PROBE_ERRORS = {"dpa": "Exception"}
 
-# MatterSim imports
-try:
-    from mattersim.forcefield import MatterSimCalculator
-    MATTERSIM_AVAILABLE = True
-except ImportError:
-    MATTERSIM_AVAILABLE = False
 
-# ORB imports
-try:
-    from orb_models.forcefield import pretrained
-    try:
-        # New location in orb-models v0.7.0+
-        from orb_models.forcefield.inference.calculator import ORBCalculator
-    except ImportError:
-        # Legacy location (older orb-models)
-        from orb_models.forcefield.calculator import ORBCalculator
-    ORB_AVAILABLE = True
-except ImportError:
-    ORB_AVAILABLE = False
+def _mlip_family(selected_model_key=None, model_size=None, custom_mace_path=None):
+    """Which MLIP family a selection belongs to, or None when nothing is selected.
 
-# Nequix imports
-try:
-    from nequix.calculator import NequixCalculator
-    NEQUIX_AVAILABLE = True
-except ImportError:
-    NEQUIX_AVAILABLE = False
+    Mirrors the detection order in _generate_calculator_setup_code, so the
+    import probe always matches the calculator block that gets generated.
+    """
+    if selected_model_key is None and model_size is None and not custom_mace_path:
+        return None
+    if is_qe_model(selected_model_key, model_size):
+        return "qe"
+    if is_uma_model(selected_model_key, model_size):
+        return "uma"
+    if is_dpa_model(selected_model_key, model_size):
+        return "dpa"
+    key = selected_model_key or ""
+    if "POLAR" in key.upper() or is_custom_mace_model(
+            model_size=model_size, selected_model_key=selected_model_key,
+            custom_mace_path=custom_mace_path):
+        return "mace"
+    if key.startswith(("Allegro", "NequIP")):
+        return "allegro"
+    if "Nequix" in key:
+        return "nequix"
+    if "GRACE" in key:
+        return "grace"
+    if "UPET" in key:
+        return "upet"
+    if "PET-MAD" in key:
+        return "petmad"
+    if "ORB" in key.upper() or (isinstance(model_size, str) and model_size.lower().startswith("orbmol")):
+        return "orb"
+    if "MatterSim" in key:
+        return "mattersim"
+    if "SevenNet" in key:
+        return "sevennet"
+    if "CHGNet" in key:
+        return "chgnet"
+    return "mace"
 
-# Allegro / NequIP imports
-try:
-    from nequip.model.saved_models.load_utils import load_saved_model as _nequip_load_saved_model
-    from nequip.integrations.ase import NequIPCalculator
-    from nequip.integrations.utils import basic_transforms, handle_chemical_species_map
-    ALLEGRO_AVAILABLE = True
-except ImportError:
-    ALLEGRO_AVAILABLE = False
 
-#MAD-PET
-try:
-    from pet_mad.calculator import PETMADCalculator
-    PETMAD_AVAILABLE = True
-except ImportError:
-    PETMAD_AVAILABLE = False
+def _generate_mlip_imports(selected_model_key=None, model_size=None, custom_mace_path=None):
+    """Check that the selected model's package is installed.
 
-# GRACE imports
-try:
-    from tensorpotential.calculator.foundation_models import grace_fm
-    GRACE_AVAILABLE = True
-except ImportError:
-    GRACE_AVAILABLE = False
+    With no selection at all it checks every supported family and needs one.
+    """
+    family = _mlip_family(selected_model_key, model_size, custom_mace_path)
 
-# DPA imports (DeePMD-kit). Only the presence of the package is probed here;
-# the checkpoint downloads later, in the calculator block.
-try:
-    from deepmd.calculator import DP as _dpa_probe
-    DPA_AVAILABLE = True
-except Exception:
-    # Not just ImportError: a deepmd-kit built against a different torch raises
-    # RuntimeError on import. This probe runs for every model, so it must never
-    # be able to take down a run that has nothing to do with DPA.
-    DPA_AVAILABLE = False
+    if family == "qe":
+        return "# Quantum ESPRESSO runs as an external binary; no MLIP package is imported."
 
-# UMA imports (Meta FAIR Chemistry). Only the presence of the package is probed
-# here; the checkpoint itself downloads later, once the HF token is in place.
-try:
-    from fairchem.core import pretrained_mlip as _fairchem_pretrained_mlip
-    UMA_AVAILABLE = True
-except ImportError:
-    UMA_AVAILABLE = False
+    if family is not None:
+        label, module, hint = _MLIP_PACKAGES[family]
+        return f"""# {label}: check the package is installed (the calculator setup imports what it uses)
+import importlib
+{_MLIP_PROBE_PREAMBLE.get(family, "")}try:
+    importlib.import_module("{module}")
+except {_MLIP_PROBE_ERRORS.get(family, "ImportError")}:
+    print("❌ {label} is not available!")
+    print("Please install it: {hint}")
+    exit(1)
+print("✅ MLIP package available: {label}")"""
 
-# Check if any calculator is available
-if not (MACE_AVAILABLE or CHGNET_AVAILABLE or UPET_AVAILABLE or SEVENNET_AVAILABLE or MATTERSIM_AVAILABLE or ORB_AVAILABLE or NEQUIX_AVAILABLE or ALLEGRO_AVAILABLE or PETMAD_AVAILABLE or GRACE_AVAILABLE or UMA_AVAILABLE or DPA_AVAILABLE):
+    checks = "\n".join(
+        f"""{_MLIP_PROBE_PREAMBLE.get(fam, "")}try:
+    importlib.import_module("{module}")
+    available_models.append("{label}")
+except {_MLIP_PROBE_ERRORS.get(fam, "ImportError")}:
+    pass"""
+        for fam, (label, module, _) in _MLIP_PACKAGES.items())
+    hints = "\n".join(f'    print("  - {label}: {hint}")'
+                      for label, _, hint in _MLIP_PACKAGES.values())
+    return f"""# Check which MLIP packages are installed
+import importlib
+available_models = []
+{checks}
+
+if not available_models:
     print("❌ No MLIP calculators available!")
     print("Please install at least one:")
-    print("  - MACE: pip install mace-torch")
-    print("  - CHGNet: pip install chgnet") 
-    print("  - SevenNet: pip install sevenn")
-    print("  - MatterSim: pip install mattersim")
-    print("  - ORB: pip install orb-models")
-    print("  - Nequix: pip install nequix")
-    print("  - Allegro / NequIP: pip install nequip-allegro")
-    print("  - PET-MAD: pip install pet-mad")
-    print("  - UPET: pip install upet")
-    print("  - UMA (Meta FAIR): pip install fairchem-core")
-    print("  - DPA (DeePMD-kit): pip install deepmd-kit  (needs its own env, see requirements-dpa.txt)")
+{hints}
     exit(1)
-else:
-    available_models = []
-    if GRACE_AVAILABLE:
-        available_models.append("GRACE")
-    if MACE_AVAILABLE:
-        available_models.append("MACE")
-    if CHGNET_AVAILABLE:
-        available_models.append("CHGNet")
-    if SEVENNET_AVAILABLE:
-        available_models.append("SevenNet")
-    if MATTERSIM_AVAILABLE:
-        available_models.append("MatterSim")
-    if ORB_AVAILABLE:
-        available_models.append("ORB")
-    if NEQUIX_AVAILABLE:
-        available_models.append("Nequix")
-    if ALLEGRO_AVAILABLE:
-        available_models.append("Allegro / NequIP")
-    if PETMAD_AVAILABLE:
-        available_models.append("PET-MAD")
-    if UPET_AVAILABLE:
-        available_models.append("UPET")
-    if UMA_AVAILABLE:
-        available_models.append("UMA")
-    if DPA_AVAILABLE:
-        available_models.append("DPA")
-    print(f"✅ Available MLIP models: {', '.join(available_models)}")"""
+print(f"✅ Available MLIP models: {{', '.join(available_models)}}")"""
 
 
+@grace_gpu_memory_growth
 def generate_python_script(structures, calc_type, model_size, device, dtype, optimization_params,
                            phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                            substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
@@ -294,7 +262,7 @@ from ase.filters import FrechetCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-{_generate_mlip_imports()}
+{_generate_mlip_imports(selected_model_key, model_size, custom_mace_path)}
 
 {_generate_utility_functions()}
 
@@ -339,9 +307,10 @@ if __name__ == "__main__":
     main()
 """
 
-    return script
+    return prune_unused_definitions(script)
 
 
+@grace_gpu_memory_growth
 def generate_python_script_local_files(calc_type, model_size, device, dtype, optimization_params,
                                        phonon_params, elastic_params, calc_formation_energy, selected_model_key=None,
                                        substitutions=None, ga_params=None, supercell_info=None, thread_count=4,
@@ -473,7 +442,7 @@ from ase.filters import FrechetCellFilter, UnitCellFilter
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-{_generate_mlip_imports()}
+{_generate_mlip_imports(selected_model_key, model_size, custom_mace_path)}
 
 {_generate_utility_functions()}
 
@@ -534,7 +503,7 @@ if __name__ == "__main__":
     main()
 """
 
-    return script
+    return prune_unused_definitions(script)
 
 
 def _generate_ga_classes():
@@ -2879,7 +2848,7 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
 
         if mace_dispersion:
             calc_code += f'''
-        print(f"🔬 Dispersion correction: D3-{mace_dispersion_xc}")'''
+    print(f"🔬 Dispersion correction: D3-{mace_dispersion_xc}")'''
 
         calc_code += f'''
     try:
@@ -4837,8 +4806,13 @@ def create_cell_filter(atoms, pressure, cell_constraint, optimize_lattice, hydro
 
 
 class OptimizationLogger:
-    def __init__(self, filename, max_steps, output_dir="optimized_structures", save_trajectory=True):
+    def __init__(self, filename, max_steps, output_dir="optimized_structures", save_trajectory=True,
+                 print_interval=1):
         self.filename = filename
+        # Console output only: every step is still recorded for the trajectory,
+        # the convergence CSV and the plots.
+        self.print_interval = max(1, int(print_interval))
+        self.last_printed_step = 0
         self.step_count = 0
         self.max_steps = max_steps
         self.step_times = []
@@ -4912,31 +4886,49 @@ class OptimizationLogger:
                     'forces': forces.copy()
                 })
 
-            if len(self.step_times) > 0:
-                avg_time = np.mean(self.step_times)
-                remaining_steps = max(0, self.max_steps - self.step_count)
-                estimated_remaining_time = avg_time * remaining_steps
+            # First step, then every Nth. The final step is printed afterwards by
+            # print_final_step(), since which step is the last is only known then.
+            if self.step_count == 1 or self.step_count % self.print_interval == 0:
+                self._print_step(-1)
 
-                if avg_time < 60:
-                    avg_time_str = f"{avg_time:.1f}s"
-                else:
-                    avg_time_str = f"{avg_time/60:.1f}m"
+    def _print_step(self, index):
+        """Print one recorded step; ``index`` indexes into self.history."""
+        rec = self.history[index]
+        step = rec['step']
+        energy = rec['energy_eV']
+        energy_per_atom = rec['energy_per_atom_eV']
+        max_force = rec['max_force_eV_per_A']
+        max_stress = rec['max_stress_GPa']
+        energy_change = float('inf') if rec['energy_change_eV'] is None else rec['energy_change_eV']
+        energy_change_per_atom = (float('inf') if rec['energy_change_per_atom_eV'] is None
+                                  else rec['energy_change_per_atom_eV'])
+        self.last_printed_step = step
 
-                if estimated_remaining_time < 60:
-                    remaining_time_str = f"{estimated_remaining_time:.1f}s"
-                elif estimated_remaining_time < 3600:
-                    remaining_time_str = f"{estimated_remaining_time/60:.1f}m"
-                else:
-                    remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
+        if len(self.step_times) > 0:
+            avg_time = np.mean(self.step_times)
+            remaining_steps = max(0, self.max_steps - step)
+            estimated_remaining_time = avg_time * remaining_steps
 
-                print(f"    Step {self.step_count}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
-                      f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
-                      f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom) | "
-                      f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
+            if estimated_remaining_time < 60:
+                remaining_time_str = f"{estimated_remaining_time:.1f}s"
+            elif estimated_remaining_time < 3600:
+                remaining_time_str = f"{estimated_remaining_time/60:.1f}m"
             else:
-                print(f"    Step {self.step_count}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
-                      f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
-                      f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
+                remaining_time_str = f"{estimated_remaining_time/3600:.1f}h"
+
+            print(f"    Step {step}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
+                  f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                  f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom) | "
+                  f"Max. time: {remaining_time_str} ({remaining_steps} steps)")
+        else:
+            print(f"    Step {step}: E={energy:.{E_DEC}f} eV ({energy_per_atom:.{E_DEC}f} eV/atom), "
+                  f"F_max={max_force:.4f} eV/Å, Max_Stress={max_stress:.4f} GPa, "
+                  f"ΔE={energy_change:.2e} eV ({energy_change_per_atom:.2e} eV/atom)")
+
+    def print_final_step(self):
+        """Print the last recorded step unless the interval already printed it."""
+        if self.history and self.history[-1]['step'] != self.last_printed_step:
+            self._print_step(-1)
 
 
 def save_optimization_convergence(history, base_name, fmax=None, output_dir="results"):
@@ -5025,6 +5017,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fix_symmetry = optimization_params.get('fix_symmetry', False)
     force_divergence_threshold = optimization_params.get('force_divergence_threshold', 10000)
     preserve_atom_order = optimization_params.get('preserve_atom_order', False)
+    print_interval = max(1, int(optimization_params.get('print_interval', 1)))
     polar_charge = (polar_settings or {}).get("charge", 0)
     polar_spin = (polar_settings or {}).get("spin", 1)
     polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
@@ -5049,6 +5042,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fix_symmetry = {fix_symmetry}
     force_divergence_threshold = {force_divergence_threshold}
     preserve_atom_order = {preserve_atom_order}
+    # Console output only; every step still goes into the trajectory, the
+    # convergence CSV and the plots.
+    print_interval = {print_interval}
     is_mace_polar = {is_mace_polar}
     is_orbmol = {is_orbmol}
     polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
@@ -5060,6 +5056,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     print(f"  - Max steps: {{max_steps}}")
     print(f"  - Type: {{optimization_type}}")
     print(f"  - Force divergence threshold: {{force_divergence_threshold}} eV/Å")
+    if print_interval > 1:
+        print(f"  - Console output: every {{print_interval}} steps (first/last always; "
+              f"trajectory and convergence data keep every step)")
     if fix_symmetry:
         print(f"  - 🔷 FixSymmetry: space group will be preserved")
     if pressure > 0:
@@ -5213,7 +5212,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
                 opt_mode = "both"
 
-            logger = OptimizationLogger(filename, max_steps, "optimized_structures", save_trajectory)
+            logger = OptimizationLogger(filename, max_steps, "optimized_structures", save_trajectory,
+                                        print_interval=print_interval)
 
             if optimizer_type == "LBFGS":
                 optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
@@ -5332,6 +5332,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                               f"F_max={_max_f:.2f} eV/Å > {force_divergence_threshold} eV/Å — stopping")
                         _diverged = True
                         break
+
+            # The interval may have skipped the step the optimizer stopped on.
+            logger.print_final_step()
 
             if hasattr(optimization_object, 'atoms'):
                 final_atoms = optimization_object.atoms

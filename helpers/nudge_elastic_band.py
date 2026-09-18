@@ -30,6 +30,7 @@ from helpers.custom_model_paths import (
     nequip_accel_preamble, nequip_accel_apply_code,
 )
 from datetime import datetime
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 
 def setup_neb_parameters_ui():
@@ -809,6 +810,7 @@ def display_neb_results(neb_results, structure_name, use_distance=False):
                     width='stretch')
 
 
+@grace_gpu_memory_growth
 def generate_neb_script(neb_params, selected_model, model_size, device, dtype,
                         thread_count=4, mace_head=None,
                         mace_dispersion=False, mace_dispersion_xc='pbe',
@@ -1280,6 +1282,7 @@ if __name__ == "__main__":
 '''
 
 
+@grace_gpu_memory_growth
 def generate_neb_script_minimal(neb_params, selected_model, model_size, device, dtype,
                                  thread_count=4, mace_head=None,
                                  mace_dispersion=False, mace_dispersion_xc='pbe',

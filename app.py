@@ -585,31 +585,44 @@ if 'current_tensile_info' not in st.session_state:
 
 st.markdown("""
     <style>
-    div.stButton > button[kind="primary"] {
+    div.stButton > button[kind="primary"],
+    div.stButton button[data-testid="stBaseButton-primary"] {
         background-color: #0099ff; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="primary"]:active, div.stButton > button[kind="primary"]:focus {
+    div.stButton > button[kind="primary"]:active,
+    div.stButton > button[kind="primary"]:focus,
+    div.stButton button[data-testid="stBaseButton-primary"]:active,
+    div.stButton button[data-testid="stBaseButton-primary"]:focus {
         background-color: #007acc !important; color: white !important; box-shadow: none !important;
     }
 
-    div.stButton > button[kind="secondary"] {
+    div.stButton > button[kind="secondary"],
+    div.stButton button[data-testid="stBaseButton-secondary"] {
         background-color: #dc3545; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="secondary"]:active, div.stButton > button[kind="secondary"]:focus {
+    div.stButton > button[kind="secondary"]:active,
+    div.stButton > button[kind="secondary"]:focus,
+    div.stButton button[data-testid="stBaseButton-secondary"]:active,
+    div.stButton button[data-testid="stBaseButton-secondary"]:focus {
         background-color: #c82333 !important; color: white !important; box-shadow: none !important;
     }
 
-    div.stButton > button[kind="tertiary"] {
+    div.stButton > button[kind="tertiary"],
+    div.stButton button[data-testid="stBaseButton-tertiary"] {
         background-color: #6f42c1; color: white; font-size: 16px; font-weight: bold;
         padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
     }
-    div.stButton > button[kind="tertiary"]:active, div.stButton > button[kind="tertiary"]:focus {
+    div.stButton > button[kind="tertiary"]:active,
+    div.stButton > button[kind="tertiary"]:focus,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:active,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:focus {
         background-color: #5a2d91 !important; color: white !important; box-shadow: none !important;
     }
 
-    div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
+    div[data-testid="stDataFrameContainer"] table td,
+    div[data-testid="stDataFrame"] table td { font-size: 16px !important; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     [data-testid="stDecoration"] {display: none;}
@@ -618,6 +631,8 @@ st.markdown("""
     /* keep the sidebar open/close control usable */
     [data-testid="stSidebarCollapsedControl"] {visibility: visible !important; display: block !important;}
     [data-testid="collapsedControl"] {visibility: visible !important; display: block !important;}
+    [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"]
+        {visibility: visible !important; display: block !important;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -5463,7 +5478,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.12.0 · 9/13/2026
+            v0.13.0 · 9/18/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6306,18 +6321,31 @@ with st.sidebar:
             pass
 css = '''
 <style>
-.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+/* Two sets of selectors on purpose: Streamlit built tabs on BaseWeb up to
+   ~1.57 ([data-baseweb="tab-list"] with <button> tabs) and switched to plain
+   elements with test ids afterwards ([data-testid="stTab"], role="tablist").
+   Keeping both means the styling survives either version. */
+
+/* Tab label */
+.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p,
+.stTabs [data-testid="stTab"] p,
+.stTabs [role="tab"] p {
     font-size: 1.15rem !important;
     color: #1e3a8a !important;
     font-weight: 600 !important;
     margin: 0 !important;
 }
 
-.stTabs [data-baseweb="tab-list"] {
+/* Tab strip */
+.stTabs [data-baseweb="tab-list"],
+.stTabs [role="tablist"] {
     gap: 20px !important;
 }
 
-.stTabs [data-baseweb="tab-list"] button {
+/* A single tab */
+.stTabs [data-baseweb="tab-list"] button,
+.stTabs [data-testid="stTab"],
+.stTabs [role="tab"] {
     background-color: #f0f4ff !important;
     border-radius: 12px !important;
     padding: 8px 16px !important;
@@ -6326,19 +6354,26 @@ css = '''
     color: #1e3a8a !important;
 }
 
-.stTabs [data-baseweb="tab-list"] button:hover {
+.stTabs [data-baseweb="tab-list"] button:hover,
+.stTabs [data-testid="stTab"]:hover,
+.stTabs [role="tab"]:hover {
     background-color: #dbe5ff !important;
     cursor: pointer;
 }
 
-.stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+.stTabs [data-baseweb="tab-list"] button[aria-selected="true"],
+.stTabs [data-testid="stTab"][aria-selected="true"],
+.stTabs [role="tab"][aria-selected="true"],
+.stTabs [role="tab"][data-selected="true"] {
     background-color: #e0e7ff !important;
     color: #1e3a8a !important;
     font-weight: 700 !important;
     box-shadow: 0 2px 6px rgba(30, 58, 138, 0.3) !important;
 }
 
-.stTabs [data-baseweb="tab-list"] button:focus {
+.stTabs [data-baseweb="tab-list"] button:focus,
+.stTabs [data-testid="stTab"]:focus,
+.stTabs [role="tab"]:focus {
     outline: none !important;
 }
 </style>
@@ -9093,31 +9128,44 @@ with tab_st:
                 "..")
         st.markdown("""
             <style>
-            div.stButton > button[kind="primary"] {
+            div.stButton > button[kind="primary"],
+    div.stButton button[data-testid="stBaseButton-primary"] {
                 background-color: #0099ff; color: white; font-size: 16px; font-weight: bold;
                 padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
             }
-            div.stButton > button[kind="primary"]:active, div.stButton > button[kind="primary"]:focus {
+            div.stButton > button[kind="primary"]:active,
+    div.stButton > button[kind="primary"]:focus,
+    div.stButton button[data-testid="stBaseButton-primary"]:active,
+    div.stButton button[data-testid="stBaseButton-primary"]:focus {
                 background-color: #007acc !important; color: white !important; box-shadow: none !important;
             }
 
-            div.stButton > button[kind="secondary"] {
+            div.stButton > button[kind="secondary"],
+    div.stButton button[data-testid="stBaseButton-secondary"] {
                 background-color: #dc3545; color: white; font-size: 16px; font-weight: bold;
                 padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
             }
-            div.stButton > button[kind="secondary"]:active, div.stButton > button[kind="secondary"]:focus {
+            div.stButton > button[kind="secondary"]:active,
+    div.stButton > button[kind="secondary"]:focus,
+    div.stButton button[data-testid="stBaseButton-secondary"]:active,
+    div.stButton button[data-testid="stBaseButton-secondary"]:focus {
                 background-color: #c82333 !important; color: white !important; box-shadow: none !important;
             }
 
-            div.stButton > button[kind="tertiary"] {
+            div.stButton > button[kind="tertiary"],
+    div.stButton button[data-testid="stBaseButton-tertiary"] {
                 background-color: #6f42c1; color: white; font-size: 16px; font-weight: bold;
                 padding: 0.5em 1em; border: none; border-radius: 5px; height: 3em; width: 100%;
             }
-            div.stButton > button[kind="tertiary"]:active, div.stButton > button[kind="tertiary"]:focus {
+            div.stButton > button[kind="tertiary"]:active,
+    div.stButton > button[kind="tertiary"]:focus,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:active,
+    div.stButton button[data-testid="stBaseButton-tertiary"]:focus {
                 background-color: #5a2d91 !important; color: white !important; box-shadow: none !important;
             }
 
-            div[data-testid="stDataFrameContainer"] table td { font-size: 16px !important; }
+            div[data-testid="stDataFrameContainer"] table td,
+    div[data-testid="stDataFrame"] table td { font-size: 16px !important; }
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             [data-testid="stDecoration"] {display: none;}
@@ -9126,6 +9174,8 @@ with tab_st:
             /* keep the sidebar open/close control usable */
             [data-testid="stSidebarCollapsedControl"] {visibility: visible !important; display: block !important;}
             [data-testid="collapsedControl"] {visibility: visible !important; display: block !important;}
+    [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"]
+        {visibility: visible !important; display: block !important;}
             </style>
         """, unsafe_allow_html=True)
 

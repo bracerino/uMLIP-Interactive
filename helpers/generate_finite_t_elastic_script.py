@@ -22,6 +22,7 @@ import pprint
 import textwrap
 
 from helpers.calculator_setup_code import build_calculator_code
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 
 def _base_imports(thread_count):
@@ -3077,6 +3078,7 @@ print("\n\u2705 All done in %s - everything is under ./%s/"
 '''
 
 
+@grace_gpu_memory_growth
 def generate_finite_t_elastic_python_script(finite_t_params, selected_model,
                                             model_size, device, dtype,
                                             thread_count,

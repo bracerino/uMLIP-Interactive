@@ -5,8 +5,10 @@ from ase import units
 import numpy as np
 
 from helpers.calculator_setup_code import build_calculator_code
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 
+@grace_gpu_memory_growth
 def generate_tensile_test_python_script(tensile_params, selected_model, model_size, device, dtype, thread_count,
                                         custom_sevennet_path=None, custom_grace_path=None,
                                         custom_mace_path=None, mace_enable_cueq=False,

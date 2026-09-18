@@ -1,4 +1,4 @@
-streamlit==1.57.0
+streamlit==1.64.0
 plotly
 pymatgen==2025.10.7 # 2026.5.4
 matscipy==1.2.0 # required for ASE 3.26

@@ -19,6 +19,8 @@ from datetime import datetime
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from helpers.script_pruning import pruned_script
+from helpers.grace_gpu_memory import grace_gpu_memory_growth
 
 # Mirror the main app's online-demo flag (set by online_app.py).
 ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
@@ -1194,6 +1196,8 @@ def setup_energy_grid_scan_ui(default_settings=None, save_settings_function=None
     return params
 
 
+@grace_gpu_memory_growth
+@pruned_script
 def generate_energy_grid_scan_script(
     scan_params,
     model_size,
@@ -1259,7 +1263,7 @@ def generate_energy_grid_scan_script(
         sevennet_enable_cueq=sevennet_enable_cueq,
         nequip_accel=nequip_accel,
     )
-    mlip_imports_code = _generate_mlip_imports()
+    mlip_imports_code = _generate_mlip_imports(selected_model_key, model_size, custom_mace_path)
 
     config_info = ""
     if mace_head:
