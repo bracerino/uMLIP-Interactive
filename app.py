@@ -131,6 +131,10 @@ from helpers.dpa_models import (
     is_dpa_model, build_dpa_calculator, dpa_is_noncommercial,
     dpa_needs_charge_spin, set_active_dpa_settings, get_active_dpa_settings,
 )
+from helpers.alignn_models import (
+    ALIGNN_FAMILY_NAME, ALIGNN_MODELS, ALIGNN_ENV_SETUP,
+    is_alignn_model, build_alignn_calculator,
+)
 from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
     is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
@@ -2990,6 +2994,7 @@ MODEL_FAMILIES = {
     # Script-only by default: deepmd-kit pins its own torch, so it only runs
     # in-process when the app itself is started from the DPA environment.
     DPA_FAMILY_NAME: DPA_MODELS,
+    ALIGNN_FAMILY_NAME: ALIGNN_MODELS,
 }
 
 # Which model a family opens on when it is selected. Keyed on the model id
@@ -3081,6 +3086,7 @@ FAMILY_ENV_SETUP = {
     },
     UMA_FAMILY_NAME: UMA_ENV_SETUP,
     DPA_FAMILY_NAME: DPA_ENV_SETUP,
+    ALIGNN_FAMILY_NAME: ALIGNN_ENV_SETUP,
 }
 
 
@@ -3756,7 +3762,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_allegro = selected_model.startswith(("Allegro", "NequIP"))
         is_deepmd = selected_model.startswith("DeePMD")
         is_dpa = is_dpa_model(selected_model, model_size)
-        is_alignn = selected_model.startswith("AlignN")
+        is_alignn = is_alignn_model(selected_model, model_size)
 
         #GRACE
         is_grace = selected_model.startswith("GRACE") or model_size == "grace:custom"
@@ -3988,18 +3994,17 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(f"❌ DeePMD initialization failed: {str(e)}")
                 return
         elif is_alignn:
-            log_queue.put("Setting up AlignN calculator...")
+            log_queue.put("Setting up ALIGNN-FF calculator...")
             try:
-                if model_size == "alignn-ff-jarvis":
-                    # Use pretrained JARVIS-DFT model
-                    calculator = AlignnAtomwiseCalculator(path=default_path())
-                else:
-                    # Custom model path
-                    calculator = AlignnAtomwiseCalculator(path=model_size)
-
-                log_queue.put(f"✅ AlignN {model_size} initialized successfully")
+                calculator = build_alignn_calculator(
+                    model_size, device=device, log=log_queue.put)
+                log_queue.put("✅ ALIGNN-FF calculator initialized successfully")
             except Exception as e:
-                log_queue.put(f"❌ AlignN initialization failed: {str(e)}")
+                log_queue.put(f"❌ ALIGNN-FF initialization failed: {e}")
+                log_queue.put(
+                    "   Either run the app from an ALIGNN environment "
+                    "(pip install -r requirements-alignn.txt), or generate a "
+                    "standalone script and run it there.")
                 return
         elif is_orb:
             # ORB setup
@@ -5478,7 +5483,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.13.0 · 9/18/2026
+            v0.13.1 · 9/19/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5914,6 +5919,7 @@ with st.sidebar:
             "UPET": UPET_AVAILABLE,
             "GRACE": GRACE_AVAILABLE,
             "UMA (fairchem)": UMA_AVAILABLE,
+            "ALIGNN-FF": ALIGNN_AVAILABLE,
         }
         available = [name for name, ok in availability.items() if ok]
         not_available = [name for name, ok in availability.items() if not ok]

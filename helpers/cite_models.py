@@ -339,4 +339,37 @@ def create_citation_info():
                 DPA4 / DPA4C weights are CC-BY-NC-4.0 (non-commercial); DPA-2 / DPA-3 are CC-BY-4.0.
             </p>
         </div>
+
+        <div class="model-section" style="border-left-color: #1A73E8;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣4️⃣</span>
+                <span>ALIGNN-FF</span>
+            </div>
+            <p style="margin:4px 0 10px 0; color:#2c3e50; font-size:14px;">
+                Cite the ALIGNN architecture and the ALIGNN-FF force field. The
+                MATPES checkpoints are ALIGNN 2.0 models, so add that paper and the
+                dataset behind them.
+            </p>
+            <div class="link-container">
+                <a href="https://doi.org/10.1038/s41524-021-00650-1" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> ALIGNN &mdash; npj Comput. Mater. 7, 185 (2021)
+                </a>
+                <a href="https://doi.org/10.1039/D2DD00096B" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> ALIGNN-FF &mdash; Digital Discovery 2, 346 (2023)
+                </a>
+                <a href="https://arxiv.org/abs/2609.19487" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> ALIGNN 2.0 &mdash; arXiv:2609.19487 (2026)
+                </a>
+                <a href="https://github.com/atomgptlab/alignn" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+                <a href="https://figshare.com/projects/ALIGNN_models/126478" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Weights
+                </a>
+            </div>
+            <p style="margin:10px 0 0 0; color:#2c3e50; font-size:13px;">
+                Dataset: MatPES &mdash;
+                <a href="https://arxiv.org/abs/2503.04070" target="_blank">Kaplan et al., arXiv:2503.04070 (2025)</a>.
+            </p>
+        </div>
         """, unsafe_allow_html=True)

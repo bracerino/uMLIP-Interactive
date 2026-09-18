@@ -1,0 +1,35 @@
+# ALIGNN-FF environment — ALIGNN 2.0 universal force fields (NIST / JARVIS).
+#
+# ALIGNN needs a virtual environment of its own: it pulls in jarvis-tools and
+# its own graph stack, and pins nothing the rest of this app agrees with.
+#
+#   python3 -m venv alignn_env
+#   source alignn_env/bin/activate    # Windows: alignn_env\Scripts\activate
+#   pip install -r requirements-alignn.txt
+#   streamlit run app.py
+#
+# Checkpoints download from Figshare on first use and are cached in
+# ~/.cache/atomgptlab/alignn_ff/. They are not gated, so no token is needed.
+
+streamlit==1.64.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26+
+ase==3.27.0
+phonopy==2.41.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+seekpath==2.2.1
+
+# ALIGNN 2.0 runs on plain PyTorch — DGL is no longer required. Install the
+# CUDA build for GPU runs, e.g.
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+torch==2.8.0
+
+alignn
+
+# The dataset / structure layer ALIGNN is built on; it also provides the
+# Figshare downloader the force-field checkpoints come through.
+jarvis-tools

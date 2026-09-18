@@ -18,6 +18,9 @@ from helpers.dpa_models import (
     DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
     is_dpa_model, generate_dpa_calculator_code,
 )
+from helpers.alignn_models import (
+    is_alignn_model, generate_alignn_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -89,6 +92,10 @@ def build_calculator_code(selected_model, model_size, device, dtype,
     elif is_dpa_model(selected_model, model_size):
         # DPA: a DeePMD-kit checkpoint plus an optional model branch.
         calculator_setup_str = generate_dpa_calculator_code(
+            model_size, device=device, indent="")
+    elif is_alignn_model(selected_model, model_size):
+        # ALIGNN-FF: a Figshare checkpoint folder plus its own ASE calculator.
+        calculator_setup_str = generate_alignn_calculator_code(
             model_size, device=device, indent="")
     elif "CHGNet" in selected_model:
         model_imports += """

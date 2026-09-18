@@ -16,6 +16,9 @@ from helpers.dpa_models import (
     DPA_FAMILY_NAME, DPA_MODELS, DPA_ENV_SETUP,
     is_dpa_model, generate_dpa_calculator_code,
 )
+from helpers.alignn_models import (
+    is_alignn_model, generate_alignn_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
@@ -203,6 +206,10 @@ except ImportError:
     elif is_dpa_model(actual_selected_model, actual_model_size):
         # DPA: a DeePMD-kit checkpoint plus an optional model branch.
         calculator_setup_str = generate_dpa_calculator_code(
+            actual_model_size, device=device, indent="")
+    elif is_alignn_model(actual_selected_model, actual_model_size):
+        # ALIGNN-FF: a Figshare checkpoint folder plus its own ASE calculator.
+        calculator_setup_str = generate_alignn_calculator_code(
             actual_model_size, device=device, indent="")
     elif "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
