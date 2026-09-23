@@ -13,7 +13,7 @@ Run or generate input script for basic molecular dynamics/static simulations:
 - **Energy grid scan** (with generated Python script)
 - **Additional post-processing scripts** (average powder diffraction pattern, average structure from .xyz trajectory)  
 
-**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE / UMA / DPA / ALIGNN-FF interatomic potentials**. It is also possible to generate standalone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
+**Interactive interface for multiple input structure files** (POSCAR, CIF, LMP, XYZ with lattice) with a **machine learning MACE / CHGNet / Nequix / Allegro / NequIP / SevenNet / Orb-v3 / MatterSim / UPET / GRACE / UMA / DPA / ALIGNN-FF / Prophet interatomic potentials**. It is also possible to generate standalone Python code with the set settings and run the simulations directly in your console. Simply put this script into a folder with your structures and start it. The application also supports **selective dynamics in POSCAR** files, preserving the set constraints for specific atoms.
 
 🌐 For **online version** which can be used **to generate standalone python scripts** for selected calculations, please visit: **https://umlip-interactive.streamlit.app**  
 
@@ -50,6 +50,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 - [UMA (Meta FAIR)](https://github.com/facebookresearch/fairchem) — generated scripts only; weights are gated on Hugging Face, requires key
 - [DPA (DeePMD-kit)](https://github.com/deepmodeling/deepmd-kit)
 - [ALIGNN-FF](https://github.com/atomgptlab/alignn)
+- [Prophet (Kairos Materials)](https://github.com/kairosmaterial/prophet) — research preview; Prophet-V1-Mag takes magnetic moments as an input, set per element or per atom, or predicted by its moment head
 
 
 ---
@@ -96,7 +97,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   8) To update the application, write in the main folder:  
       **git pull**
 
-#### To run simulations with **MatterSim** / **UPET** / **GRACE** / **Nequix** / **Allegro, NequIP** / **SevenNet** / **DPA** / **ALIGNN-FF** (please pay separated attention to GRACE):  
+#### To run simulations with **MatterSim** / **UPET** / **GRACE** / **Nequix** / **Allegro, NequIP** / **SevenNet** / **DPA** / **ALIGNN-FF** / **Prophet** (please pay separated attention to GRACE):  
   1) Download updates and prerequisites:  
      **sudo apt update**  
      **sudo apt install -y python3-venv**  
@@ -109,7 +110,7 @@ Currently, certain u-MLIP does not share compatible versions of certain packages
   5) Activate the Python virtual environment (before activating, make sure you are inside the mace-md-gui folder):  
       **source mace_env_2/bin/activate**  
   6) Install all the necessary Python packages (for UPET, use requirements-upet.txt):  
-   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment) or **pip install -r requirements-sevennet.txt** (for SevenNet in its own environment) or **pip install -r requirements-uma.txt** (for UMA / fairchem in its own environment — needs Python 3.11–3.13, and the weights are gated on Hugging Face, see the notes inside that file) or **pip install -r requirements-dpa.txt** (for DPA / DeePMD-kit) or **pip install -r requirements-alignn.txt** (for ALIGNN-FF in its own environment)  
+   **pip install -r requirements-mattersim.txt** (for MatterSim) or **pip install -r requirements-upet.txt** (for UPET)  or **pip install -r requirements-grace.txt && pip install torch==2.8.0** (for GRACE) or **pip install -r requirements-allegro.txt** (for Allegro / NequIP) or **pip install -r requirements-nequix.txt** (for Nequix in its own environment) or **pip install -r requirements-sevennet.txt** (for SevenNet in its own environment) or **pip install -r requirements-uma.txt** (for UMA / fairchem in its own environment — needs Python 3.11–3.13, and the weights are gated on Hugging Face, see the notes inside that file) or **pip install -r requirements-dpa.txt** (for DPA / DeePMD-kit) or **pip install -r requirements-alignn.txt** (for ALIGNN-FF in its own environment) or **pip install -r requirements-prophet.txt** (for Prophet in its own environment — needs Python 3.11+)  
   7) Run the app (always before running it, make sure to activate its Python virtual environment (Step 4a):  
       **streamlit run app.py**
   8) To update the application, write in the main folder:  

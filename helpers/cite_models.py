@@ -372,4 +372,33 @@ def create_citation_info():
                 <a href="https://arxiv.org/abs/2503.04070" target="_blank">Kaplan et al., arXiv:2503.04070 (2025)</a>.
             </p>
         </div>
+
+        <div class="model-section" style="border-left-color: #7B1FA2;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣5️⃣</span>
+                <span>Prophet (Kairos Materials)</span>
+            </div>
+            <p style="margin:4px 0 10px 0; color:#2c3e50; font-size:14px;">
+                Research-preview models. Cite the technical report, and the datasets
+                the models are pretrained on.
+            </p>
+            <div class="link-container">
+                <a href="https://www.kairosmaterials.com/papers/Prophet.pdf" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> Prophet &mdash; technical report (2026)
+                </a>
+                <a href="https://github.com/kairosmaterial/prophet" target="_blank" class="github-link">
+                    <span class="github-icon"></span> GitHub
+                </a>
+                <a href="https://huggingface.co/kairosmaterial/prophet" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Weights
+                </a>
+            </div>
+            <p style="margin:10px 0 0 0; color:#2c3e50; font-size:13px;">
+                Datasets: OMat24 &mdash;
+                <a href="https://arxiv.org/abs/2410.12771" target="_blank">Barroso-Luque et al., Nat. Comput. Sci. 6, 642 (2026)</a>;
+                ELEMENTA &mdash;
+                <a href="https://huggingface.co/datasets/kairosmaterial/ELEMENTA" target="_blank">Kairos Materials</a>.
+                Code MIT, weights CC-BY-4.0.
+            </p>
+        </div>
         """, unsafe_allow_html=True)

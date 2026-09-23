@@ -19,6 +19,9 @@ from helpers.dpa_models import (
 from helpers.alignn_models import (
     is_alignn_model, generate_alignn_calculator_code,
 )
+from helpers.prophet_models import (
+    is_prophet_model, generate_prophet_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
@@ -210,6 +213,10 @@ except ImportError:
     elif is_alignn_model(actual_selected_model, actual_model_size):
         # ALIGNN-FF: a Figshare checkpoint folder plus its own ASE calculator.
         calculator_setup_str = generate_alignn_calculator_code(
+            actual_model_size, device=device, indent="")
+    elif is_prophet_model(actual_selected_model, actual_model_size):
+        # Prophet: a Hugging Face checkpoint, plus magnetic moments for the spin model.
+        calculator_setup_str = generate_prophet_calculator_code(
             actual_model_size, device=device, indent="")
     elif "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')

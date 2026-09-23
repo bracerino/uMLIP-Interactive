@@ -21,6 +21,9 @@ from helpers.dpa_models import (
 from helpers.alignn_models import (
     is_alignn_model, generate_alignn_calculator_code,
 )
+from helpers.prophet_models import (
+    is_prophet_model, generate_prophet_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -217,6 +220,10 @@ def _calc_block(selected_model, model_size, device, dtype,
     if is_alignn_model(selected_model, model_size):
         # ALIGNN-FF: a Figshare checkpoint folder plus its own ASE calculator.
         return generate_alignn_calculator_code(model_size, device=device, indent=i)
+
+    if is_prophet_model(selected_model, model_size):
+        # Prophet: a Hugging Face checkpoint, plus magnetic moments for the spin model.
+        return generate_prophet_calculator_code(model_size, device=device, indent=i)
 
     is_chgnet    = selected_model.startswith("CHGNet")
     is_sevennet  = selected_model.startswith("SevenNet") or str(model_size).startswith("7net")

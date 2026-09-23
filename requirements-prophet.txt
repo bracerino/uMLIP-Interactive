@@ -1,0 +1,39 @@
+# Prophet environment — Prophet research-preview models by Kairos Materials.
+#
+# Prophet needs a virtual environment of its own: it requires Python >= 3.11,
+# torch >= 2.7 and ASE >= 3.29, and it installs from GitHub (no PyPI release).
+#
+#   python3 -m venv prophet_env
+#   source prophet_env/bin/activate   # Windows: prophet_env\Scripts\activate
+#   pip install -r requirements-prophet.txt
+#   streamlit run app.py
+#
+# Checkpoints download from huggingface.co/kairosmaterial/prophet on first use
+# and are cached in ~/.cache/prophet_models/. They are not gated, so no token is
+# needed. The models are research previews: code MIT, weights CC-BY-4.0.
+
+streamlit==1.64.0
+plotly
+pymatgen==2025.10.7
+matscipy==1.2.0 # required for ASE 3.26+
+ase>=3.29       # required by prophet-mlip
+phonopy==2.41.0
+py3Dmol==2.5.0
+
+psutil
+gputil
+seekpath==2.2.1
+
+# Install the CUDA build for GPU runs, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.7
+
+prophet-mlip @ git+https://github.com/kairosmaterial/prophet.git
+
+# Optional: CUDA tensor-product kernels. They need a CUDA toolchain with nvcc
+# and headers at runtime (JIT), and are used only on a GPU — without them both
+# models run the pure e3nn path instead.
+#   pip install "prophet-mlip[kernel] @ git+https://github.com/kairosmaterial/prophet.git"
+
+# Fetches the checkpoints from huggingface.co/kairosmaterial/prophet.
+huggingface_hub

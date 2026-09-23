@@ -17,6 +17,9 @@ from helpers.dpa_models import (
 from helpers.alignn_models import (
     is_alignn_model, generate_alignn_calculator_code,
 )
+from helpers.prophet_models import (
+    is_prophet_model, generate_prophet_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -45,6 +48,9 @@ _MLIP_PACKAGES = {
             "pip install deepmd-kit  (needs its own env, see requirements-dpa.txt)"),
     "alignn": ("ALIGNN-FF", "alignn.ff.ff",
                "pip install alignn  (see requirements-alignn.txt)"),
+    "prophet": ("Prophet (Kairos)", "prophet",
+                "pip install 'prophet-mlip @ git+https://github.com/kairosmaterial/prophet.git'"
+                "  (see requirements-prophet.txt)"),
 }
 
 # Run before the probe. SevenNet checkpoints need slice allow-listed on torch 2.6.
@@ -73,6 +79,8 @@ def _mlip_family(selected_model_key=None, model_size=None, custom_mace_path=None
         return "dpa"
     if is_alignn_model(selected_model_key, model_size):
         return "alignn"
+    if is_prophet_model(selected_model_key, model_size):
+        return "prophet"
     key = selected_model_key or ""
     if "POLAR" in key.upper() or is_custom_mace_model(
             model_size=model_size, selected_model_key=selected_model_key,
@@ -1978,6 +1986,10 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     # ALIGNN-FF: a Figshare checkpoint folder handed to its own ASE calculator.
     if is_alignn_model(selected_model_key, model_size):
         return generate_alignn_calculator_code(model_size, device=device, indent="    ")
+
+    # Prophet: a Hugging Face checkpoint; the spin model also takes magnetic moments.
+    if is_prophet_model(selected_model_key, model_size):
+        return generate_prophet_calculator_code(model_size, device=device, indent="    ")
 
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     if is_mace_polar:

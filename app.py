@@ -135,6 +135,11 @@ from helpers.alignn_models import (
     ALIGNN_FAMILY_NAME, ALIGNN_MODELS, ALIGNN_ENV_SETUP,
     is_alignn_model, build_alignn_calculator,
 )
+from helpers.prophet_models import (
+    PROPHET_FAMILY_NAME, PROPHET_MODELS, PROPHET_ENV_SETUP,
+    is_prophet_model, build_prophet_calculator, prophet_is_spin_model,
+    set_active_prophet_spins, get_active_prophet_spins, describe_prophet_spins,
+)
 from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
     is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
@@ -188,6 +193,7 @@ MACE_OFF_AVAILABLE = False
 
 import numpy as np
 from ase.phonons import Phonons
+from ase.data import chemical_symbols as ase_chemical_symbols
 from ase.dft.kpoints import bandpath
 import json
 import shutil
@@ -236,6 +242,12 @@ try:
     ALIGNN_AVAILABLE = True
 except ImportError:
     ALIGNN_AVAILABLE = False
+
+try:
+    import prophet  # noqa: F401
+    PROPHET_AVAILABLE = True
+except ImportError:
+    PROPHET_AVAILABLE = False
 
 try:
     from pet_mad.calculator import PETMADCalculator
@@ -2995,6 +3007,7 @@ MODEL_FAMILIES = {
     # in-process when the app itself is started from the DPA environment.
     DPA_FAMILY_NAME: DPA_MODELS,
     ALIGNN_FAMILY_NAME: ALIGNN_MODELS,
+    PROPHET_FAMILY_NAME: PROPHET_MODELS,
 }
 
 # Which model a family opens on when it is selected. Keyed on the model id
@@ -3087,6 +3100,7 @@ FAMILY_ENV_SETUP = {
     UMA_FAMILY_NAME: UMA_ENV_SETUP,
     DPA_FAMILY_NAME: DPA_ENV_SETUP,
     ALIGNN_FAMILY_NAME: ALIGNN_ENV_SETUP,
+    PROPHET_FAMILY_NAME: PROPHET_ENV_SETUP,
 }
 
 
@@ -3763,6 +3777,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_deepmd = selected_model.startswith("DeePMD")
         is_dpa = is_dpa_model(selected_model, model_size)
         is_alignn = is_alignn_model(selected_model, model_size)
+        is_prophet = is_prophet_model(selected_model, model_size)
 
         #GRACE
         is_grace = selected_model.startswith("GRACE") or model_size == "grace:custom"
@@ -3992,6 +4007,19 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(f"✅ DeePMD {model_size} initialized successfully")
             except Exception as e:
                 log_queue.put(f"❌ DeePMD initialization failed: {str(e)}")
+                return
+        elif is_prophet:
+            log_queue.put("Setting up Prophet (Kairos) calculator...")
+            try:
+                calculator = build_prophet_calculator(
+                    model_size, device=device, log=log_queue.put)
+                log_queue.put("✅ Prophet calculator initialized successfully")
+            except Exception as e:
+                log_queue.put(f"❌ Prophet initialization failed: {e}")
+                log_queue.put(
+                    "   Either run the app from a Prophet environment "
+                    "(pip install -r requirements-prophet.txt), or generate a "
+                    "standalone script and run it there.")
                 return
         elif is_alignn:
             log_queue.put("Setting up ALIGNN-FF calculator...")
@@ -5483,7 +5511,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.13.1 · 9/19/2026
+            v0.14.0 · 9/23/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -5712,6 +5740,151 @@ with st.sidebar:
     else:
         set_active_dpa_settings(None)
 
+    # ------------------------------------------------------------------
+    # Prophet-Spin: the energy is E(R, M), so the magnetic configuration is
+    # an input like the geometry. Structure files carry no moments, so they
+    # are set here and stamped onto every single point.
+    # ------------------------------------------------------------------
+    if is_prophet_model(selected_model, model_size) and prophet_is_spin_model(model_size):
+        _spins_saved = get_active_prophet_spins()
+        st.markdown("---")
+        st.markdown("### 🧲 Prophet-Spin magnetic moments")
+        st.caption("Moments in μB; the same values go into the generated script.")
+
+        _detected_elements = sorted({
+            site.specie.symbol
+            for structure in (st.session_state.get('structures') or {}).values()
+            for site in structure
+        })
+        _n_atoms = [len(structure) for structure in
+                    (st.session_state.get('structures') or {}).values()]
+
+        _mode_labels = {"element": "Per element", "atom": "Per atom",
+                        "predict": "Predict (moment head)"}
+        _mode_order = list(_mode_labels)
+        _saved_mode = _spins_saved.get('mode', 'element')
+        _mode_choice = st.radio(
+            "Set moments", [_mode_labels[_m] for _m in _mode_order], horizontal=True,
+            index=_mode_order.index(_saved_mode) if _saved_mode in _mode_order else 0,
+            key="prophet_spin_mode",
+            help="Per element: one value for every atom of that element. "
+                 "Per atom: one value per atom, in the order they appear in the file. "
+                 "Predict: Prophet's moment head predicts the moments itself, and the "
+                 "values below are only seeds that fix the magnetic ordering (their signs).")
+        _mode = next(_m for _m in _mode_order if _mode_labels[_m] == _mode_choice)
+
+        _predict = _mode == "predict"
+        if _predict:
+            st.caption("Seeds set the ordering by their signs (+/+ ferromagnetic, "
+                       "+/− antiferromagnetic); the moment head predicts the moments.")
+            _seed_mode_labels = {"element": "Seeds per element", "atom": "Seeds per atom"}
+            _seed_order = list(_seed_mode_labels)
+            _saved_seed = _spins_saved.get('seed_mode', 'element')
+            _seed_choice = st.radio(
+                "Seed moments", [_seed_mode_labels[_m] for _m in _seed_order],
+                horizontal=True,
+                index=_seed_order.index(_saved_seed) if _saved_seed in _seed_order else 0,
+                key="prophet_seed_mode")
+            _seed_mode = next(_m for _m in _seed_order if _seed_mode_labels[_m] == _seed_choice)
+        else:
+            _seed_mode = _spins_saved.get('seed_mode', 'element')
+
+        _noncollinear = False
+        if not _predict:
+            _noncollinear = st.checkbox(
+                "Non-collinear (give x, y, z instead of one value)",
+                value=st.session_state.get("prophet_spin_noncollinear", False),
+                key="prophet_spin_noncollinear",
+                help="Prophet-Spin accepts collinear (N,) or non-collinear (N, 3) moments.")
+
+        _spins = {"mode": _mode, "seed_mode": _seed_mode,
+                  "per_element": {}, "per_atom": []}
+        _mode = _seed_mode if _predict else _mode
+
+        if _mode == "element":
+            # Taken from the loaded structures, but editable: the moments can be
+            # set before anything is uploaded, and extra elements can be added
+            # for structures that will be used later.
+            if not st.session_state.get("prophet_spin_elements"):
+                st.session_state["prophet_spin_elements"] = " ".join(
+                    _detected_elements or list((_spins_saved.get('per_element') or {})))
+            _elements_raw = st.text_input(
+                "Elements", key="prophet_spin_elements",
+                placeholder="Fe O",
+                help="Which elements to set moments for, e.g. 'Fe O'. Pre-filled from "
+                     "the loaded structures; edit it freely.")
+            _elements, _unknown = [], []
+            for _tok in _elements_raw.replace(",", " ").split():
+                _sym = _tok.strip().capitalize()
+                if _sym not in ase_chemical_symbols:
+                    _unknown.append(_tok)
+                elif _sym not in _elements:
+                    _elements.append(_sym)
+            if _unknown:
+                st.error(f"❌ not an element: {', '.join(_unknown)}")
+            _missing = [_el for _el in _detected_elements if _el not in _elements]
+            if _missing:
+                st.warning(f"⚠️ the loaded structures also contain {', '.join(_missing)} — "
+                           "the run stops with an error unless every element has a moment.")
+            _saved_elements = _spins_saved.get('per_element') or {}
+            for _el in _elements:
+                _prev = _saved_elements.get(_el)
+                if _noncollinear:
+                    _cols = st.columns([1, 1, 1, 3])
+                    _prev_vec = list(_prev) if isinstance(_prev, (list, tuple)) else [0.0, 0.0, float(_prev or 0.0)]
+                    _vec = []
+                    for _i, _axis in enumerate(("x", "y", "z")):
+                        with _cols[_i]:
+                            _vec.append(st.number_input(
+                                f"{_el} m{_axis} (μB)", value=float(_prev_vec[_i]),
+                                step=0.1, format="%.2f", key=f"prophet_spin_{_el}_{_axis}"))
+                    _spins["per_element"][_el] = _vec
+                else:
+                    _cols = st.columns([1, 3])
+                    with _cols[0]:
+                        _prev_val = _prev[2] if isinstance(_prev, (list, tuple)) else _prev
+                        _spins["per_element"][_el] = st.number_input(
+                            f"{_el} (μB)", value=float(_prev_val or 0.0), step=0.1,
+                            format="%.2f", key=f"prophet_spin_{_el}")
+        else:
+            _hint = f" ({_n_atoms[0]} atoms in the first structure)" if _n_atoms else ""
+            _raw = st.text_area(
+                f"One value per atom{_hint}" if not _noncollinear else
+                f"Three values (x y z) per atom{_hint}",
+                value=st.session_state.get("prophet_spin_per_atom_raw", ""),
+                key="prophet_spin_per_atom_raw",
+                placeholder="2.5 -2.5 2.5 -2.5",
+                help="Separated by spaces, commas or newlines, in the order the atoms "
+                     "appear in the structure file.")
+            _numbers = []
+            _bad = None
+            for _tok in _raw.replace(",", " ").split():
+                try:
+                    _numbers.append(float(_tok))
+                except ValueError:
+                    _bad = _tok
+                    break
+            if _bad is not None:
+                st.error(f"❌ '{_bad}' is not a number")
+            elif _numbers:
+                if _noncollinear:
+                    if len(_numbers) % 3:
+                        st.error(f"❌ {len(_numbers)} values is not a whole number of x, y, z triples")
+                    else:
+                        _spins["per_atom"] = [_numbers[_i:_i + 3] for _i in range(0, len(_numbers), 3)]
+                else:
+                    _spins["per_atom"] = _numbers
+                if _spins["per_atom"] and _n_atoms and len(_spins["per_atom"]) not in _n_atoms:
+                    st.warning(
+                        f"⚠️ {len(_spins['per_atom'])} moments given, but the loaded "
+                        f"structures have {', '.join(str(_n) for _n in sorted(set(_n_atoms)))} atoms — "
+                        "the run will stop with an error unless the counts match.")
+
+        set_active_prophet_spins(_spins)
+        st.info(f"🧲 Magnetic moments: {describe_prophet_spins(_spins)}")
+    else:
+        set_active_prophet_spins(None)
+
     is_custom_mace = (not use_qe) and (selected_model == "Custom MACE Model 🔧")
     custom_mace_path = None
 
@@ -5920,6 +6093,7 @@ with st.sidebar:
             "GRACE": GRACE_AVAILABLE,
             "UMA (fairchem)": UMA_AVAILABLE,
             "ALIGNN-FF": ALIGNN_AVAILABLE,
+            "Prophet (Kairos)": PROPHET_AVAILABLE,
         }
         available = [name for name, ok in availability.items() if ok]
         not_available = [name for name, ok in availability.items() if not ok]
@@ -6549,7 +6723,7 @@ with tab1:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
     st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
-        "Try also the main application **[XRDlicious](xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. "
+        "Try also the main application **[XRDlicious](https://xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. "
         "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
     )
 
