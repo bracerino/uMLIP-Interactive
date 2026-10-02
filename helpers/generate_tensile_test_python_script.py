@@ -1554,15 +1554,16 @@ def main():
         print("Calculator could not be initialized. Exiting.")
         exit()
 
-    print("\\nSearching for structure files (*.cif, *.vasp, *.poscar, POSCAR*)...")
+    print("\\nSearching for structure files (*.cif, *.vasp, *.poscar, POSCAR*, *.xyz, *.extxyz)...")
     structure_files = (glob.glob("*.cif") + glob.glob("*.vasp")
                        + glob.glob("*.poscar") + glob.glob("*.POSCAR")
-                       + glob.glob("POSCAR*"))
+                       + glob.glob("POSCAR*")
+                       + glob.glob("*.xyz") + glob.glob("*.extxyz"))
     # Drop duplicates (e.g. a file matched by both *.POSCAR and POSCAR*) while keeping order
     structure_files = list(dict.fromkeys(structure_files))
 
     if not structure_files:
-        print("No structure files found. Please place .cif, .vasp/.poscar or POSCAR files in this directory.")
+        print("No structure files found. Please place .cif, .vasp/.poscar, POSCAR or .xyz/.extxyz files in this directory.")
         exit()
 
     if len(structure_files) > 1:

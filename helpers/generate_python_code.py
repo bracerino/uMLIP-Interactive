@@ -20,6 +20,9 @@ from helpers.alignn_models import (
 from helpers.prophet_models import (
     is_prophet_model, generate_prophet_calculator_code,
 )
+from helpers.umof_models import (
+    is_umof_model, generate_umof_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -481,11 +484,11 @@ def main():
 
     # Find and validate POSCAR files in current directory
     print("\\n📁 Looking for POSCAR files in current directory...")
-    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
+    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
 
     if not structure_files:
         print("❌ No POSCAR files found in current directory!")
-        print("Please place files starting with 'POSCAR' or ending with '.vasp' in the same directory as this script.")
+        print("Please place files starting with 'POSCAR' or ending with '.vasp', '.cif', '.xyz' or '.extxyz' in the same directory as this script.")
         return
 
     print(f"✅ Found {{len(structure_files)}} structure files:")
@@ -1146,7 +1149,7 @@ def _generate_ga_code(substitutions, ga_params, calc_formation_energy, supercell
 '''
 
     # Main GA code with concentration sweep support
-    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")]
+    code = f'''    structure_files = [f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]
 
     if len(structure_files) == 0:
         print("❌ No structure files found!")
@@ -1990,6 +1993,11 @@ def _generate_calculator_setup_code(model_size, device, selected_model_key=None,
     # Prophet: a Hugging Face checkpoint; the spin model also takes magnetic moments.
     if is_prophet_model(selected_model_key, model_size):
         return generate_prophet_calculator_code(model_size, device=device, indent="    ")
+
+    # uMOF: MACE fine-tuned for MOFs, unpacked from a Figshare zip.
+    if is_umof_model(selected_model_key, model_size):
+        return generate_umof_calculator_code(model_size, device=device, dtype=dtype,
+                                             indent="    ", enable_cueq=mace_enable_cueq)
 
     is_mace_polar = selected_model_key is not None and "POLAR" in selected_model_key.upper()
     if is_mace_polar:
@@ -2903,7 +2911,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     polar_spin = (polar_settings or {}).get("spin", 1)
     polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
     results = []
     is_mace_polar = {is_mace_polar}
     is_orbmol = {is_orbmol}
@@ -3047,7 +3055,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     code += '''
             if is_orbmol:
                 print(f"  ⚡ Extracting OrbMol latent charges for {filename}...")
-                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('.extxyz', '').replace('.xyz', '').replace('POSCAR_', '').replace('POSCAR', '')
                 if not _base_name_orbmol:
                     _base_name_orbmol = f"structure_{i+1}"
                 orbmol_data = extract_orbmol_charges(atoms, filename)
@@ -3062,7 +3070,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
 
             if is_mace_polar:
                 print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
-                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('.extxyz', '').replace('.xyz', '').replace('POSCAR_', '').replace('POSCAR', '')
                 if not base_name_for_polar:
                     base_name_for_polar = f"structure_{i+1}"
                 polar_data = extract_polar_results(atoms, filename)
@@ -3302,7 +3310,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     strain_magnitudes_str = str(strain_magnitudes_list)
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
@@ -5048,7 +5056,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif")])
+    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
@@ -5523,7 +5531,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
             if is_orbmol:
                 print(f"  ⚡ Extracting OrbMol latent charges for {filename}...")
-                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                _base_name_orbmol = filename.replace('.vasp', '').replace('.poscar', '').replace('.extxyz', '').replace('.xyz', '').replace('POSCAR_', '').replace('POSCAR', '')
                 if not _base_name_orbmol:
                     _base_name_orbmol = f"structure_{i+1}"
                 # Re-stamp OrbMol metadata on final_atoms and trigger a fresh singlepoint
@@ -5548,7 +5556,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
             if is_mace_polar:
                 print(f"  ⚡ Extracting MACE-POLAR-1 outputs for {filename}...")
-                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('POSCAR_', '').replace('POSCAR', '')
+                base_name_for_polar = filename.replace('.vasp', '').replace('.poscar', '').replace('.extxyz', '').replace('.xyz', '').replace('POSCAR_', '').replace('POSCAR', '')
                 if not base_name_for_polar:
                     base_name_for_polar = f"structure_{i+1}"
                 # Re-stamp polar metadata on final_atoms (filters return atoms without info), then

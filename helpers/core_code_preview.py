@@ -11,6 +11,9 @@ from helpers.alignn_models import (
 from helpers.prophet_models import (
     is_prophet_model, generate_prophet_calculator_code,
 )
+from helpers.umof_models import (
+    is_umof_model, generate_umof_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -164,6 +167,10 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
 
     if is_prophet_model(selected_model, model_size):
         return generate_prophet_calculator_code(model_size, device=device, indent="")
+
+    if is_umof_model(selected_model, model_size):
+        return generate_umof_calculator_code(model_size, device=device, dtype=dtype,
+                                             indent="", enable_cueq=mace_enable_cueq)
 
     if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
                             custom_mace_path=custom_mace_path):

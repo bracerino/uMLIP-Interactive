@@ -38,6 +38,7 @@ Personal recommendation for the **maximum number of atoms** (for energies, geome
 
 ### Currently supported uMLIPs
 - [MACE](https://github.com/ACEsuit/mace)  
+  - incl. [uMOF-MH / uMOF-POLAR](https://arxiv.org/abs/2608.28100), MACE fine-tuned for metal-organic frameworks (uMOF-POLAR needs `pip install graph-longrange==0.4.0`)
 - [CHGNet](https://github.com/CederGroupHub/chgnet)  
 - [SevenNet](https://github.com/MDIL-SNU/SevenNet)  
 - [Orb-v3](https://github.com/orbital-materials/orb-models)  

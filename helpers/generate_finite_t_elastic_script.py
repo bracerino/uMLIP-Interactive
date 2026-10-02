@@ -2800,14 +2800,15 @@ if 'calculator' not in locals() or calculator is None:
     print("Calculator could not be initialized. Exiting.")
     return
 
-print("\nSearching for structure files (*.cif, *.vasp, *.poscar, POSCAR*)...")
+print("\nSearching for structure files (*.cif, *.vasp, *.poscar, POSCAR*, *.xyz, *.extxyz)...")
 structure_files = (glob.glob("*.cif") + glob.glob("*.vasp")
                    + glob.glob("*.poscar") + glob.glob("*.POSCAR")
-                   + glob.glob("POSCAR*"))
+                   + glob.glob("POSCAR*")
+                   + glob.glob("*.xyz") + glob.glob("*.extxyz"))
 structure_files = list(dict.fromkeys(structure_files))
 if not structure_files:
-    print("No structure files found. Place a .cif, .vasp/.poscar or POSCAR "
-          "file next to this script.")
+    print("No structure files found. Place a .cif, .vasp/.poscar, POSCAR or "
+          ".xyz/.extxyz file next to this script.")
     return
 if len(structure_files) > 1:
     print("Warning: multiple structure files found; using the first one: %s"

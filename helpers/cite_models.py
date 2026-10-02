@@ -401,4 +401,27 @@ def create_citation_info():
                 Code MIT, weights CC-BY-4.0.
             </p>
         </div>
+
+        <div class="model-section" style="border-left-color: #00897B;">
+            <div class="model-title">
+                <span class="model-icon">1️⃣6️⃣</span>
+                <span>uMOF (MACE fine-tuned for MOFs)</span>
+            </div>
+            <p style="margin:4px 0 10px 0; color:#2c3e50; font-size:14px;">
+                uMOF-MH and uMOF-POLAR, fine-tuned from MACE-MH-1 and MACE-POLAR-1-M on
+                r2SCAN-D4 data for 19,950 metal-organic frameworks. Cite the uMOF paper
+                and the MACE foundation model it starts from.
+            </p>
+            <div class="link-container">
+                <a href="https://arxiv.org/abs/2608.28100" target="_blank" class="citation-link">
+                    <span class="paper-icon"></span> Inizan et al., arXiv:2608.28100 (2026)
+                </a>
+                <a href="https://doi.org/10.6084/m9.figshare.33311829" target="_blank" class="github-link">
+                    <span class="github-icon"></span> Weights &amp; data (Figshare)
+                </a>
+            </div>
+            <p style="margin:10px 0 0 0; color:#2c3e50; font-size:13px;">
+                Weights and data CC BY 4.0.
+            </p>
+        </div>
         """, unsafe_allow_html=True)

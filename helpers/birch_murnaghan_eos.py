@@ -827,9 +827,10 @@ def main():
         f for f in os.listdir(".")
         if f.startswith("POSCAR") or f.endswith(".vasp")
         or f.endswith(".poscar") or f.endswith(".cif")
+        or f.endswith(".xyz") or f.endswith(".extxyz")
     ])
     if not structure_files:
-        print("ERROR: No structure files (.cif / .vasp / POSCAR*) found")
+        print("ERROR: No structure files (.cif / .vasp / POSCAR* / .xyz / .extxyz) found")
         sys.exit(1)
     print(f"\\nFound {{len(structure_files)}} structure(s): {{structure_files}}")
 

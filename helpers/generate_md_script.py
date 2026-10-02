@@ -22,6 +22,9 @@ from helpers.alignn_models import (
 from helpers.prophet_models import (
     is_prophet_model, generate_prophet_calculator_code,
 )
+from helpers.umof_models import (
+    is_umof_model, generate_umof_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, get_active_uma_settings, uma_checkpoint_name,
 )
@@ -218,6 +221,11 @@ except ImportError:
         # Prophet: a Hugging Face checkpoint, plus magnetic moments for the spin model.
         calculator_setup_str = generate_prophet_calculator_code(
             actual_model_size, device=device, indent="")
+    elif is_umof_model(actual_selected_model, actual_model_size):
+        # uMOF: MACE fine-tuned for MOFs, unpacked from a Figshare zip.
+        calculator_setup_str = generate_umof_calculator_code(
+            actual_model_size, device=device, dtype=dtype, indent="",
+            enable_cueq=mace_enable_cueq)
     elif "Fairchem" in actual_selected_model:
         fairchem_model_name = md_params.get('fairchem_model_name', 'MISSING_FAIRCHEM_MODEL_NAME')
         calculator_setup_str = f"""
@@ -2326,11 +2334,11 @@ def main():
         print("Calculator could not be initialized. Exiting.")
         exit()
 
-    print("\\nSearching for structure files (*.cif, *.vasp, POSCAR*)...")
-    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*") + glob.glob("*.poscar") 
+    print("\\nSearching for structure files (*.cif, *.vasp, POSCAR*, *.xyz, *.extxyz)...")
+    structure_files = glob.glob("*.cif") + glob.glob("*.vasp") + glob.glob("POSCAR*") + glob.glob("*.poscar") + glob.glob("*.xyz") + glob.glob("*.extxyz")
 
     if not structure_files:
-        print("No structure files found. Please place .cif or .vasp/POSCAR files in this directory.")
+        print("No structure files found. Please place .cif, .vasp/POSCAR or .xyz/.extxyz files in this directory.")
         exit()
 
     print(f"Found {{len(structure_files)}} structure(s): {{', '.join(structure_files)}}")

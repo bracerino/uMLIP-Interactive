@@ -24,6 +24,9 @@ from helpers.alignn_models import (
 from helpers.prophet_models import (
     is_prophet_model, generate_prophet_calculator_code,
 )
+from helpers.umof_models import (
+    is_umof_model, generate_umof_calculator_code,
+)
 from helpers.uma_models import (
     is_uma_model, generate_uma_calculator_code, get_active_uma_settings,
     uma_checkpoint_name,
@@ -104,6 +107,11 @@ def build_calculator_code(selected_model, model_size, device, dtype,
         # Prophet: a Hugging Face checkpoint, plus magnetic moments for the spin model.
         calculator_setup_str = generate_prophet_calculator_code(
             model_size, device=device, indent="")
+    elif is_umof_model(selected_model, model_size):
+        # uMOF: MACE fine-tuned for MOFs, unpacked from a Figshare zip.
+        calculator_setup_str = generate_umof_calculator_code(
+            model_size, device=device, dtype=dtype, indent="",
+            enable_cueq=mace_enable_cueq)
     elif "CHGNet" in selected_model:
         model_imports += """
 try:

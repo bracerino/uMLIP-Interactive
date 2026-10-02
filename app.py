@@ -73,6 +73,12 @@ from helpers.petmad_dos import render_petmad_dos_panel
 # ---------------------------------------------------------------------------
 ONLINE_MODE = os.environ.get("MLIP_ONLINE_MODE", "0") == "1"
 
+# Description, keywords and structured data for search engines. Only the public
+# online app is indexed, so the local app is left untouched.
+if ONLINE_MODE:
+    from helpers.seo_metadata import inject_seo_metadata
+    inject_seo_metadata()
+
 from helpers.nudge_elastic_band import (
     setup_neb_parameters_ui,
     run_neb_calculation,
@@ -139,6 +145,9 @@ from helpers.prophet_models import (
     PROPHET_FAMILY_NAME, PROPHET_MODELS, PROPHET_ENV_SETUP,
     is_prophet_model, build_prophet_calculator, prophet_is_spin_model,
     set_active_prophet_spins, get_active_prophet_spins, describe_prophet_spins,
+)
+from helpers.umof_models import (
+    UMOF_MODELS, is_umof_model, build_umof_calculator, umof_checkpoint_name,
 )
 from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
@@ -2871,6 +2880,8 @@ MODEL_FAMILIES = {
         "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
         "MACE-POLAR-1 (medium) - Polarisable, 83 elem [ωB97M-V] ⭐": "polar-1-m",
         "MACE-POLAR-1 (large)  - Polarisable, 83 elem [ωB97M-V]":    "polar-1-l",
+        # Fine-tuned for metal-organic frameworks, see helpers/umof_models.py.
+        **UMOF_MODELS,
         "Custom MACE Model 🔧": "custom",
     },
     "UPET / PET-MAD": {
@@ -3138,6 +3149,9 @@ def is_url_model(model_size):
 
 
 def is_multihead_model(selected_model):
+    # uMOF-MH names MACE-MH-1 in its label, but has its own fixed head.
+    if is_umof_model(selected_model):
+        return False
     return "Multi-head" in selected_model or "MH-0" in selected_model or "MH-1" in selected_model
 
 def is_polar_model(selected_model_name):
@@ -3778,6 +3792,7 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_dpa = is_dpa_model(selected_model, model_size)
         is_alignn = is_alignn_model(selected_model, model_size)
         is_prophet = is_prophet_model(selected_model, model_size)
+        is_umof = is_umof_model(selected_model, model_size)
 
         #GRACE
         is_grace = selected_model.startswith("GRACE") or model_size == "grace:custom"
@@ -4275,6 +4290,22 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                     log_queue.put(f"❌ {_d3_err}")
                     log_queue.put("CALCULATION_FINISHED")
                     return
+        elif is_umof:
+            # Ahead of the MACE-POLAR branch: uMOF-POLAR is a polar model too
+            # (its charge/spin settings still apply), but loads a local file.
+            _umof_name = umof_checkpoint_name(model_size)[:-len(".model")]
+            log_queue.put(f"Setting up {_umof_name} calculator (MACE fine-tuned for MOFs)...")
+            try:
+                calculator = build_umof_calculator(
+                    model_size, device=device, dtype=dtype,
+                    enable_cueq=mace_enable_cueq, log=log_queue.put)
+                log_queue.put(f"✅ {_umof_name} initialised on {device}")
+            except Exception as e:
+                log_queue.put(f"❌ {_umof_name} initialization failed: {e}")
+                if "graph_longrange" in str(e):
+                    log_queue.put("   uMOF-POLAR needs graph_longrange: pip install graph-longrange==0.4.0")
+                log_queue.put("CALCULATION_FINISHED")
+                return
         elif is_mace_polar:
             log_queue.put("Setting up MACE-POLAR-1 calculator...")
             if not MACE_POLAR_AVAILABLE:
@@ -5511,7 +5542,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.14.0 · 9/23/2026
+            v0.14.1 · 10/2/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6268,7 +6299,14 @@ with st.sidebar:
 
         is_mh_model = is_multihead_model(selected_model)
 
-        if is_mh_model:
+        if is_umof_model(selected_model, model_size):
+            # No head or D3 options: the head is fixed and the training data
+            # (r2SCAN-D4) already include dispersion, so D3 would double count it.
+            with col_mult1:
+                st.caption("🎯 Prediction head: `r2scan+d4` (fixed for uMOF)")
+            with col_mult2:
+                st.caption("🔬 Training data: uMOF dataset computed at the r2SCAN-D4 level.")
+        elif is_mh_model:
             #st.subheader("🎯 Multi-Head Configuration")
             #st.success("Multi-head model - head selection required")
             with col_mult1:
