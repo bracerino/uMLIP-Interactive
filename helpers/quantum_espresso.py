@@ -542,6 +542,7 @@ QE_OVERRIDES_SRC = '''
 import copy as _qecopy
 import os as _qeos
 import re as _qere
+import shutil as _qeshutil
 
 # Filled in by qe_configure_overrides() from the sidebar settings.
 QE_OVERRIDES_CONFIG = {
@@ -1133,19 +1134,30 @@ def qe_reuse_previous_scf(calc, atoms, input_data, cfg, system):
     if str(control.get("restart_mode", "")) == "restart":
         return None     # pw.x is restarting a run of its own; leave it alone
 
-    outdir = str(control.get("outdir", "qe_tmp"))
-    prefix = str(control.get("prefix", "pwscf"))
-    directory = str(getattr(calc, "directory", "."))
-    if not _qeos.path.isabs(outdir):
-        outdir = _qeos.path.join(directory, outdir)
+    outdir, prefix = qe_outdir(calc, input_data)
     save = _qeos.path.join(outdir, prefix + ".save")
+
+    # A phonon run converges the undisplaced supercell first and starts every
+    # displacement from that density, rather than from whichever displacement
+    # happened to run last.
+    source = "previous step's"
+    reference = getattr(calc, "_qe_reference_density", None)
+    if (reference and reference[0] == fingerprint
+            and _qeos.path.isdir(reference[1])):
+        try:
+            if _qeos.path.isdir(save):
+                _qeshutil.rmtree(save)
+            _qeshutil.copytree(reference[1], save)
+            previous = fingerprint
+            source = "undisplaced supercell's"
+        except OSError:
+            pass
 
     if previous != fingerprint:
         # First run, a different structure, or a changed cell: the saved density
         # does not belong to this system.
         return None
-    if not any(_qeos.path.isfile(_qeos.path.join(save, name))
-               for name in ("charge-density.dat", "charge-density.hdf5")):
+    if not qe_has_density(save):
         return None
 
     electrons = input_data.setdefault("electrons", {})
@@ -1158,7 +1170,93 @@ def qe_reuse_previous_scf(calc, atoms, input_data, cfg, system):
         if str(control.get("disk_io", "low")) == "low":
             control["disk_io"] = "medium"
         reused = "density and wavefunctions"
-    return reused
+    return "%s %s" % (source, reused)
+
+
+def qe_outdir(calc, input_data=None):
+    """pw.x's scratch folder (control.outdir, made absolute) and its prefix."""
+    if input_data is None:
+        input_data = (getattr(calc, "parameters", None) or {}).get("input_data") or {}
+    control = input_data.get("control") or {}
+    outdir = str(control.get("outdir", "qe_tmp"))
+    prefix = str(control.get("prefix", "pwscf"))
+    if not _qeos.path.isabs(outdir):
+        outdir = _qeos.path.join(str(getattr(calc, "directory", ".")), outdir)
+    return outdir, prefix
+
+
+def qe_has_density(save):
+    return any(_qeos.path.isfile(_qeos.path.join(save, name))
+               for name in ("charge-density.dat", "charge-density.hdf5"))
+
+
+# --- phonons: one SCF of the undisplaced supercell --------------------------
+QE_REFERENCE_SAVE = "phonon_reference.save"
+
+
+def qe_save_reference_density(calc):
+    """Keep the density pw.x has just converged as the start of later runs.
+
+    Copied aside, because the next pw.x run overwrites prefix.save. Only runs on
+    the same cell and species pick it up (see qe_reuse_previous_scf).
+    """
+    calc._qe_reference_density = None
+    if not QE_OVERRIDES_CONFIG.get("reuse_density", True):
+        return False
+    outdir, prefix = qe_outdir(calc)
+    save = _qeos.path.join(outdir, prefix + ".save")
+    if not qe_has_density(save):
+        return False
+    reference = _qeos.path.join(outdir, QE_REFERENCE_SAVE)
+    if _qeos.path.isdir(reference):
+        _qeshutil.rmtree(reference)
+    # The wavefunctions are by far the largest files; they are only worth
+    # keeping when the displacements are going to read them.
+    ignore = (None if QE_OVERRIDES_CONFIG.get("reuse_wavefunctions")
+              else _qeshutil.ignore_patterns("wfc*"))
+    _qeshutil.copytree(save, reference, ignore=ignore)
+    calc._qe_reference_density = (getattr(calc, "_qe_last_fingerprint", None),
+                                  reference)
+    return True
+
+
+def qe_phonon_reference_scf(calc, supercell):
+    """SCF of the undisplaced supercell, whose density then starts every
+    displaced one (startingpot = 'file').
+
+    Returns (energy, forces), or None when density reuse is switched off - the
+    run would then be wasted.
+    """
+    calc._qe_reference_density = None
+    if not QE_OVERRIDES_CONFIG.get("reuse_density", True):
+        return None
+    pristine = supercell.copy()
+    pristine.calc = calc
+    forces = pristine.get_forces()
+    energy = pristine.get_potential_energy()
+    if not qe_save_reference_density(calc):
+        return None
+    return energy, forces
+
+
+def qe_remove_outdir(calc):
+    """Delete pw.x's scratch folder (density, wavefunctions, the phonon
+    reference). Returns the number of bytes freed, or None if there was none.
+    """
+    outdir, _ = qe_outdir(calc)
+    calc._qe_reference_density = None
+    calc._qe_last_fingerprint = None
+    if not _qeos.path.isdir(outdir):
+        return None
+    size = 0
+    for root, _dirs, files in _qeos.walk(outdir):
+        for name in files:
+            try:
+                size += _qeos.path.getsize(_qeos.path.join(root, name))
+            except OSError:
+                pass
+    _qeshutil.rmtree(outdir, ignore_errors=True)
+    return size
 
 
 # --- the entry point the calculator calls ----------------------------------
@@ -1356,7 +1454,7 @@ def qe_prepare_structure(calc, atoms):
     # --- start from the previous step instead of free atoms ----------------
     reused = qe_reuse_previous_scf(calc, atoms, input_data, cfg, system)
     if reused:
-        messages.append("   \\u267b\\ufe0f  starting from the previous step's %s "
+        messages.append("   \\u267b\\ufe0f  starting from the %s "
                         "(startingpot = 'file')" % reused)
 
     # --- raw pw.x lines from the same file (highest precedence) ------------
@@ -1393,7 +1491,7 @@ def qe_prepare_structure(calc, atoms):
         headline.append("Hubbard_U on %d species"
                         % len([k for k in hubbard_system if k.startswith("Hubbard_U")]))
     if reused:
-        headline.append("\\u267b\\ufe0f  reusing the previous %s" % reused)
+        headline.append("\\u267b\\ufe0f  reusing the %s" % reused)
 
     if stamp is not None and stamp in QE_REPORTED_FILES:
         qe_emit("   \\U0001f9f2 %s: %s" % (source_name or "spin/+U",
@@ -1942,6 +2040,14 @@ class EspressoWithDiagnostics(Espresso):
         # next structure.
         self._qe_base_parameters = _qecopy.deepcopy(dict(self.parameters))
         qe_patch_output_reader(self.template)
+
+    def phonon_reference_scf(self, supercell):
+        """Converge the undisplaced supercell; see qe_phonon_reference_scf."""
+        return qe_phonon_reference_scf(self, supercell)
+
+    def remove_scratch(self):
+        """Delete pw.x's outdir; see qe_remove_outdir."""
+        return qe_remove_outdir(self)
 
     def calculate(self, *args, **kwargs):
         atoms = args[0] if args else kwargs.get("atoms")
@@ -2661,6 +2767,21 @@ calculator = EspressoWithDiagnostics(
     **QE_KPOINT_KWARGS,
 )
 print("✅ Quantum ESPRESSO calculator ready")
+
+
+def _qe_remove_scratch_at_exit():
+    # pw.x's outdir (density, wavefunctions) is large and nothing reads it once
+    # the script is done, whatever the calculation was.
+    try:
+        _freed = calculator.remove_scratch()
+        if _freed is not None:
+            print(f"🧹 Removed the pw.x scratch folder ({{_freed / 1024**2:.1f}} MB)")
+    except Exception as _rm_err:
+        print(f"⚠️ Could not remove the pw.x scratch folder ({{_rm_err}})")
+
+
+import atexit as _qe_atexit
+_qe_atexit.register(_qe_remove_scratch_at_exit)
 if QE_PROGRESS_ENABLED:
     print(f"   Live SCF progress is printed per iteration in {{QE_ENERGY_UNIT}} "
           "(QE_SCF_PROGRESS=0 silences it, QE_SCF_UNITS=Ry keeps pw.x's units)")

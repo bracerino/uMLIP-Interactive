@@ -1564,6 +1564,45 @@ def phonon_force_cache_dir(calculator, phonon_params, structure_name, atoms, log
         return None
 
 
+def qe_phonon_reference_scf(calculator, phonon, log_queue):
+    """Converge the undisplaced supercell once, so every displaced supercell
+    starts from its density instead of from free atoms or the last displacement.
+    No-op for anything but Quantum ESPRESSO."""
+    if not hasattr(calculator, 'phonon_reference_scf'):
+        return
+    sc = phonon.supercell
+    pristine = Atoms(symbols=sc.symbols, positions=sc.positions,
+                     cell=sc.cell, pbc=True)
+    log_queue.put(f"  🧮 SCF of the undisplaced supercell ({len(pristine)} atoms) — "
+                  "its density is the starting point of every displacement")
+    try:
+        result = calculator.phonon_reference_scf(pristine)
+    except Exception as exc:
+        log_queue.put(f"    ⚠️ Undisplaced-supercell SCF failed ({exc}) — "
+                      "displacements start without it")
+        return
+    if result is None:
+        log_queue.put("    ℹ️ Density reuse is off in the QE settings — "
+                      "displacements start from atomic densities")
+        return
+    energy, forces = result
+    residual = float(np.max(np.linalg.norm(forces, axis=1)))
+    log_queue.put(f"    E = {energy:.6f} eV, largest residual force {residual:.4f} eV/Å")
+
+
+def qe_remove_scratch(calculator, log_queue):
+    """Delete pw.x's outdir (qe_tmp) once the forces are in — the density and
+    wavefunctions there are large and nothing reads them afterwards."""
+    if not hasattr(calculator, 'remove_scratch'):
+        return
+    try:
+        freed = calculator.remove_scratch()
+        if freed is not None:
+            log_queue.put(f"  🧹 Removed the pw.x scratch folder ({freed / 1024**2:.1f} MB)")
+    except Exception as exc:
+        log_queue.put(f"  ⚠️ Could not remove the pw.x scratch folder ({exc})")
+
+
 def _phonon_cache_slot(cache_dir, index):
     return os.path.join(cache_dir, f"disp-{index + 1:04d}")
 
@@ -1869,6 +1908,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         log_queue.put("  Calculating forces for displaced supercells...")
         forces = []
         n_reused = 0
+        reference_done = False
         for i, supercell in enumerate(supercells):
             ase_sc = Atoms(
                 symbols=supercell.symbols,
@@ -1890,6 +1930,12 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                         )
                     continue
 
+            if not reference_done:
+                # Only once a displacement actually has to be computed, so a
+                # fully cached rerun costs no SCF at all.
+                reference_done = True
+                qe_phonon_reference_scf(calculator, phonon, log_queue)
+
             ase_sc.calc = calculator
             try:
                 displacement_forces = ase_sc.get_forces()
@@ -1904,8 +1950,10 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                     )
             except Exception as force_error:
                 log_queue.put(f"    ❌ Force calculation failed for supercell {i+1}: {force_error}")
+                qe_remove_scratch(calculator, log_queue)
                 return {'success': False, 'error': f'Force calculation failed: {force_error}'}
 
+        qe_remove_scratch(calculator, log_queue)
         if n_reused:
             log_queue.put(
                 f"  ♻️ Resumed: {n_reused} of {n_displacements} displacements came "
@@ -5503,6 +5551,12 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         log_queue.put(f"Traceback: {traceback.format_exc()}")
 
     finally:
+        # Every QE workflow (GO, MD, elastic, EOS, ...) leaves pw.x's outdir
+        # behind; nothing reads it once the run is over. `calculator` is unbound
+        # when the thread returned before building one.
+        _calculator = locals().get('calculator')
+        if _calculator is not None:
+            qe_remove_scratch(_calculator, log_queue)
         log_queue.put("CALCULATION_FINISHED")
 
 

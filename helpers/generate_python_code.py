@@ -6513,6 +6513,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
             log("  Calculating forces for displaced supercells...")
             all_forces = []
             _n_reused = 0
+            _reference_done = False
             for j, sc in enumerate(supercells):
                 sc_atoms = Atoms(symbols=sc.symbols, positions=sc.positions,
                                  cell=sc.cell, pbc=True)
@@ -6527,12 +6528,45 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                             f"{{os.path.basename(_slot)}}")
                     continue
 
+                if not _reference_done and hasattr(calculator, "phonon_reference_scf"):
+                    # Quantum ESPRESSO: converge the undisplaced supercell once and
+                    # start every displacement from its density. Done only when a
+                    # displacement really has to be computed, so a fully cached
+                    # rerun costs no SCF.
+                    _reference_done = True
+                    _pristine = Atoms(symbols=phonon.supercell.symbols,
+                                      positions=phonon.supercell.positions,
+                                      cell=phonon.supercell.cell, pbc=True)
+                    log(f"  🧮 SCF of the undisplaced supercell ({{len(_pristine)}} atoms) — "
+                        "its density is the starting point of every displacement")
+                    try:
+                        _ref = calculator.phonon_reference_scf(_pristine)
+                        if _ref is None:
+                            log("    ℹ️ Density reuse is off — displacements start "
+                                "from atomic densities")
+                        else:
+                            _ref_e, _ref_f = _ref
+                            log(f"    E = {{_ref_e:.6f}} eV, largest residual force "
+                                f"{{float(np.max(np.linalg.norm(_ref_f, axis=1))):.4f}} eV/Å")
+                    except Exception as _ref_err:
+                        log(f"    ⚠️ Undisplaced-supercell SCF failed ({{_ref_err}}) — "
+                            "displacements start without it")
+
                 sc_atoms.calc = calculator
                 _disp_forces = sc_atoms.get_forces()
                 all_forces.append(_disp_forces)
                 phonon_cache_store_forces(_slot, sc_atoms, _disp_forces)
                 if (j + 1) % max(1, len(supercells) // 8) == 0 or j == len(supercells) - 1:
                     log(f"    Forces: {{j+1}}/{{len(supercells)}} ({{100*(j+1)//len(supercells)}}%)")
+            if hasattr(calculator, "remove_scratch"):
+                # pw.x's outdir (density, wavefunctions) is large and nothing
+                # reads it once the forces are in.
+                try:
+                    _freed = calculator.remove_scratch()
+                    if _freed is not None:
+                        log(f"  🧹 Removed the pw.x scratch folder ({{_freed / 1024**2:.1f}} MB)")
+                except Exception as _rm_err:
+                    log(f"  ⚠️ Could not remove the pw.x scratch folder ({{_rm_err}})")
             if _n_reused:
                 log(f"  ♻️ Resumed: {{_n_reused}} of {{len(supercells)}} displacements came "
                     f"from the cache, {{len(supercells) - _n_reused}} were computed now")
