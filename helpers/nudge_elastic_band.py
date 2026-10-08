@@ -95,6 +95,16 @@ def setup_neb_parameters_ui():
         neb_params['remove_rotation'] = st.checkbox(
             "Remove Rotation & Translation", value=True,
             help="Projects out global rotation/translation from image forces")
+        neb_params['match_atoms'] = st.checkbox(
+            "Re-pair atoms by position", value=False,
+            help="NEB moves atom i of the initial structure to atom i of the final "
+                 "one. Turn this on when the two endpoints were built independently "
+                 "(e.g. a vacancy at site A and a vacancy at site B made separately "
+                 "from the perfect cell), so their atoms are listed in a shifted "
+                 "order: each final atom is then paired with the nearest initial "
+                 "atom of the same element. Leave it off for interstitialcy or "
+                 "exchange paths, where the file order defines which atom moves "
+                 "where. The log always reports which atoms move.")
 
     st.write("**Convergence & Optimiser**")
     col9, col10, col11, col12 = st.columns(4)
@@ -146,6 +156,94 @@ def setup_neb_parameters_ui():
         "Use FIRE if the band is highly non-linear.")
 
     return neb_params
+
+
+# Endpoint matching for NEB, kept as source so the interface and the generated
+# scripts run exactly the same code (the scripts embed it, the app execs it).
+NEB_ENDPOINT_SRC = r'''
+def match_endpoints(initial, final, reorder=False, log=print):
+    """Check that the two NEB endpoints describe the same atoms, and optionally
+    re-pair the atoms of the final image by position.
+
+    NEB moves atom i of the initial image towards atom i of the final image, so
+    the file order defines the mechanism - for a self-interstitial or an exchange
+    it is the only thing that says which atom goes where, and it is kept by
+    default. Two vacancy structures built independently (vacancy at site A,
+    vacancy at site B) list their atoms in a shifted order, though, which pairs
+    the wrong atoms. With reorder=True each final atom is paired with the nearest
+    initial atom of the same element (minimum image); otherwise that pairing is
+    only computed to warn when it would make fewer atoms move.
+    Returns the final image, reordered only when reorder=True.
+    """
+    from ase.geometry import get_distances
+
+    if len(initial) != len(final):
+        raise ValueError(f"atom count mismatch: initial {len(initial)}, "
+                         f"final {len(final)}")
+    sym_i = initial.get_chemical_symbols()
+    sym_f = final.get_chemical_symbols()
+    if sorted(sym_i) != sorted(sym_f):
+        raise ValueError("initial and final images have different compositions")
+    if not np.allclose(initial.cell.array, final.cell.array, atol=1e-3):
+        log("  WARNING: initial and final cells differ - NEB needs the same cell")
+
+    def displacements(fin):
+        vec, _ = get_distances(initial.positions, fin.positions,
+                               cell=initial.cell, pbc=initial.pbc)
+        return np.linalg.norm(vec[np.arange(len(fin)), np.arange(len(fin))], axis=1)
+
+    order = np.arange(len(final))
+    for element in sorted(set(sym_i)):
+        idx_i = [k for k, s in enumerate(sym_i) if s == element]
+        idx_f = [k for k, s in enumerate(sym_f) if s == element]
+        _, dist = get_distances(initial.positions[idx_i], final.positions[idx_f],
+                                cell=initial.cell, pbc=initial.pbc)
+        try:
+            from scipy.optimize import linear_sum_assignment
+            rows, cols = linear_sum_assignment(dist)
+        except ImportError:
+            # Greedy fallback: closest pairs first.
+            rows, cols, used_r, used_c = [], [], set(), set()
+            for flat in np.argsort(dist, axis=None):
+                r, c = divmod(int(flat), dist.shape[1])
+                if r not in used_r and c not in used_c:
+                    used_r.add(r); used_c.add(c); rows.append(r); cols.append(c)
+        for r, c in zip(rows, cols):
+            order[idx_i[r]] = idx_f[c]
+
+    if sym_i != sym_f and not reorder:
+        raise ValueError("the elements are listed in a different order in the two "
+                         "images - fix the files or enable re-pairing atoms by position")
+
+    if np.any(order != np.arange(len(final))):
+        n_by_index = int(np.sum(displacements(final) > 0.5))
+        n_by_position = int(np.sum(displacements(final[order]) > 0.5))
+        if reorder:
+            final = final[order]
+            log(f"  Re-paired atoms by position: {n_by_index} -> {n_by_position} "
+                f"atom(s) moving more than 0.5 A")
+        elif n_by_position < n_by_index:
+            log(f"  NOTE: pairing atoms by file order makes {n_by_index} atom(s) move, "
+                f"pairing them by position would make {n_by_position}. That is "
+                f"intended for an interstitialcy/exchange mechanism; if the endpoints "
+                f"were built independently (e.g. two separate vacancy structures), "
+                f"enable re-pairing atoms by position. Keeping the file order.")
+
+    disp = displacements(final)
+    moving = np.where(disp > 0.5)[0]
+    log(f"  Endpoint check: {len(moving)} atom(s) move more than 0.5 A "
+        f"(largest {disp.max():.2f} A, minimum image)")
+    for k in moving[np.argsort(-disp[moving])][:5]:
+        log(f"    atom {k} ({sym_i[k]}): {disp[k]:.2f} A")
+    if len(moving) > 4:
+        log("  WARNING: many atoms move far - check that the two endpoints describe "
+            "the same configuration apart from the migrating atom(s)")
+    return final
+'''
+
+_ENDPOINT_NS = {'np': np}
+exec(NEB_ENDPOINT_SRC, _ENDPOINT_NS)
+match_endpoints = _ENDPOINT_NS['match_endpoints']
 
 
 def _make_optimizer(name, neb_obj):
@@ -433,6 +531,9 @@ def run_neb_calculation(initial_structure, final_structure, calculator,
         adaptor = AseAtomsAdaptor()
         initial_atoms = adaptor.get_atoms(initial_structure)
         final_atoms   = adaptor.get_atoms(final_structure)
+        final_atoms   = match_endpoints(initial_atoms, final_atoms,
+                                        reorder=bool(neb_params.get('match_atoms', False)),
+                                        log=lambda msg: log_queue.put(msg))
 
 
         if neb_params.get('pre_optimize', True):
@@ -470,18 +571,18 @@ def run_neb_calculation(initial_structure, final_structure, calculator,
             for img in images:
                 img.calc = calculator
             try:
-                NEB(images, allow_shared_calculator=True).interpolate(method='idpp')
+                NEB(images, allow_shared_calculator=True).interpolate(method='idpp', mic=True)
                 log_queue.put("  IDPP interpolation done")
             except Exception as e:
                 log_queue.put(f"  IDPP failed ({e}), falling back to linear")
                 images = ([initial_atoms.copy()]
                           + [initial_atoms.copy() for _ in range(n_images - 2)]
                           + [final_atoms.copy()])
-                interpolate(images)
+                interpolate(images, mic=True)
                 for img in images:
                     img.calc = calculator
         else:
-            interpolate(images)
+            interpolate(images, mic=True)
             for img in images:
                 img.calc = calculator
 
@@ -896,6 +997,10 @@ LOG_INTERVAL      = {int(neb_params.get("log_interval", 5))}
 PRE_OPTIMIZE      = {neb_params.get("pre_optimize", True)}
 PRE_OPT_FMAX      = {float(neb_params.get("pre_opt_fmax", 0.05))}
 PRE_OPT_STEPS     = {int(neb_params.get("pre_opt_steps", 200))}
+# Pair the final image's atoms with the initial ones by position instead of by
+# file order (for endpoints built independently, e.g. two vacancy structures).
+# Keep False for interstitialcy/exchange paths, where the order is the mechanism.
+MATCH_ATOMS       = {bool(neb_params.get("match_atoms", False))}
 
 
 def make_optimizer(name, obj):
@@ -919,6 +1024,8 @@ def pre_opt(atoms, calc, fmax, steps, label):
     print(f"  {{label}}: E={{e:.6f}} eV | fmax={{mf:.4f}} eV/A")
     return atoms
 
+
+{NEB_ENDPOINT_SRC}
 
 def mic_dist(p1, p2, cell):
     d = p2 - p1
@@ -998,32 +1105,23 @@ def plot_profile_publication(energies, distances, bi, result, out_path_no_ext):
         except Exception:
             ax.plot(x, eV_rel, color="#1f3a93", lw=2.0, zorder=2)
 
-        # Image points + endpoints + TS marker.
+        # Image points, all alike: the endpoints and the saddle point are clear
+        # from the curve itself.
         ax.plot(x, eV_rel, "o", ms=8, color="#1f3a93",
-                markeredgecolor="white", markeredgewidth=1.1, zorder=3,
-                label="NEB images")
-        ax.plot(x[0],  eV_rel[0],  "*", ms=20, color="#2e8b57",
-                markeredgecolor="white", markeredgewidth=1.1,
-                label="Initial", zorder=4)
-        ax.plot(x[-1], eV_rel[-1], "*", ms=20, color="#c0392b",
-                markeredgecolor="white", markeredgewidth=1.1,
-                label="Final", zorder=4)
-        ax.plot(x[bi], eV_rel[bi], "D", ms=13, color="#e67e22",
-                markeredgecolor="white", markeredgewidth=1.1,
-                label="Transition state", zorder=4)
+                markeredgecolor="white", markeredgewidth=1.1, zorder=3)
         ax.axhline(0.0, ls="--", color="#7f7f7f", lw=1.0, alpha=0.6)
 
-        # Forward-barrier annotation (vertical double arrow).
+        # Forward barrier: a thin grey double arrow with a small label.
         ax.annotate(
             "", xy=(x[bi], eV_rel[bi]), xytext=(x[bi], 0.0),
-            arrowprops=dict(arrowstyle="<->", color="#e67e22", lw=1.6),
+            arrowprops=dict(arrowstyle="<->", color="#7f7f7f", lw=0.9,
+                            shrinkA=0, shrinkB=4),
         )
         ax.text(
-            x[bi] + 0.02 * (x[-1] - x[0]),
-            eV_rel[bi] * 0.55,
-            f"$E_a$ = {{result['forward_barrier_eV']:.3f}} eV\\n"
-            f"      = {{result['forward_barrier_kJ']:.1f}} kJ/mol",
-            color="#a04000", fontsize=12, va="center",
+            x[bi] + 0.015 * (x[-1] - x[0]),
+            eV_rel[bi] * 0.5,
+            f"$E_a$ = {{result['forward_barrier_eV']:.3f}} eV",
+            color="#555555", fontsize=11, va="center",
         )
 
         ax.set_xlim(x.min() - 0.02 * (x[-1] - x[0]),
@@ -1032,7 +1130,6 @@ def plot_profile_publication(energies, distances, bi, result, out_path_no_ext):
         ax.set_ylabel("Relative energy (eV)", fontsize=16)
         ax.minorticks_on()
         ax.tick_params(which="both", top=True, right=True, labelsize=13)
-        ax.legend(loc="best", fontsize=12)
 
         fig.tight_layout()
         png_path = out_path_no_ext + ".png"
@@ -1133,6 +1230,10 @@ def main():
     print(f"  {{n}} atoms loaded")
     if n != len(final_atoms):
         print("ERROR: atom count mismatch!"); sys.exit(1)
+    try:
+        final_atoms = match_endpoints(initial_atoms, final_atoms, reorder=MATCH_ATOMS)
+    except ValueError as err:
+        print(f"ERROR: {{err}}"); sys.exit(1)
 
     print("\\nSetting up calculator ...")
     calculator = setup_calculator()
@@ -1156,17 +1257,17 @@ def main():
     if INTERPOLATION == "idpp":
         for img in images: img.calc = calculator
         try:
-            NEB(images, allow_shared_calculator=True).interpolate(method="idpp")
+            NEB(images, allow_shared_calculator=True).interpolate(method="idpp", mic=True)
             print("  IDPP done")
         except Exception as err:
             print(f"  IDPP failed ({{err}}), using linear fallback")
             images = ([initial_atoms.copy()]
                       + [initial_atoms.copy() for _ in range(N_IMAGES - 2)]
                       + [final_atoms.copy()])
-            interpolate(images)
+            interpolate(images, mic=True)
             for img in images: img.calc = calculator
     else:
-        interpolate(images)
+        interpolate(images, mic=True)
         for img in images: img.calc = calculator
 
     start_climb = CLIMB and CLIMB_FROM_START
@@ -1362,6 +1463,10 @@ LOG_INTERVAL      = {int(neb_params.get("log_interval", 5))}
 PRE_OPTIMIZE      = {neb_params.get("pre_optimize", True)}
 PRE_OPT_FMAX      = {float(neb_params.get("pre_opt_fmax", 0.05))}
 PRE_OPT_STEPS     = {int(neb_params.get("pre_opt_steps", 200))}
+# Pair the final image's atoms with the initial ones by position instead of by
+# file order (for endpoints built independently, e.g. two vacancy structures).
+# Keep False for interstitialcy/exchange paths, where the order is the mechanism.
+MATCH_ATOMS       = {bool(neb_params.get("match_atoms", False))}
 
 
 def make_optimizer(name, obj):
@@ -1376,6 +1481,8 @@ def make_optimizer(name, obj):
 def setup_calculator():
 {calc_src}    return calculator
 
+
+{NEB_ENDPOINT_SRC}
 
 def mic_dist(p1, p2, cell):
     d = p2 - p1
@@ -1406,6 +1513,10 @@ def main():
     initial_atoms = read(init_file)
     final_atoms   = read(final_file)
     print(f"{{init_file}} + {{final_file}}  ({{len(initial_atoms)}} atoms)")
+    try:
+        final_atoms = match_endpoints(initial_atoms, final_atoms, reorder=MATCH_ATOMS)
+    except ValueError as err:
+        print(f"ERROR: {{err}}"); sys.exit(1)
 
     calculator = setup_calculator()
 
@@ -1427,15 +1538,15 @@ def main():
     if INTERPOLATION == "idpp":
         for img in images: img.calc = calculator
         try:
-            NEB(images, allow_shared_calculator=True).interpolate(method="idpp")
+            NEB(images, allow_shared_calculator=True).interpolate(method="idpp", mic=True)
         except Exception:
             images = ([initial_atoms.copy()]
                       + [initial_atoms.copy() for _ in range(N_IMAGES - 2)]
                       + [final_atoms.copy()])
-            interpolate(images)
+            interpolate(images, mic=True)
             for img in images: img.calc = calculator
     else:
-        interpolate(images)
+        interpolate(images, mic=True)
         for img in images: img.calc = calculator
 
     start_climb = CLIMB and CLIMB_FROM_START
