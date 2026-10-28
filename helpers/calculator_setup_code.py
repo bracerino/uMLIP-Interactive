@@ -225,6 +225,31 @@ except Exception as e:
         print(f"❌ MACE CPU fallback failed: {{cpu_e}}")
         exit()
 """
+        elif str(model_size).startswith("polar-"):
+            # MACE-POLAR-1 foundation models ("polar-1-s/m/l"); mace_mp does not
+            # know these names. Charge 0 and spin multiplicity 1 apply unless the
+            # structure's atoms.info sets "charge" / "spin".
+            model_imports += """
+from mace.calculators import mace_polar
+"""
+            calculator_setup_str = f"""
+print("Setting up MACE-POLAR-1 calculator...")
+try:
+    calculator = mace_polar(model="{model_size}", default_dtype="{dtype}", device="{device}")
+    print(f"✅ MACE-POLAR-1 ({model_size}) initialized on {device}")
+except Exception as e:
+    print(f"❌ MACE-POLAR-1 initialization failed on {device}: {{e}}")
+    if "graph_longrange" in str(e):
+        print("   MACE-POLAR-1 needs graph_longrange: pip install graph-longrange==0.4.4")
+        exit()
+    print("Attempting fallback to CPU...")
+    try:
+        calculator = mace_polar(model="{model_size}", default_dtype="{dtype}", device="cpu")
+        print("✅ MACE-POLAR-1 initialized on CPU (fallback)")
+    except Exception as cpu_e:
+        print(f"❌ MACE-POLAR-1 CPU fallback failed: {{cpu_e}}")
+        exit()
+"""
         else:
             # Foundation models: plain names ("medium-omat-0") and the
             # URL-hosted ones (MACE-MH-*, MACE-MATPES-*). mace_mp downloads a

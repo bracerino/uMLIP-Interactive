@@ -448,6 +448,14 @@ def _calc_block(selected_model, model_size, device, dtype,
         return (f"{i}from upet.calculator import UPETCalculator\n"
                 f"{i}calculator = UPETCalculator(model='{mn}', version='{mv}', device='{device}')\n"
                 f"{i}print('UPET ready')\n")
+    if str(model_size).startswith("polar-"):
+        # MACE-POLAR-1 foundation models ("polar-1-s/m/l") need their own loader;
+        # mace_mp does not know these names. Charge 0 and spin multiplicity 1
+        # apply unless the structure's atoms.info sets "charge" / "spin".
+        return (f"{i}from mace.calculators import mace_polar\n"
+                f"{i}calculator = mace_polar(model='{model_size}', device='{device}', "
+                f"default_dtype='{dtype}')\n"
+                f"{i}print('MACE-POLAR-1 ready')\n")
     if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
                             custom_mace_path=custom_mace_path):
         # Explicit path, or a *.model file sitting next to the generated script.

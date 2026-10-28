@@ -172,6 +172,12 @@ def _calculator_snippet(selected_model, model_size, device, dtype,
         return generate_umof_calculator_code(model_size, device=device, dtype=dtype,
                                              indent="", enable_cueq=mace_enable_cueq)
 
+    if str(model_size).startswith("polar-"):
+        # MACE-POLAR-1 foundation models; mace_mp does not know these names.
+        return ("from mace.calculators import mace_polar\n"
+                f'calculator = mace_polar(model="{model_size}", device="{device}", '
+                f'default_dtype="{dtype}")')
+
     if is_custom_mace_model(model_size=model_size, selected_model_key=selected_model,
                             custom_mace_path=custom_mace_path):
         # Explicit path, or a *.model file sitting next to the generated script.

@@ -7,6 +7,10 @@ from helpers.custom_model_paths import (
     sevennet_cueq_preamble, sevennet_cueq_arg,
     nequip_accel_preamble, nequip_accel_apply_code,
 )
+from helpers.mace_mdp import (
+    MDP_CALC_TYPE, is_mdp_model, generate_mdp_calculator_code,
+    generate_mdp_calculation_code,
+)
 from helpers.quantum_espresso import (
     is_qe_model, generate_qe_calculator_code, get_active_qe_settings,
 )
@@ -183,7 +187,14 @@ def generate_python_script(structures, calc_type, model_size, device, dtype, opt
         nequip_accel=nequip_accel,
     )
 
-    if calc_type == "Energy Only":
+    if is_mdp_model(selected_model_key, model_size):
+        # MACE-MDP predicts no energies: whatever calc_type says, the only thing
+        # it can compute is the dipole/polarizability of each structure.
+        calc_type = MDP_CALC_TYPE
+        calculator_setup_code = generate_mdp_calculator_code(
+            device=device, dtype=dtype, enable_cueq=mace_enable_cueq, indent="    ")
+        calculation_code = generate_mdp_calculation_code()
+    elif calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(
             calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
             is_orbmol=is_orbmol)
@@ -360,7 +371,14 @@ def generate_python_script_local_files(calc_type, model_size, device, dtype, opt
         nequip_accel=nequip_accel,
     )
 
-    if calc_type == "Energy Only":
+    if is_mdp_model(selected_model_key, model_size):
+        # MACE-MDP predicts no energies: whatever calc_type says, the only thing
+        # it can compute is the dipole/polarizability of each structure.
+        calc_type = MDP_CALC_TYPE
+        calculator_setup_code = generate_mdp_calculator_code(
+            device=device, dtype=dtype, enable_cueq=mace_enable_cueq, indent="    ")
+        calculation_code = generate_mdp_calculation_code()
+    elif calc_type == "Energy Only":
         calculation_code = _generate_energy_only_code(
             calc_formation_energy, is_mace_polar=is_mace_polar, polar_settings=polar_settings,
             is_orbmol=is_orbmol)
@@ -515,7 +533,7 @@ def main():
     print(f"\\n✅ All calculations completed!")
     print(f"⏱️ Total time: {{total_time/60:.1f}} minutes")
     print(f"⏱️ Calculation time: {{calc_time/60:.1f}} minutes")
-    print("📊 Check the results/ directory for output files")
+    print("📊 Check the {'mdp_results' if calc_type == MDP_CALC_TYPE else 'results'}/ directory for output files")
 
 if __name__ == "__main__":
     main()

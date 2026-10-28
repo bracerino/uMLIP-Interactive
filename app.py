@@ -149,6 +149,10 @@ from helpers.prophet_models import (
 from helpers.umof_models import (
     UMOF_MODELS, is_umof_model, build_umof_calculator, umof_checkpoint_name,
 )
+from helpers.mace_mdp import (
+    MDP_MODEL_KEY, MDP_MODEL_VALUE, MDP_CALC_TYPE, MDP_ELEMENTS,
+    is_mdp_model, mdp_unsupported_elements, build_mdp_calculator, mdp_runtime,
+)
 from helpers.uma_models import (
     UMA_FAMILY_NAME, UMA_MODELS, UMA_ENV_SETUP,
     is_uma_model, setup_uma_ui, set_active_uma_settings, uma_repo_id,
@@ -355,6 +359,82 @@ DEFAULT_SETTINGS = {
         'bulk_modulus': 110.0
     }
 }
+
+def render_mdp_results(mdp_result_list):
+    """Results-tab section for MACE-MDP: summary table, one structure in detail,
+    and CSV/JSON downloads."""
+    st.markdown("---")
+    st.subheader("MACE-MDP — Dipole Moment & Polarizability")
+
+    rows = []
+    for r in mdp_result_list:
+        p = r['mdp_results']
+        a = p['polarizability_A3']
+        rows.append({
+            'Structure': r['name'],
+            'Formula': p['formula'],
+            '|μ| (D)': p['dipole_norm_D'],
+            'μx (D)': p['dipole_D'][0], 'μy (D)': p['dipole_D'][1], 'μz (D)': p['dipole_D'][2],
+            'α_iso (Å³)': p['polarizability_iso_A3'],
+            'Δα (Å³)': p['polarizability_anisotropy_A3'],
+            'αxx (Å³)': a[0][0], 'αyy (Å³)': a[1][1], 'αzz (Å³)': a[2][2],
+            'Σq (e)': p['charge_sum_e'],
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(df.style.format({c: "{:.4f}" for c in df.columns
+                                  if c not in ('Structure', 'Formula')}),
+                 width='stretch', hide_index=True)
+
+    if len(mdp_result_list) == 1:
+        sel = mdp_result_list[0]
+    else:
+        names = [r['name'] for r in mdp_result_list]
+        pick = st.selectbox("Select structure for details:", names, key="mdp_sel")
+        sel = next(r for r in mdp_result_list if r['name'] == pick)
+    p = sel['mdp_results']
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Dipole |μ|", f"{p['dipole_norm_D']:.4f} D",
+              help=f"{p['dipole_norm_eA']:.4f} e·Å")
+    c2.metric("Isotropic α", f"{p['polarizability_iso_A3']:.4f} Å³",
+              help="Tr(α)/3, as α/4πε₀")
+    c3.metric("Anisotropy Δα", f"{p['polarizability_anisotropy_A3']:.4f} Å³")
+
+    t1, t2 = st.columns(2)
+    with t1:
+        st.write("**Polarizability tensor α (Å³)**")
+        st.dataframe(pd.DataFrame(p['polarizability_A3'], index=['x', 'y', 'z'],
+                                  columns=['x', 'y', 'z']).style.format("{:.4f}"),
+                     width='stretch')
+        st.caption("Principal values (Å³): "
+                   + ", ".join(f"{v:.4f}" for v in p['polarizability_eigenvalues_A3']))
+    with t2:
+        st.write("**Model charges (e)**")
+        st.dataframe(pd.DataFrame({
+            'Atom Index': list(range(p['n_atoms'])),
+            'Element': p['symbols'],
+            'Charge (e)': p['charges_e'],
+        }).style.format({'Charge (e)': "{:.4f}"}), width='stretch', hide_index=True,
+            height=min(35 * (p['n_atoms'] + 1) + 3, 400))
+
+    st.caption(
+        "ℹ️ MACE-MDP builds the dipole mainly from per-atom dipole vectors; the model "
+        "charges add only a small Σqᵢrᵢ correction and are **not** chemical partial "
+        "charges. The dipole of a charged or periodic system depends on the origin and cell, "
+        "so it is only meaningful for neutral, isolated molecules. MACE-MDP was "
+        "trained for organic molecules; values are reported in Debye and Å³ "
+        "(model units: e·Å and e·Å²/V)."
+    )
+
+    d1, d2 = st.columns(2)
+    d1.download_button("📥 Download summary (CSV)", df.to_csv(index=False),
+                       file_name="mdp_summary.csv", mime="text/csv", key="mdp_dl_csv")
+    d2.download_button("📥 Download all results (JSON)",
+                       json.dumps({r['name']: r['mdp_results'] for r in mdp_result_list},
+                                  indent=2),
+                       file_name="mdp_results.json", mime="application/json",
+                       key="mdp_dl_json")
+
 
 def extract_polar_results(atoms, calculator, log_queue, structure_name):
     """Extract MACE-POLAR-1 specific outputs after a singlepoint."""
@@ -2902,6 +2982,14 @@ def create_xyz_content(trajectory_data, structure_name):
 
     return xyz_content
 
+# MACE-OMOL-0: molecules, trained on OMol25 (ωB97M-V/def2-TZVPD), ASL licence.
+# Charge and spin multiplicity are read from atoms.info["charge"/"spin"] and
+# default to a neutral singlet - the same as the "omol" head of MACE-MH-1.
+MACE_OMOL_MODEL_KEY = "MACE-OMOL-0 (extra large) - Molecules, 83 elem [ωB97M-V]"
+MACE_OMOL_URL = ("https://github.com/ACEsuit/mace-foundations/releases/download/"
+                 "mace_omol_0/MACE-omol-0-extra-large-1024.model")
+MACE_OMOL_HEAD = "omol"
+
 MODEL_FAMILIES = {
     # Not an MLIP: runs ab initio DFT through an external pw.x binary.
     QE_FAMILY_NAME: {
@@ -2918,14 +3006,21 @@ MODEL_FAMILIES = {
         "MACE-MP-0b2 (medium) - Enhanced": "medium-0b2",
         "MACE-MP-0b2 (large) - Enhanced": "large-0b2",
         "MACE-MPA-0 (medium)": "medium-mpa-0",
+        "MACE-OMAT-0 (small)": "small-omat-0",
         "MACE-OMAT-0 (medium)": "medium-omat-0",
         "MACE-MATPES-PBE-0 (medium) - No +U": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
         "MACE-MATPES-r2SCAN-0 (medium) - r2SCAN": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-r2scan-omat-ft.model",
         "MACE-OFF23 (small) - Organic": "small",
         "MACE-OFF23 (medium) - Organic": "medium",
         "MACE-OFF23 (large) - Organic": "large",
+        # Single-head model whose head is called "omol"; the sidebar fixes it
+        # (see MACE_OMOL_MODEL_KEY), every URL-model path then passes head=.
+        MACE_OMOL_MODEL_KEY: MACE_OMOL_URL,
+        # Dipole/polarizability only - no energies; locks the calculation type.
+        MDP_MODEL_KEY: MDP_MODEL_VALUE,
         "MACE-MH-0 (Multi-head Foundation) - Linear": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-0.model",
         "MACE-MH-1 (Multi-head Foundation) - Non-linear ⭐": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_mh_1/mace-mh-1.model",
+        "MACE-POLAR-1 (small)  - Polarisable, 83 elem [ωB97M-V]":    "polar-1-s",
         "MACE-POLAR-1 (medium) - Polarisable, 83 elem [ωB97M-V] ⭐": "polar-1-m",
         "MACE-POLAR-1 (large)  - Polarisable, 83 elem [ωB97M-V]":    "polar-1-l",
         # Fine-tuned for metal-organic frameworks, see helpers/umof_models.py.
@@ -3105,7 +3200,7 @@ _CORE_SCI_ASE327 = "ase==3.27.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.4
 FAMILY_ENV_SETUP = {
     QE_FAMILY_NAME: QE_ENV_SETUP,
     "MACE": {
-        "pip": f"pip install torch==2.8.0 mace-torch==0.3.16 torch-dftd {_CORE_SCI}",
+        "pip": f"pip install torch==2.8.0 mace-torch==0.3.17 torch-dftd {_CORE_SCI}",
         "note": "mace-torch on torch 2.8 (torch-dftd is needed for D3 dispersion in MACE-MH).",
     },
     "UPET / PET-MAD": {
@@ -3848,6 +3943,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
         is_upet = model_size.startswith("upet:")
         is_custom_upet_model = (model_size == "upet:custom")
         is_mace_polar = is_polar_model(selected_model)
+        is_mdp = is_mdp_model(selected_model, model_size)
+        if is_mdp:
+            # MACE-MDP predicts no energies: there is nothing to reference.
+            calc_formation_energy = False
 
         if is_dpa:
             # DPA runs in-process only when the app itself was started from an
@@ -4351,9 +4450,28 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
             except Exception as e:
                 log_queue.put(f"❌ {_umof_name} initialization failed: {e}")
                 if "graph_longrange" in str(e):
-                    log_queue.put("   uMOF-POLAR needs graph_longrange: pip install graph-longrange==0.4.0")
+                    log_queue.put("   uMOF-POLAR needs graph_longrange: pip install graph-longrange==0.4.4")
                 log_queue.put("CALCULATION_FINISHED")
                 return
+        elif is_mdp:
+            log_queue.put("Setting up MACE-MDP (dipole & polarizability) calculator...")
+            try:
+                calculator = build_mdp_calculator(device=device, dtype=dtype,
+                                                  enable_cueq=mace_enable_cueq)
+                log_queue.put(f"✅ MACE-MDP initialised on {device}")
+            except Exception as e:
+                log_queue.put(f"❌ MACE-MDP initialization failed: {e}")
+                if device == "cuda":
+                    try:
+                        calculator = build_mdp_calculator(device="cpu", dtype=dtype)
+                        log_queue.put("✅ MACE-MDP initialised on CPU (fallback)")
+                    except Exception as cpu_err:
+                        log_queue.put(f"❌ CPU fallback failed: {cpu_err}")
+                        log_queue.put("CALCULATION_FINISHED")
+                        return
+                else:
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
         elif is_mace_polar:
             log_queue.put("Setting up MACE-POLAR-1 calculator...")
             if not MACE_POLAR_AVAILABLE:
@@ -4382,6 +4500,10 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 log_queue.put(f"✅ MACE-POLAR-1 ({model_size}) initialised on {device}")
             except Exception as e:
                 log_queue.put(f"❌ MACE-POLAR-1 init failed: {e}")
+                if "graph_longrange" in str(e):
+                    log_queue.put("   MACE-POLAR-1 needs graph_longrange: pip install graph-longrange==0.4.4")
+                    log_queue.put("CALCULATION_FINISHED")
+                    return
                 if device == "cuda":
                     try:
                         calculator = mace_polar(model=model_size, device="cpu", default_dtype=dtype)
@@ -4766,6 +4888,40 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                 try:
                     atoms = pymatgen_to_ase(structure)
                     atoms.calc = calculator
+
+                    if is_mdp:
+                        # No energy to test or report: the dipole, polarizability
+                        # and charges are the whole calculation.
+                        try:
+                            _mdp = mdp_runtime()
+                            mdp_results = _mdp["mdp_properties"](atoms, calculator)
+                            for _line in _mdp["mdp_summary_lines"](mdp_results):
+                                log_queue.put(_line)
+                            log_queue.put(f"✅ Dipole & polarizability for {name}")
+                            _mdp_error = None
+                        except Exception as mdp_error:
+                            mdp_results = {'success': False, 'error': str(mdp_error)}
+                            _mdp_error = str(mdp_error)
+                            log_queue.put(f"❌ MACE-MDP failed for {name}: {mdp_error}")
+                        _result = {
+                            'type': 'result',
+                            'name': name,
+                            'energy': None,
+                            'structure': structure,
+                            'calc_type': calc_type,
+                            'mdp_results': mdp_results,
+                        }
+                        if _mdp_error:
+                            _result['error'] = _mdp_error
+                        log_queue.put(_result)
+                        log_queue.put({
+                            'type': 'structure_end_time',
+                            'structure': name,
+                            'end_time': time.time(),
+                            'duration': time.time() - structure_start_time,
+                            'calc_type': calc_type,
+                        })
+                        continue
 
                     if is_mace_polar:
                         _ps = polar_settings or {}
@@ -5596,7 +5752,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.14.1 · 10/2/2026
+            v0.14.2 · 10/28/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -6360,6 +6516,17 @@ with st.sidebar:
                 st.caption("🎯 Prediction head: `r2scan+d4` (fixed for uMOF)")
             with col_mult2:
                 st.caption("🔬 Training data: uMOF dataset computed at the r2SCAN-D4 level.")
+        elif selected_model == MACE_OMOL_MODEL_KEY:
+            # One head only. No D3 either: ωB97M-V already contains non-local
+            # (VV10) dispersion, so D3 on top would count it twice.
+            mace_head = MACE_OMOL_HEAD
+            with col_mult1:
+                st.caption(f"🎯 Prediction head: `{MACE_OMOL_HEAD}` (fixed for MACE-OMOL-0)")
+            with col_mult2:
+                st.caption("🔬 Trained on OMol25 (ωB97M-V/def2-TZVPD, dispersion included). "
+                           "Neutral singlet unless the structure's `atoms.info` sets "
+                           "`charge` / `spin` (multiplicity). Academic Software License "
+                           "(non-commercial).")
         elif is_mh_model:
             #st.subheader("🎯 Multi-Head Configuration")
             #st.success("Multi-head model - head selection required")
@@ -6813,7 +6980,7 @@ with tab1:
             #st.rerun()
         if st.session_state.calculation_running:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
-    st.sidebar.info(f"❤️🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
+    st.sidebar.info(f"🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
         "Try also the main application **[XRDlicious](https://xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. "
         "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
@@ -6899,30 +7066,65 @@ with tab1:
 
         st.header("Calculation Setup")
 
-        all_compatible = all(check_mace_compatibility(struct)[0] for struct in st.session_state.structures.values())
+        use_mdp = is_mdp_model(selected_model, model_size)
+        if use_mdp:
+            # MACE-MDP knows ten elements only; the model itself would just fail
+            # with "<Z> is not in list".
+            _mdp_bad = {
+                name: mdp_unsupported_elements([site.specie.symbol for site in struct])
+                for name, struct in st.session_state.structures.items()
+            }
+            _mdp_bad = {name: bad for name, bad in _mdp_bad.items() if bad}
+            all_compatible = not _mdp_bad
+            if _mdp_bad:
+                st.error(
+                    "⚠️ MACE-MDP supports only " + ", ".join(MDP_ELEMENTS) + ". Remove: "
+                    + "; ".join(f"{name} ({', '.join(bad)})" for name, bad in _mdp_bad.items()))
+        else:
+            all_compatible = all(check_mace_compatibility(struct)[0] for struct in st.session_state.structures.values())
 
-        if not all_compatible:
+        if not all_compatible and not use_mdp:
             st.error(
                 "⚠️ Some structures contain elements not supported by MACE-MP-0. Please remove incompatible structures.")
 
         col_calc_setup, col_calc_image = st.columns([2, 1.6])
 
         with col_calc_setup:
-            calc_type = st.radio(
-                "Calculation Type",
-                ["Energy Only", "Geometry Optimization", "Birch-Murnaghan EOS", "Phonon Calculation",
-                 "Elastic Properties", "Finite-T Elastic Properties",
-                 "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics",
-                 "Virtual Tensile Test", "Energy Grid Scan", "NEB Calculation",
-                 "Selected postprocessing scripts"],
-                help="Choose the type of calculation to perform"
-            )
+            if use_mdp:
+                # MACE-MDP predicts no energies or forces, so every other
+                # calculation type is meaningless for it.
+                calc_type = st.radio(
+                    "Calculation Type",
+                    [MDP_CALC_TYPE],
+                    help="MACE-MDP predicts dipoles and polarizabilities only, so this "
+                         "is the only calculation it can run.",
+                )
+                st.info(
+                    "**MACE-MDP** predicts the **dipole moment** and the **polarizability "
+                    "tensor** of organic molecules "
+                    f"({', '.join(MDP_ELEMENTS)}). It gives no energies or forces, so the "
+                    "other calculation types are hidden. Pick another model to get them back.  \n"
+                    "Trained on SPICE-α; Academic Software License (non-commercial). "
+                    "Paper: Gönnheimer et al., ChemRxiv (2026), "
+                    "[10.26434/chemrxiv.15000716](https://chemrxiv.org/doi/full/10.26434/chemrxiv.15000716)."
+                )
+                calculate_formation_energy_flag = False
+            else:
+                calc_type = st.radio(
+                    "Calculation Type",
+                    ["Energy Only", "Geometry Optimization", "Birch-Murnaghan EOS", "Phonon Calculation",
+                     "Elastic Properties", "Finite-T Elastic Properties",
+                     "GA Structure Optimization", "PET-MAD-DOS","Molecular Dynamics",
+                     "Virtual Tensile Test", "Energy Grid Scan", "NEB Calculation",
+                     "Selected postprocessing scripts"],
+                    help="Choose the type of calculation to perform"
+                )
 
-            calculate_formation_energy_flag = st.checkbox(
-                "Calculate Formation Energy",
-                value=not use_qe,
-                help="Calculate formation energy per atom"
-            )
+                calculate_formation_energy_flag = st.checkbox(
+                    "Calculate Formation Energy",
+                    value=not use_qe,
+                    help="Calculate formation energy per atom"
+                )
 
             if use_qe and calculate_formation_energy_flag:
                 # References are isolated atoms in a 20 Å box — one full DFT run
@@ -6939,6 +7141,7 @@ with tab1:
                 calc_type.lower()
                 .replace("-", " ")
                 .replace("/", " ")
+                .replace("&", "and")
                 .strip()
                 .replace(" ", "_")
             )
@@ -6987,6 +7190,7 @@ with tab1:
                 "PET-MAD-DOS": "📊 **PET-MAD-DOS** — electronic density of states from the PET-MAD universal model.",
                 "Selected postprocessing scripts": "🛠️ **Postprocessing scripts** — generate standalone scripts to analyse existing results.",
                 "NEB Calculation": "🧗 **NEB** — minimum energy path & migration barrier between two endpoints.",
+                MDP_CALC_TYPE: "**Dipole & polarizability** — dipole moment & polarizability tensor from MACE-MDP.",
             }
             if calc_type in _calc_type_captions:
                 st.caption(_calc_type_captions[calc_type])
@@ -9822,10 +10026,6 @@ with tab_st:
     else:
         st.info("**Upload** or **Lock** structure files to begin")
 with st.sidebar:
-    st.info(f"**Selected Model:** {selected_model}")
-    st.info(f"**Device:** {device}")
-
-
     if MACE_IMPORT_METHOD == "mace_mp":
         st.info("Using mace_mp - models downloaded automatically")
 with tab2:
@@ -10682,12 +10882,17 @@ with tab3:
                             status = 'Success'
                     else:
                         status = 'Success'
+                elif r.get('mdp_results') is not None:
+                    # MACE-MDP gives no energy by design; it succeeded or not on its own.
+                    status = 'Success' if r['mdp_results'].get('success') else 'Failed'
                 else:
                     status = 'Failed'
 
                 row_data = {
                     'Structure': r['name'],
-                    'Energy (eV)': r['energy'] if r['energy'] is not None else 'Error',
+                    'Energy (eV)': (r['energy'] if r['energy'] is not None
+                                    else ('N/A (MACE-MDP)' if r.get('mdp_results') is not None
+                                          else 'Error')),
                     'Formation Energy (eV/atom)': f"{r.get('formation_energy'):.6f}" if r.get(
                         'formation_energy') is not None else 'N/A',
                     'Calculation Type': r['calc_type'],
@@ -11207,6 +11412,14 @@ with tab3:
                     "energy/force optimisation — the model never saw per-atom charge labels during "
                     "training, so treat the values qualitatively."
                 )
+
+            # ── MACE-MDP: dipole & polarizability ─────────────────────────────
+            mdp_result_list = [
+                r for r in st.session_state.results
+                if r.get('mdp_results') and r['mdp_results'].get('success')
+            ]
+            if mdp_result_list:
+                render_mdp_results(mdp_result_list)
 
             # ── MACE-POLAR-1 results ──────────────────────────────────────────
             polar_result_list = [

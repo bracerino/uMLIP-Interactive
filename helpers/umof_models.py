@@ -166,7 +166,7 @@ def generate_umof_calculator_code(model_size, device="cpu", dtype="float64", ind
     ]
     if is_polar:
         lines += [
-            '# uMOF-POLAR also needs graph_longrange (pip install graph-longrange==0.4.0).',
+            '# uMOF-POLAR also needs graph_longrange (pip install graph-longrange==0.4.4).',
         ]
     lines += [
         'try:',

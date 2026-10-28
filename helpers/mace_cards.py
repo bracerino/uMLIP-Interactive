@@ -157,6 +157,49 @@ MACE_MODELS_INFO = {
         "color": "#DDA0DD",  # Plum - Specialized
         "recommended": False
     },
+    "MACE-OMAT-0 (small)": {
+        "official_name": "MACE-OMAT-0",
+        "size": "small",
+        "elements": 89,
+        "training_dataset": "OMAT",
+        "level_of_theory": "DFT (PBE+U) VASP 54",
+        "target_system": "Materials",
+        "version_required": ">=v0.3.10",
+        "description": "Faster small variant of MACE-OMAT-0 for large cells and long MD",
+        "features": ["Fast inference", "VASP 54", "Large systems"],
+        "license": "ASL",
+        "color": "#DDA0DD",  # Plum - Specialized
+        "recommended": False
+    },
+    "MACE-OMOL-0 (extra large) - Molecules, 83 elem [ωB97M-V]": {
+        "official_name": "MACE-OMOL-0",
+        "size": "extra large",
+        "elements": 83,
+        "training_dataset": "OMol25",
+        "level_of_theory": "DFT (ωB97M-V/def2-TZVPD)",
+        "target_system": "Molecules",
+        "version_required": ">=v0.3.14",
+        "description": "Molecular model trained on OMol25; charge and spin multiplicity "
+                       "from atoms.info (neutral singlet by default)",
+        "features": ["Charged & open-shell molecules", "83 elements", "Dispersion included"],
+        "license": "ASL",
+        "recommended": False
+    },
+    "MACE-MDP - Dipoles & α tensors only, organic molecules [10 elem]": {
+        "official_name": "MACE-MDP",
+        "size": "medium",
+        "elements": 10,
+        "element_list": "H, C, N, O, F, P, S, Cl, Br, I",
+        "training_dataset": "SPICE-α",
+        "level_of_theory": "DFT (dipoles & polarizabilities)",
+        "target_system": "Organic molecules",
+        "version_required": ">=v0.3.17",
+        "description": "Predicts dipole moments, polarizability tensors and charges; "
+                       "no energies or forces",
+        "features": ["Dipole moment", "Anisotropic polarizability tensor", "Organic molecules"],
+        "license": "ASL",
+        "recommended": False
+    },
     "MACE-MATPES-PBE-0 (medium) - No +U": {
         "official_name": "MACE-MATPES-PBE-0",
         "size": "medium",

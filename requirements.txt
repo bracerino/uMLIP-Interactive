@@ -22,7 +22,8 @@ cuequivariance==0.6.1
 cuequivariance-torch==0.6.1
 cuequivariance-ops-torch-cu12==0.6.1
 
-mace-torch==0.3.16
+mace-torch==0.3.17
+graph-longrange==0.4.4 # for MACE-POLAR-1 / uMOF-POLAR; 0.4.4 pairs with mace-torch 0.3.17
 chgnet==0.3.8
 # sevenn==0.13.0 # available standalone in requirements-sevennet.txt
 #mattersim
