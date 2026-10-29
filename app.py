@@ -127,6 +127,14 @@ from helpers.custom_model_paths import (
 )
 from helpers.generate_md_sweep import generate_md_sweep_bash_script
 from helpers.structure_preview import render_structure_preview
+
+VIDEO_TUTORIALS = [
+    ("Standalone Python script", "https://www.youtube.com/watch?v=w6hmvzC2J-8"),
+    ("Calculations in the interface", "https://www.youtube.com/watch?v=xh98fQqKXaI"),
+    ("Phonons", "https://www.youtube.com/watch?v=XG3N1fjijfA"),
+    ("Molecular dynamics", "https://www.youtube.com/watch?v=dKhu1kIuGso"),
+    ("Genetic algorithm for point defects", "https://www.youtube.com/watch?v=SXUsAsatyRQ"),
+]
 import helpers.quantum_espresso as qe
 from helpers.quantum_espresso import (
     QE_FAMILY_NAME, QE_MODEL_KEY, QE_MODEL_VALUE, QE_DEFAULTS, QE_ENV_SETUP,
@@ -6890,10 +6898,7 @@ with tab1:
     if ONLINE_MODE:
         uploaded_files = None
         st.sidebar.warning(
-            "⬆️ Structure upload is disabled in the online version. "
-            "Configure your calculation below and generate the standalone "
-            "Python script — your structures go next to that script when you "
-            "run it locally."
+            "Structure upload is disabled in the online version."
         )
     elif not st.session_state.structures_locked:
         uploaded_files = st.sidebar.file_uploader(
@@ -7051,7 +7056,20 @@ with tab1:
         )
 
     if True:
-        show_preview = st.checkbox("Show Structure Preview", value=False)
+        col_tutorials, col_preview_toggle = st.columns([2, 1])
+        with col_preview_toggle:
+            show_preview = st.checkbox("Show Structure Preview", value=False)
+        with col_tutorials:
+            with st.expander("🎥 Video tutorials", expanded=False):
+                # The player is created only for the picked video, so no YouTube
+                # iframe is loaded until somebody asks for one.
+                st.markdown("\n".join(f"- [{title}]({url})" for title, url in VIDEO_TUTORIALS))
+                tutorial_titles = [title for title, _ in VIDEO_TUTORIALS]
+                picked_tutorial = st.selectbox("Play here", tutorial_titles, index=None,
+                                               placeholder="Choose a tutorial to play in the app",
+                                               key="video_tutorial_pick")
+                if picked_tutorial:
+                    st.video(dict(VIDEO_TUTORIALS)[picked_tutorial])
 
         if show_preview:
             render_structure_preview(st.session_state.structures)
