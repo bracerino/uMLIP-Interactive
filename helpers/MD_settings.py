@@ -184,6 +184,297 @@ MD_PERSIST_KEYS = [
 ]
 
 
+def _npt_settings_ui(params, ensemble, _g, key_prefix="", title=None):
+    """Barostat settings of an NPT ensemble (coupling, pressure, barostat time,
+    bulk modulus, axis masks), written into ``params``. Shared by the NPT
+    production run and the NPT pre-equilibration stage; ``key_prefix`` keeps
+    the widgets of the two apart."""
+    def _k(name):
+        return key_prefix + name if key_prefix else None
+
+    is_npt_berendsen = ensemble == "NPT (Berendsen)"
+    is_npt_mtk_iso = ensemble == "NPT (MTK Isotropic)"
+    is_npt_mtk_full = ensemble == "NPT (MTK Full)"
+    is_npt_baoab = ensemble == "NPT (BAOAB Langevin)"
+    is_npt_melchionna = "Melchionna" in ensemble
+
+    st.markdown("---")
+    st.subheader(title or f"NPT Configuration: {ensemble}")
+
+    # Show info about the selected NPT method
+    if is_npt_berendsen:
+        st.info(
+            "🔧 **Berendsen**: Fast and robust for equilibration. Does NOT produce correct NPT sampling (suppresses fluctuations). Best for initial equilibration only.")
+    elif is_npt_mtk_iso:
+        st.info(
+            "⚖️ **MTK Isotropic**: Proper NPT sampling with Nose-Hoover chains. Only volume changes, cell shape fixed.")
+    elif is_npt_mtk_full:
+        st.info(
+            "🔄 **MTK Full**: Full Parrinello-Rahman-style barostat. Cell shape can change. Best for phase transitions, anisotropic stress, elastic constants.")
+    elif is_npt_baoab:
+        st.info(
+            "🎲 **BAOAB Langevin**: Stochastic NPT with BAOAB integrator. Robust for noisy forces (ML potentials). Variable cell support.")
+    elif is_npt_melchionna:
+        st.warning(
+            "⚠️ **Melchionna**: Deprecated/not recommended. Can be unstable unless parameters are tuned carefully. Consider using MTK or BAOAB instead.")
+
+    col_npt1, col_npt2, col_npt3, col_npt4 = st.columns(4)
+
+    with col_npt1:
+        # Pressure coupling type depends on NPT method
+        if is_npt_berendsen:
+            coupling_options = ["isotropic", "anisotropic"]
+            coupling_help = "Isotropic: uniform xyz | Anisotropic: independent xyz"
+            default_coupling_idx = 0
+        elif is_npt_mtk_iso:
+            coupling_options = ["isotropic"]
+            coupling_help = "MTK Isotropic: only volume changes (cell shape fixed)"
+            default_coupling_idx = 0
+        elif is_npt_mtk_full:
+            coupling_options = ["full_anisotropic", "axis_selective"]
+            coupling_help = (
+                "Full: complete cell flexibility (incl. shear) | "
+                "Axis-selective: choose which of a, b, c may fluctuate independently (no shear)"
+            )
+            default_coupling_idx = 0
+        elif is_npt_baoab:
+            coupling_options = ["isotropic", "full_anisotropic"]
+            coupling_help = "Isotropic: hydrostatic only (volume scales, shape fixed) | Full: variable cell"
+            default_coupling_idx = 0
+        elif is_npt_melchionna:
+            coupling_options = ["full_anisotropic"]
+            coupling_help = "Melchionna: Parrinello-Rahman-like (full cell freedom)"
+            default_coupling_idx = 0
+        else:
+            coupling_options = ["isotropic"]
+            coupling_help = ""
+            default_coupling_idx = 0
+
+        params['pressure_coupling_type'] = st.selectbox(
+            "Pressure Coupling",
+            coupling_options,
+            index=default_coupling_idx,
+            help=coupling_help,
+            key=_k("pressure_coupling_type"),
+        )
+
+    with col_npt2:
+        params['target_pressure_gpa'] = st.number_input(
+            "Target Pressure (GPa)",
+            min_value=-10.0,
+            max_value=100.0,
+            value=_g('target_pressure_gpa', 0.0),
+            step=0.1,
+            format="%.2f",
+            help="Target pressure for NPT simulation",
+            key=_k("target_pressure_gpa"),
+        )
+
+    with col_npt3:
+        # Label depends on NPT type
+        if is_npt_berendsen:
+            time_label = "Pressure Time Constant (taup) (fs)"
+            time_help = "Berendsen barostat time constant"
+            default_time = 1000.0
+        elif is_npt_mtk_iso or is_npt_mtk_full:
+            time_label = "Barostat Damping (pdamp) (fs)"
+            time_help = "MTK barostat damping time"
+            default_time = 1000.0
+        elif is_npt_baoab:
+            time_label = "Barostat Time (fs)"
+            time_help = "BAOAB barostat characteristic time"
+            default_time = 1000.0
+        else:  # Melchionna
+            time_label = "Barostat Time (taup) (fs)"
+            time_help = "Parrinello-Rahman barostat time"
+            default_time = 1000.0
+
+        params['taup'] = st.number_input(
+            time_label,
+            min_value=10.0,
+            max_value=10000.0,
+            value=_g('taup', default_time),
+            step=100.0,
+            help=time_help,
+            key=_k("taup"),
+        )
+
+    with col_npt4:
+        if is_npt_berendsen or is_npt_melchionna:
+            params['bulk_modulus'] = st.number_input(
+                "Bulk Modulus (GPa)",
+                min_value=1.0, max_value=1000.0, value=_g('bulk_modulus', 140.0), step=10.0,
+                help="Bulk modulus used for compressibility (Berendsen) or pfactor (Melchionna).",
+                key=_k("bulk_modulus"),
+            )
+
+    # Anisotropic (axis-selective) settings for Berendsen
+    if is_npt_berendsen and params['pressure_coupling_type'] == "anisotropic":
+        st.markdown("**Anisotropic Axis Coupling:**")
+        st.caption(
+            "The Berendsen barostat couples each lattice vector (a, b, c) to the same "
+            "target pressure above, but lets their lengths relax independently (angles stay "
+            "fixed). Uncheck an axis to hold its length constant. ASE's Berendsen barostat "
+            "does not support different target pressures per axis — for that use an MTK or "
+            "Nose-Hoover NPT ensemble."
+        )
+        col_ma, col_mb, col_mc = st.columns(3)
+        with col_ma:
+            params['berendsen_mask_a'] = st.checkbox("Couple a-axis", value=True, key=key_prefix + "berendsen_mask_a")
+        with col_mb:
+            params['berendsen_mask_b'] = st.checkbox("Couple b-axis", value=True, key=key_prefix + "berendsen_mask_b")
+        with col_mc:
+            params['berendsen_mask_c'] = st.checkbox("Couple c-axis", value=True, key=key_prefix + "berendsen_mask_c")
+
+        if not any([params['berendsen_mask_a'], params['berendsen_mask_b'],
+                    params['berendsen_mask_c']]):
+            st.error(
+                "❌ At least one axis must be coupled. "
+                "If you don't want any cell changes, switch to NVT instead of NPT."
+            )
+
+    # Semi-isotropic mask for MTK Full
+    # Axis-selective mask for MTK Full
+    if is_npt_mtk_full and params['pressure_coupling_type'] == "axis_selective":
+        st.markdown("**Axis-Selective Mask:**")
+        st.caption(
+            "Pick which lattice vectors may fluctuate. Unchecked axes are fixed. "
+            "Common patterns: (a,b,c) all on = independent axis relaxation, no shear; "
+            "only c on = thin-film / layered c-axis study; "
+            "a and b on = in-plane relaxation with fixed c."
+        )
+        col_ma, col_mb, col_mc = st.columns(3)
+        with col_ma:
+            params['mtk_mask_a'] = st.checkbox("Couple a-axis", value=True, key=key_prefix + "mtk_mask_a")
+        with col_mb:
+            params['mtk_mask_b'] = st.checkbox("Couple b-axis", value=True, key=key_prefix + "mtk_mask_b")
+        with col_mc:
+            params['mtk_mask_c'] = st.checkbox("Couple c-axis", value=True, key=key_prefix + "mtk_mask_c")
+
+        if not any([params['mtk_mask_a'], params['mtk_mask_b'], params['mtk_mask_c']]):
+            st.error(
+                "❌ At least one axis must be coupled. "
+                "If you don't want any cell changes, switch to NVT instead of NPT."
+            )
+
+        mask_label = "({}, {}, {})".format(
+            "a" if params['mtk_mask_a'] else "·",
+            "b" if params['mtk_mask_b'] else "·",
+            "c" if params['mtk_mask_c'] else "·",
+        )
+        st.info(f"Active axes: {mask_label}")
+
+
+def _pre_npt_ui(md_params, npt_options, _g):
+    """Optional NPT stage that equilibrates the cell before an NVE / NVT run.
+
+    Fills ``md_params['pre_npt']``. The stage runs at the production
+    temperature and timestep; the production run then starts from either the
+    last NPT frame (positions, cell and velocities carried over) or the
+    time-averaged NPT structure (fresh Maxwell-Boltzmann velocities)."""
+    st.markdown("---")
+    pre = {'enabled': st.checkbox(
+        "NPT pre-equilibration before this run",
+        value=False, key="pre_npt_enabled",
+        help=(
+            "First run NPT at the same temperature to relax the cell volume (and "
+            "shape) to the target pressure, then start this "
+            f"{md_params['ensemble']} run from the equilibrated structure."
+        ),
+    )}
+    md_params['pre_npt'] = pre
+    if not pre['enabled']:
+        return
+    if not npt_options:
+        st.error("❌ No NPT integrator is available in this ASE installation.")
+        pre['enabled'] = False
+        return
+
+    col_pre1, col_pre2 = st.columns(2)
+    with col_pre1:
+        pre['ensemble'] = st.selectbox(
+            "Pre-equilibration ensemble", npt_options, index=0,
+            key="pre_npt_ensemble",
+            help="Berendsen relaxes the cell fastest; MTK / BAOAB sample the NPT ensemble properly.",
+        )
+    with col_pre2:
+        pre['n_steps'] = st.number_input(
+            "Pre-equilibration steps", min_value=100, max_value=1000000,
+            value=5000, step=1000, key="pre_npt_n_steps",
+            help=f"Uses the same timestep ({md_params['timestep']} fs) and temperature "
+                 f"({md_params['temperature']} K) as the {md_params['ensemble']} run.",
+        )
+
+    _npt_settings_ui(pre, pre['ensemble'], _g, key_prefix="pre_npt_",
+                     title=f"NPT Pre-equilibration: {pre['ensemble']}")
+
+    # Thermostat of the NPT stage
+    if pre['ensemble'] == "NPT (BAOAB Langevin)":
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            pre['friction'] = st.number_input(
+                "Friction coefficient (1/fs)", min_value=0.001, max_value=1.0,
+                value=_g('friction', 0.02), step=0.001, format="%.3f",
+                key="pre_npt_friction",
+                help="Langevin friction of the NPT stage",
+            )
+        with col_t2:
+            seed_input = st.number_input(
+                "RNG seed (BAOAB)", min_value=0, max_value=2_147_483_647,
+                value=0, step=1, key="pre_npt_rng_seed",
+                help="0 = random seed",
+            )
+            pre['rng_seed'] = None if seed_input == 0 else int(seed_input)
+    else:
+        is_berendsen = pre['ensemble'] == "NPT (Berendsen)"
+        pre['taut'] = st.number_input(
+            "Temperature Time Constant (taut) (fs)" if is_berendsen
+            else "Temperature Damping (tdamp) (fs)",
+            min_value=10.0, max_value=1000.0, value=_g('taut', 100.0), step=10.0,
+            key="pre_npt_taut",
+            help="Thermostat time constant of the NPT stage",
+        )
+
+    # Starting structure of the production run
+    start_options = {
+        "last": "Last NPT step (positions, cell and velocities)",
+        "average": "Time-averaged NPT structure (mean cell and positions)",
+    }
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        pre['start_from'] = st.radio(
+            f"Start the {md_params['ensemble']} run from",
+            list(start_options), format_func=start_options.get,
+            key="pre_npt_start_from",
+            help=(
+                "Last step: a seamless continuation, the velocities are kept.\n\n"
+                "Averaged: the cell and the atomic positions are averaged over the end "
+                "of the NPT run and new Maxwell-Boltzmann velocities are drawn. Meant for "
+                "solids, where atoms vibrate about lattice sites — for liquids or "
+                "diffusing atoms an averaged position has no meaning."
+            ),
+        )
+    with col_s2:
+        if pre['start_from'] == "average":
+            pre['average_fraction'] = st.slider(
+                "Average over the last … of the NPT run (%)", 10, 100, 50, 5,
+                key="pre_npt_average_percent",
+                help=f"Frames are taken every log interval ({md_params.get('log_interval', 10)} steps "
+                     "by default) from this final part of the pre-equilibration.",
+            ) / 100.0
+            if md_params['ensemble'] == "NVE":
+                st.warning("⚠️ NVE has no thermostat: from averaged positions the kinetic "
+                           "energy is shared with the potential energy, so the run settles "
+                           "near half the set temperature. Use the last NPT step for NVE.")
+            else:
+                st.caption("From averaged positions the temperature first dips (all the "
+                           "energy starts as kinetic) and the thermostat brings it back.")
+        elif md_params['ensemble'] == "NVE":
+            st.caption("NVE continues from the last NPT frame at the NPT-equilibrated "
+                       "volume, with no thermostat.")
+    st.markdown("---")
+
+
 def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
     """Setup MD parameters UI with all NPT options.
 
@@ -292,167 +583,7 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
 
     # NPT-specific settings
     if is_npt:
-        st.markdown("---")
-        st.subheader(f"NPT Configuration: {md_params['ensemble']}")
-
-        # Show info about the selected NPT method
-        if is_npt_berendsen:
-            st.info(
-                "🔧 **Berendsen**: Fast and robust for equilibration. Does NOT produce correct NPT sampling (suppresses fluctuations). Best for initial equilibration only.")
-        elif is_npt_mtk_iso:
-            st.info(
-                "⚖️ **MTK Isotropic**: Proper NPT sampling with Nose-Hoover chains. Only volume changes, cell shape fixed.")
-        elif is_npt_mtk_full:
-            st.info(
-                "🔄 **MTK Full**: Full Parrinello-Rahman-style barostat. Cell shape can change. Best for phase transitions, anisotropic stress, elastic constants.")
-        elif is_npt_baoab:
-            st.info(
-                "🎲 **BAOAB Langevin**: Stochastic NPT with BAOAB integrator. Robust for noisy forces (ML potentials). Variable cell support.")
-        elif is_npt_melchionna:
-            st.warning(
-                "⚠️ **Melchionna**: Deprecated/not recommended. Can be unstable unless parameters are tuned carefully. Consider using MTK or BAOAB instead.")
-
-        col_npt1, col_npt2, col_npt3, col_npt4 = st.columns(4)
-
-        with col_npt1:
-            # Pressure coupling type depends on NPT method
-            if is_npt_berendsen:
-                coupling_options = ["isotropic", "anisotropic"]
-                coupling_help = "Isotropic: uniform xyz | Anisotropic: independent xyz"
-                default_coupling_idx = 0
-            elif is_npt_mtk_iso:
-                coupling_options = ["isotropic"]
-                coupling_help = "MTK Isotropic: only volume changes (cell shape fixed)"
-                default_coupling_idx = 0
-            elif is_npt_mtk_full:
-                coupling_options = ["full_anisotropic", "axis_selective"]
-                coupling_help = (
-                    "Full: complete cell flexibility (incl. shear) | "
-                    "Axis-selective: choose which of a, b, c may fluctuate independently (no shear)"
-                )
-                default_coupling_idx = 0
-            elif is_npt_baoab:
-                coupling_options = ["isotropic", "full_anisotropic"]
-                coupling_help = "Isotropic: hydrostatic only (volume scales, shape fixed) | Full: variable cell"
-                default_coupling_idx = 0
-            elif is_npt_melchionna:
-                coupling_options = ["full_anisotropic"]
-                coupling_help = "Melchionna: Parrinello-Rahman-like (full cell freedom)"
-                default_coupling_idx = 0
-            else:
-                coupling_options = ["isotropic"]
-                coupling_help = ""
-                default_coupling_idx = 0
-
-            md_params['pressure_coupling_type'] = st.selectbox(
-                "Pressure Coupling",
-                coupling_options,
-                index=default_coupling_idx,
-                help=coupling_help
-            )
-
-        with col_npt2:
-            md_params['target_pressure_gpa'] = st.number_input(
-                "Target Pressure (GPa)",
-                min_value=-10.0,
-                max_value=100.0,
-                value=_g('target_pressure_gpa', 0.0),
-                step=0.1,
-                format="%.2f",
-                help="Target pressure for NPT simulation"
-            )
-
-        with col_npt3:
-            # Label depends on NPT type
-            if is_npt_berendsen:
-                time_label = "Pressure Time Constant (taup) (fs)"
-                time_help = "Berendsen barostat time constant"
-                default_time = 1000.0
-            elif is_npt_mtk_iso or is_npt_mtk_full:
-                time_label = "Barostat Damping (pdamp) (fs)"
-                time_help = "MTK barostat damping time"
-                default_time = 1000.0
-            elif is_npt_baoab:
-                time_label = "Barostat Time (fs)"
-                time_help = "BAOAB barostat characteristic time"
-                default_time = 1000.0
-            else:  # Melchionna
-                time_label = "Barostat Time (taup) (fs)"
-                time_help = "Parrinello-Rahman barostat time"
-                default_time = 1000.0
-
-            md_params['taup'] = st.number_input(
-                time_label,
-                min_value=10.0,
-                max_value=10000.0,
-                value=_g('taup', default_time),
-                step=100.0,
-                help=time_help
-            )
-
-        with col_npt4:
-            if is_npt_berendsen or is_npt_melchionna:
-                md_params['bulk_modulus'] = st.number_input(
-                    "Bulk Modulus (GPa)",
-                    min_value=1.0, max_value=1000.0, value=_g('bulk_modulus', 140.0), step=10.0,
-                    help="Bulk modulus used for compressibility (Berendsen) or pfactor (Melchionna).",
-                )
-
-        # Anisotropic (axis-selective) settings for Berendsen
-        if is_npt_berendsen and md_params['pressure_coupling_type'] == "anisotropic":
-            st.markdown("**Anisotropic Axis Coupling:**")
-            st.caption(
-                "The Berendsen barostat couples each lattice vector (a, b, c) to the same "
-                "target pressure above, but lets their lengths relax independently (angles stay "
-                "fixed). Uncheck an axis to hold its length constant. ASE's Berendsen barostat "
-                "does not support different target pressures per axis — for that use an MTK or "
-                "Nose-Hoover NPT ensemble."
-            )
-            col_ma, col_mb, col_mc = st.columns(3)
-            with col_ma:
-                md_params['berendsen_mask_a'] = st.checkbox("Couple a-axis", value=True, key="berendsen_mask_a")
-            with col_mb:
-                md_params['berendsen_mask_b'] = st.checkbox("Couple b-axis", value=True, key="berendsen_mask_b")
-            with col_mc:
-                md_params['berendsen_mask_c'] = st.checkbox("Couple c-axis", value=True, key="berendsen_mask_c")
-
-            if not any([md_params['berendsen_mask_a'], md_params['berendsen_mask_b'],
-                        md_params['berendsen_mask_c']]):
-                st.error(
-                    "❌ At least one axis must be coupled. "
-                    "If you don't want any cell changes, switch to NVT instead of NPT."
-                )
-
-        # Semi-isotropic mask for MTK Full
-        # Axis-selective mask for MTK Full
-        if is_npt_mtk_full and md_params['pressure_coupling_type'] == "axis_selective":
-            st.markdown("**Axis-Selective Mask:**")
-            st.caption(
-                "Pick which lattice vectors may fluctuate. Unchecked axes are fixed. "
-                "Common patterns: (a,b,c) all on = independent axis relaxation, no shear; "
-                "only c on = thin-film / layered c-axis study; "
-                "a and b on = in-plane relaxation with fixed c."
-            )
-            col_ma, col_mb, col_mc = st.columns(3)
-            with col_ma:
-                md_params['mtk_mask_a'] = st.checkbox("Couple a-axis", value=True, key="mtk_mask_a")
-            with col_mb:
-                md_params['mtk_mask_b'] = st.checkbox("Couple b-axis", value=True, key="mtk_mask_b")
-            with col_mc:
-                md_params['mtk_mask_c'] = st.checkbox("Couple c-axis", value=True, key="mtk_mask_c")
-
-            if not any([md_params['mtk_mask_a'], md_params['mtk_mask_b'], md_params['mtk_mask_c']]):
-                st.error(
-                    "❌ At least one axis must be coupled. "
-                    "If you don't want any cell changes, switch to NVT instead of NPT."
-                )
-
-            mask_label = "({}, {}, {})".format(
-                "a" if md_params['mtk_mask_a'] else "·",
-                "b" if md_params['mtk_mask_b'] else "·",
-                "c" if md_params['mtk_mask_c'] else "·",
-            )
-            st.info(f"Active axes: {mask_label}")
+        _npt_settings_ui(md_params, md_params['ensemble'], _g)
 
     # Basic simulation parameters
     with col_md2:
@@ -529,6 +660,11 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
                 help="Nose-Hoover thermostat damping time"
             )
 
+    # NPT pre-equilibration ahead of an NVE / NVT run
+    md_params['pre_npt'] = {'enabled': False}
+    if not is_npt:
+        _pre_npt_ui(md_params, [o for o in ensemble_options if "NPT" in o], _g)
+
     # Initialization and output settings
     st.write("**Initialization & Output**")
     col_init1, col_init2, col_init3 = st.columns(3)
@@ -561,7 +697,13 @@ def setup_md_parameters_ui(default_settings=None, save_settings_function=None):
     # Show total simulation time
     total_time_fs = md_params['n_steps'] * md_params['timestep']
     total_time_ps = total_time_fs / 1000.0
-    st.info(f"**Simulation time:** {total_time_fs:.0f} fs = {total_time_ps:.2f} ps")
+    if md_params['pre_npt']['enabled']:
+        pre_time_ps = md_params['pre_npt']['n_steps'] * md_params['timestep'] / 1000.0
+        st.info(f"**Simulation time:** {pre_time_ps:.2f} ps NPT pre-equilibration "
+                f"+ {total_time_ps:.2f} ps {md_params['ensemble']} = "
+                f"{pre_time_ps + total_time_ps:.2f} ps")
+    else:
+        st.info(f"**Simulation time:** {total_time_fs:.0f} fs = {total_time_ps:.2f} ps")
 
     if default_settings is not None and save_settings_function is not None:
         if st.button("💾 Save MD Settings as Default", key="save_md_defaults",

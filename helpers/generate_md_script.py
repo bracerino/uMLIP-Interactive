@@ -31,6 +31,7 @@ from helpers.uma_models import (
 from helpers.sevennet_dispersion import sevennet_d3_code
 from helpers.script_pruning import pruned_script
 from helpers.grace_gpu_memory import grace_gpu_memory_growth
+from helpers.md_pre_npt import PRE_NPT_SRC
 
 
 @grace_gpu_memory_growth
@@ -1083,6 +1084,7 @@ except Exception as e:
     md_params.pop('pressure_damping_time', None)
 
     md_params_script_str = pprint.pformat(md_params, indent=4, width=80)
+    pre_npt_src = PRE_NPT_SRC.strip()
 
     indented_calculator_setup = textwrap.indent(calculator_setup_str, "    ")
 
@@ -1706,7 +1708,12 @@ if SWEEP_TEMPERATURE is not None:
     print(f"[sweep] Overriding temperature -> {{SWEEP_TEMPERATURE}} K")
 if SWEEP_PRESSURE_GPA is not None:
     md_params['target_pressure_gpa'] = SWEEP_PRESSURE_GPA
+    if (md_params.get('pre_npt') or {{}}).get('enabled'):
+        md_params['pre_npt']['target_pressure_gpa'] = SWEEP_PRESSURE_GPA
     print(f"[sweep] Overriding target pressure -> {{SWEEP_PRESSURE_GPA}} GPa")
+
+# --- NPT pre-equilibration (used when md_params['pre_npt'] is enabled) ---
+{pre_npt_src}
 
 is_mace_polar = {is_mace_polar}
 is_orbmol = {is_orbmol}
@@ -1719,7 +1726,11 @@ def apply_orbmol_metadata(atoms, polar_settings):
     atoms.info["charge"] = int(polar_settings.get("charge", 0))
     atoms.info["spin"] = int(polar_settings.get("spin", 1))
 
-def run_md_simulation(atoms, basename, calculator):
+def run_md_stage(atoms, basename, calculator, md_params, out_prefix=None,
+                 init_velocities=True, extra_observers=(), final_outputs=True):
+    # One MD run of `atoms` (modified in place). Returns False if it failed.
+    if out_prefix is None:
+        out_prefix = f"md_results/md_{{basename}}"
     print(f"--- Starting MD for {{basename}} ---")
     print(f"  Ensemble: {{md_params['ensemble']}}")
     print(f"  Temperature: {{md_params['temperature']}} K")
@@ -1741,15 +1752,18 @@ def run_md_simulation(atoms, basename, calculator):
         print(f"  ⚡ OrbMol metadata set — charge={{atoms.info['charge']}}, "
               f"spin={{atoms.info['spin']}}")
 
-    try:
-        MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
-        if md_params.get('remove_com_motion', True):
-            Stationary(atoms)
-            print("  Initialized velocities (Maxwell-Boltzmann) and removed CoM motion.")
-        else:
-            print("  Initialized velocities (Maxwell-Boltzmann).")
-    except Exception as e:
-        print(f"  Warning: Could not set initial velocities. {{e}}")
+    if not init_velocities:
+        print(f"  Continuing with the current velocities (T = {{atoms.get_temperature():.1f}} K).")
+    else:
+        try:
+            MaxwellBoltzmannDistribution(atoms, temperature_K=md_params['temperature'])
+            if md_params.get('remove_com_motion', True):
+                Stationary(atoms)
+                print("  Initialized velocities (Maxwell-Boltzmann) and removed CoM motion.")
+            else:
+                print("  Initialized velocities (Maxwell-Boltzmann).")
+        except Exception as e:
+            print(f"  Warning: Could not set initial velocities. {{e}}")
 
     dt = md_params['timestep'] * units.fs
     ensemble = md_params['ensemble']
@@ -2061,12 +2075,12 @@ def run_md_simulation(atoms, basename, calculator):
 
     if md is None:
         print(f"Error: Unknown ensemble specified: '{{ensemble}}'")
-        return
+        return False
 
-    logfile = f"md_results/md_{{basename}}.log"
-    xyz_trajectory_file = f"md_results/md_{{basename}}.xyz"
-    lattice_logfile = f"md_results/md_{{basename}}.lattice"
-    csv_logfile = f"md_results/md_{{basename}}_data.csv"
+    logfile = f"{{out_prefix}}.log"
+    xyz_trajectory_file = f"{{out_prefix}}.xyz"
+    lattice_logfile = f"{{out_prefix}}.lattice"
+    csv_logfile = f"{{out_prefix}}_data.csv"
 
     print(f"  Logging detailed steps to: {{logfile}}")
     md.attach(
@@ -2100,8 +2114,11 @@ def run_md_simulation(atoms, basename, calculator):
     csv_logger = CSVLogger(atoms, md, csv_logfile)
     md.attach(csv_logger, interval=md_params['log_interval'])
 
+    for observer in extra_observers:
+        md.attach(observer, interval=1)
+
     polar_logger = None
-    if is_mace_polar:
+    if is_mace_polar and final_outputs:
         polar_logger = PolarLogger(
             atoms, md, basename,
             output_dir=f"md_results/polar/{{basename}}",
@@ -2111,9 +2128,11 @@ def run_md_simulation(atoms, basename, calculator):
 
     print(f"\\n🚀 Running simulation for {{md_params['n_steps']}} steps...")
     start_time = time.perf_counter()
+    run_ok = True
     try:
         md.run(md_params['n_steps'])
     except Exception as e:
+        run_ok = False
         print(f"❌ MD RUN FAILED: {{e}}")
         import traceback
         traceback.print_exc()
@@ -2122,14 +2141,14 @@ def run_md_simulation(atoms, basename, calculator):
         lattice_logger.close()
         csv_logger.close()
 
-        final_vasp_file = f"md_results/md_{{basename}}_final.vasp"
+        final_vasp_file = f"{{out_prefix}}_final.vasp"
         try:
             print(f"  Saving final structure to: {{final_vasp_file}}")
             write(final_vasp_file, atoms, format='vasp')
         except Exception as e:
             print(f"  Warning: Could not save final VASP file: {{e}}")
 
-        if is_mace_polar:
+        if is_mace_polar and final_outputs:
             print("  ⚡ Extracting final MACE-POLAR-1 outputs...")
             extract_polar_final(atoms, basename,
                                 polar_settings=polar_settings,
@@ -2138,10 +2157,71 @@ def run_md_simulation(atoms, basename, calculator):
     end_time = time.perf_counter()
     elapsed = end_time - start_time
     print(f"\\n--- MD for {{basename}} finished in {{elapsed:.2f}} seconds ---")
-    console_logger.save_speed_report(basename)
-    console_logger.save_memory_report(basename)
+    report_dir = os.path.dirname(out_prefix) or "."
+    console_logger.save_speed_report(basename, output_dir=report_dir)
+    console_logger.save_memory_report(basename, output_dir=report_dir)
+    return run_ok
 
-def generate_plots(basename):
+
+def run_md_simulation(atoms, basename, calculator):
+    if not pre_npt_enabled(md_params):
+        run_md_stage(atoms, basename, calculator, md_params)
+        return
+
+    pre = md_params['pre_npt']
+    stage_params = pre_npt_stage_params(md_params)
+    os.makedirs(PRE_NPT_DIR, exist_ok=True)
+    pre_prefix = f"{{PRE_NPT_DIR}}/md_{{basename}}"
+    print(f"\\n=== Stage 1/2: NPT pre-equilibration — {{stage_params['ensemble']}}, "
+          f"{{stage_params['n_steps']}} steps, P = {{stage_params.get('target_pressure_gpa', 0.0)}} GPa, "
+          f"T = {{stage_params['temperature']}} K ===")
+    print(f"  Output: {{pre_prefix}}.*")
+    v0 = atoms.get_volume()
+
+    averager = None
+    if pre.get('start_from') == "average":
+        averager = PreNPTAverager(atoms, stage_params['n_steps'],
+                                  pre.get('average_fraction', 0.5),
+                                  md_params.get('log_interval', 10))
+    if not run_md_stage(atoms, basename, calculator, stage_params, out_prefix=pre_prefix,
+                        extra_observers=[averager] if averager else [],
+                        final_outputs=False):
+        print(f"❌ NPT pre-equilibration failed — skipping the {{md_params['ensemble']}} run of {{basename}}.")
+        return
+
+    keep_velocities = True
+    start_atoms = atoms
+    if averager is not None:
+        averaged = averager.averaged_atoms()
+        if averaged is None:
+            print("  ⚠️ No NPT frames collected for the average — starting from the last NPT step.")
+        else:
+            start_atoms = averaged
+            keep_velocities = False
+            print(f"  Averaged {{len(averager.frac)}} NPT frames (last "
+                  f"{{100 * pre.get('average_fraction', 0.5):.0f}}% of the run).")
+
+    a, b, c, alpha, beta, gamma = start_atoms.cell.cellpar()
+    v1 = start_atoms.get_volume()
+    print(f"  Starting structure: a={{a:.4f}} b={{b:.4f}} c={{c:.4f}} Å, "
+          f"α={{alpha:.2f}} β={{beta:.2f}} γ={{gamma:.2f}}°, "
+          f"V={{v1:.3f}} Å³ ({{100 * (v1 / v0 - 1):+.2f}}% vs input)")
+    start_file = f"{{pre_prefix}}_start_{{pre.get('start_from', 'last')}}.vasp"
+    try:
+        write(start_file, start_atoms, format='vasp', direct=True)
+        print(f"  Saved the starting structure to {{start_file}}")
+    except Exception as e:
+        print(f"  Warning: could not save {{start_file}}: {{e}}")
+
+    print(f"\\n=== Stage 2/2: {{md_params['ensemble']}} from the "
+          f"{{'last NPT step' if keep_velocities else 'averaged NPT structure'}} ===")
+    run_md_stage(start_atoms, basename, calculator, md_params,
+                 init_velocities=not keep_velocities)
+
+
+def generate_plots(basename, prefix=None):
+    if prefix is None:
+        prefix = f"md_results/md_{{basename}}"
     print(f"  Generating plots for: {{basename}}")
 
     plt.rcParams.update({{
@@ -2155,7 +2235,7 @@ def generate_plots(basename):
         'figure.figsize': (15, 10)
     }})
 
-    csv_file = f"md_results/md_{{basename}}_data.csv"
+    csv_file = f"{{prefix}}_data.csv"
 
     try:
         data = pd.read_csv(csv_file)
@@ -2193,7 +2273,7 @@ def generate_plots(basename):
         return
 
     time_ps = data['Time[ps]']
-    plot_prefix = f"md_results/md_{{basename}}"
+    plot_prefix = prefix
 
     try:
         plt.figure()
@@ -2322,7 +2402,7 @@ def generate_plots(basename):
     except Exception as e:
         print(f"    ... failed to plot lattice percentage change: {{e}}")
 
-    print(f"  ... plots saved to md_results/md_{{basename}}_*.png")
+    print(f"  ... plots saved to {{prefix}}_*.png")
 
 def main():
     global md_params
@@ -2379,7 +2459,7 @@ def main():
                 _ = atoms.get_forces()
                 print("      ... forces graph compiled.")
 
-                if 'NPT' in md_params['ensemble']:
+                if 'NPT' in md_params['ensemble'] or pre_npt_enabled(md_params):
                     try:
                         _ = atoms.get_stress()
                         print("      ... stress graph compiled (for NPT).")
@@ -2409,6 +2489,9 @@ def main():
             print("No simulations were started, nothing to plot.")
 
         for basename in sorted(list(set(basenames_to_plot))):
+            if pre_npt_enabled(md_params) and os.path.exists(f"{{PRE_NPT_DIR}}/md_{{basename}}_data.csv"):
+                generate_plots(f"{{basename}} (NPT pre-equilibration)",
+                               prefix=f"{{PRE_NPT_DIR}}/md_{{basename}}")
             generate_plots(basename)
 
         print("\\n--- All MD simulations and plotting complete ---")
