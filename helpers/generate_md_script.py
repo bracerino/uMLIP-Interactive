@@ -1766,7 +1766,8 @@ def run_md_stage(atoms, basename, calculator, md_params, out_prefix=None,
             print(f"  Warning: Could not set initial velocities. {{e}}")
 
     dt = md_params['timestep'] * units.fs
-    ensemble = md_params['ensemble']
+    # The panel labels Melchionna "NPT (Melchionna) ⚠️".
+    ensemble = md_params['ensemble'].replace("⚠️", "").strip()
     temperature_K = md_params['temperature']
 
     md = None
@@ -1778,7 +1779,7 @@ def run_md_stage(atoms, basename, calculator, md_params, out_prefix=None,
     elif ensemble == "NVT-Langevin":
         friction = md_params.get('friction', 0.02) / units.fs
         md = Langevin(atoms, timestep=dt, temperature_K=temperature_K, friction=friction)
-        print(f"  Initialized NVT-Langevin ensemble (friction={{friction * units.fs:.3f}} 1/ps).")
+        print(f"  Initialized NVT-Langevin ensemble (friction={{friction * units.fs:.3f}} 1/fs).")
 
     elif ensemble == "NVT-Berendsen":
         taut_fs = md_params.get('taut', 100.0) * units.fs
@@ -1909,7 +1910,9 @@ def run_md_stage(atoms, basename, calculator, md_params, out_prefix=None,
         
         ttime_fs = md_params.get('taut', 100.0) * units.fs
         pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
-        externalstress = -pressure_gpa * units.GPa
+        # A scalar externalstress is read by MelchionnaNPT as a pressure
+        # (positive = compression), unlike LangevinBAOAB's stress.
+        externalstress = pressure_gpa * units.GPa
         bulk_modulus_gpa = md_params.get('bulk_modulus', 140.0)
         taup_fs = md_params.get('taup', 1000.0) * units.fs
         pfactor = (taup_fs ** 2) * bulk_modulus_gpa * units.GPa
@@ -1940,38 +1943,33 @@ def run_md_stage(atoms, basename, calculator, md_params, out_prefix=None,
         coupling_type = md_params.get('pressure_coupling_type', 'isotropic').lower()
         pressure_gpa = md_params.get('target_pressure_gpa', 0.0)
 
-        npt_kwargs = {{}} 
+        npt_kwargs = {{
+            'timestep': dt,
+            'temperature_K': temperature_K,
+            'taut': taut_fs,
+            'taup': taup_fs,
+            'compressibility_au': compressibility_au,
+            'pressure_au': pressure_gpa * units.GPa,
+        }}
 
         if coupling_type == 'anisotropic':
-            px_gpa = md_params.get('pressure_x', pressure_gpa)
-            py_gpa = md_params.get('pressure_y', pressure_gpa)
-            pz_gpa = md_params.get('pressure_z', pressure_gpa)
-
-            pressure_factor = 1e9 * units.Pascal
-            px_au = px_gpa * pressure_factor
-            py_au = py_gpa * pressure_factor
-            pz_au = pz_gpa * pressure_factor
-
-            pressure_au = np.diag([px_au, py_au, pz_au])
-
+            if not NPT_BERENDSEN_INHOMO_AVAILABLE:
+                print("\\n*** ERROR: Inhomogeneous_NPTBerendsen not available in this ASE. ***")
+                sys.exit(1)
+            # Each lattice vector is scaled on its own toward the same target
+            # pressure; unchecked axes keep their length. Angles stay fixed.
+            mask = (
+                int(md_params.get('berendsen_mask_a', True)),
+                int(md_params.get('berendsen_mask_b', True)),
+                int(md_params.get('berendsen_mask_c', True)),
+            )
+            md = Inhomogeneous_NPTBerendsen(atoms, mask=mask, **npt_kwargs)
             print(f"  Initialized NPT-Berendsen (ANISOTROPIC) ensemble.")
-            print(f"    Target P (xx,yy,zz): {{px_gpa:.2f}}, {{py_gpa:.2f}}, {{pz_gpa:.2f}} GPa")
-            npt_kwargs['pressure_au'] = pressure_au
-
-        else: # Isotropic case
-            pressure_au = pressure_gpa * 1e9 * units.Pascal
-
+            print(f"    Target P: {{pressure_gpa}} GPa, axis mask (a,b,c) = {{mask}}")
+        else:
+            md = NPTBerendsen(atoms, **npt_kwargs)
             print(f"  Initialized NPT-Berendsen (ISOTROPIC) ensemble.")
-            print(f"    Target P: {{pressure_gpa}} GPa")
-            npt_kwargs['pressure_au'] = pressure_au
-
-        npt_kwargs['timestep'] = dt
-        npt_kwargs['temperature_K'] = temperature_K
-        npt_kwargs['taut'] = taut_fs
-        npt_kwargs['taup'] = taup_fs
-        npt_kwargs['compressibility_au'] = compressibility_au
-
-        md = NPTBerendsen(atoms, **npt_kwargs) 
+            print(f"    Target P: {{pressure_gpa}} GPa") 
 
         print(f"    T coupling (taut): {{taut_fs / units.fs:.1f}} fs")
         print(f"    P coupling (taup): {{taup_fs / units.fs:.1f}} fs")
