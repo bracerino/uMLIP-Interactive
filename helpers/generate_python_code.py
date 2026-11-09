@@ -2930,7 +2930,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
     code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
-    results = []
+    results, finished_structures = load_finished_results("results/energy_results.csv", structure_files)
     is_mace_polar = {is_mace_polar}
     is_orbmol = {is_orbmol}
     polar_settings = {{"charge": {polar_charge}, "spin": {polar_spin}, "external_field": {list(polar_efield)}}}
@@ -2975,6 +2975,9 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     code += '''
 
     for i, filename in enumerate(structure_files):
+        if filename in finished_structures:
+            print(f"\\n⏭️ Structure {i+1}/{len(structure_files)}: {filename} finished in an earlier run, skipped")
+            continue
         print(f"\\n📊 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
         # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
@@ -3329,7 +3332,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     strain_magnitudes_str = str(strain_magnitudes_list)
 
     code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
-    results = []
+    results, finished_structures = load_finished_results("results/elastic_results.csv", structure_files)
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
     eV_to_GPa = 160.21766208
@@ -3448,6 +3451,9 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     voigt_names = ['xx', 'yy', 'zz', 'yz', 'xz', 'xy']
 
     for i, filename in enumerate(structure_files):
+        if filename in finished_structures:
+            print(f"\\n⏭️ Structure {i+1}/{len(structure_files)}: {filename} finished in an earlier run, skipped")
+            continue
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
         # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
@@ -4135,6 +4141,61 @@ def read(filename, *args, **kwargs):
     if isinstance(filename, str) and filename in _STRUCTURE_FRAMES and not args and not kwargs:
         return _STRUCTURE_FRAMES[filename].copy()
     return _ase_read(filename, *args, **kwargs)
+
+
+# Restart in the same folder: structures that an earlier run of this same
+# script finished without an error are skipped and their result rows kept.
+# The script's own text is the fingerprint, so a run with other settings or
+# another model starts over. Set RESUME_FINISHED = False to recalculate all.
+RESUME_FINISHED = True
+
+
+def _script_fingerprint():
+    import hashlib
+    try:
+        with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+            lines = [l for l in fh if not l.startswith("Generated on:")]
+    except Exception:
+        return None
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def load_finished_results(csv_path, structure_files):
+    """(result rows to keep, names of finished structures) for a restart."""
+    rows, finished = [], set()
+    fingerprint = _script_fingerprint()
+    stamp_path = os.path.join(os.path.dirname(csv_path),
+                              "." + os.path.basename(csv_path) + ".script_sha256")
+    if RESUME_FINISHED and fingerprint and os.path.exists(csv_path):
+        previous = None
+        if os.path.exists(stamp_path):
+            with open(stamp_path) as fh:
+                previous = fh.read().strip()
+        if previous != fingerprint:
+            print(f"♻️ {csv_path} comes from another script or other settings: "
+                  f"all structures are calculated again")
+        else:
+            try:
+                records = pd.read_csv(csv_path).to_dict("records")
+            except Exception as e:
+                print(f"♻️ Could not read {csv_path} ({e}): all structures are calculated again")
+                records = []
+            for rec in records:
+                rec = {k: v for k, v in rec.items() if not (isinstance(v, float) and v != v)}
+                name = rec.get("structure")
+                if "error" in rec or name not in structure_files or name in finished:
+                    continue
+                rows.append(rec)
+                finished.add(name)
+            if finished:
+                print(f"♻️ Restart: {len(finished)} of {len(structure_files)} structures already "
+                      f"finished in {csv_path}, only the remaining ones are calculated "
+                      f"(set RESUME_FINISHED = False to recalculate all)")
+    if fingerprint:
+        os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+        with open(stamp_path, "w") as fh:
+            fh.write(fingerprint)
+    return rows, finished
 
 
 def extract_polar_results(atoms, structure_name):
@@ -5125,7 +5186,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
     code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
-    results = []
+    results, finished_structures = load_finished_results("results/optimization_results.csv", structure_files)
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
     optimizer_type = "{optimizer}"
@@ -5188,6 +5249,9 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     code += '''
 
     for i, filename in enumerate(structure_files):
+        if filename in finished_structures:
+            print(f"\\n⏭️ Structure {i+1}/{len(structure_files)}: {filename} finished in an earlier run, skipped")
+            continue
         print(f"\\n🔧 Processing structure {i+1}/{len(structure_files)}: {filename}")
         structure_start_time = time.time()
         # Quantum ESPRESSO only: lets this structure's own spin/+U file be found.
@@ -6198,7 +6262,7 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
         or f.endswith(".poscar") or f.endswith(".cif")
         or f.endswith(".xyz") or f.endswith(".extxyz")
     ]))
-    results = []
+    results, finished_structures = load_finished_results("results/phonon_results.csv", structure_files)
     log(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
 
     try:
@@ -6266,6 +6330,9 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     reference_energies = {{}}
 {formation_ref_block}
     for struct_idx, filename in enumerate(structure_files):
+        if filename in finished_structures:
+            log(f"\\n⏭️ Structure {{struct_idx+1}}/{{len(structure_files)}}: {{filename}} finished in an earlier run, skipped")
+            continue
         log(f"\\n🎵 Processing structure {{struct_idx+1}}/{{len(structure_files)}}: {{filename}}")
         structure_start = time.time()
 
