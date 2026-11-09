@@ -2929,7 +2929,7 @@ def _generate_energy_only_code(calc_formation_energy, is_mace_polar=False, polar
     polar_spin = (polar_settings or {}).get("spin", 1)
     polar_efield = (polar_settings or {}).get("external_field", [0.0, 0.0, 0.0])
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
+    code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
     results = []
     is_mace_polar = {is_mace_polar}
     is_orbmol = {is_orbmol}
@@ -3328,7 +3328,7 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
 
     strain_magnitudes_str = str(strain_magnitudes_list)
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
+    code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for elastic calculations")
 
@@ -4089,6 +4089,54 @@ def _generate_utility_functions():
     """Generate utility functions needed by the script."""
     return '''
 
+# Multi-frame .xyz / .extxyz input: every frame is calculated as its own
+# structure, named <file>_frame0001.extxyz, <file>_frame0002.extxyz, ...
+# A frame whose comment line carries a name (name=..., structure_name=...,
+# config_name=..., label=..., config_type=...) gets it appended: <file>_frame0001_<name>.extxyz.
+# The frames are kept in memory; read() below serves them by that name.
+_STRUCTURE_FRAMES = {}
+_FRAME_NAME_KEYS = ("name", "structure_name", "config_name", "label", "system_name", "config_type")
+_ase_read = read
+
+
+def _frame_name(frame):
+    for key in _FRAME_NAME_KEYS:
+        value = frame.info.get(key)
+        if value is not None and str(value).strip():
+            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in str(value).strip())
+            return safe.strip("._")[:80]
+    return ""
+
+
+def expand_structure_files(files):
+    expanded = []
+    for f in files:
+        if f.lower().endswith((".xyz", ".extxyz")):
+            try:
+                frames = _ase_read(f, index=":")
+            except Exception as e:
+                print(f"  ⚠️ Could not read the frames of {f}: {e}")
+                frames = None
+            if frames and len(frames) > 1:
+                base = os.path.splitext(f)[0]
+                width = max(4, len(str(len(frames))))
+                for k, frame in enumerate(frames, 1):
+                    name = _frame_name(frame)
+                    label = f"{base}_frame{k:0{width}d}" + (f"_{name}" if name else "") + ".extxyz"
+                    _STRUCTURE_FRAMES[label] = frame
+                    expanded.append(label)
+                print(f"🎞️ {f}: {len(frames)} frames, each calculated as a separate structure")
+                continue
+        expanded.append(f)
+    return expanded
+
+
+def read(filename, *args, **kwargs):
+    if isinstance(filename, str) and filename in _STRUCTURE_FRAMES and not args and not kwargs:
+        return _STRUCTURE_FRAMES[filename].copy()
+    return _ase_read(filename, *args, **kwargs)
+
+
 def extract_polar_results(atoms, structure_name):
     """Extract MACE-POLAR-1 outputs (dipole, charges, density coefficients,
     spin charge density) from the calculator results."""
@@ -4416,6 +4464,8 @@ def append_optimization_summary(filename, structure_name, initial_atoms, final_a
 
 def read_poscar_with_selective_dynamics(filename):
     atoms = read(filename)
+    if filename in _STRUCTURE_FRAMES:
+        return atoms, None
 
     with open(filename, 'r') as f:
         lines = f.readlines()
@@ -5074,7 +5124,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     # Check if tetragonal mode is enabled
     is_tetragonal = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
-    code = f'''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
+    code = f'''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
     results = []
     print(f"🔧 Found {{len(structure_files)}} structure files for optimization")
 
@@ -6142,11 +6192,12 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
     def log(msg):
         print(msg)
 
-    structure_files = sorted([
+    structure_files = expand_structure_files(sorted([
         f for f in os.listdir(".")
         if f.startswith("POSCAR") or f.endswith(".vasp")
         or f.endswith(".poscar") or f.endswith(".cif")
-    ])
+        or f.endswith(".xyz") or f.endswith(".extxyz")
+    ]))
     results = []
     log(f"🎵 Found {{len(structure_files)}} structure files for phonon calculations")
 

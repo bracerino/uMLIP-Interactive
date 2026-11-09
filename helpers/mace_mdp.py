@@ -161,7 +161,7 @@ with _mdp_warnings.catch_warnings():
 def generate_mdp_calculation_code():
     """The calculation block of a standalone script: every structure file in the
     folder -> dipole, polarizability and charges, written to mdp_results/."""
-    return '''    structure_files = sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")])
+    return '''    structure_files = expand_structure_files(sorted([f for f in os.listdir(".") if f.startswith("POSCAR") or f.endswith(".vasp") or f.endswith(".poscar") or f.endswith(".cif") or f.endswith(".xyz") or f.endswith(".extxyz")]))
     print(f"📊 Found {len(structure_files)} structure files")
     Path("mdp_results").mkdir(exist_ok=True)
 ''' + "\n".join("    " + line if line.strip() else line

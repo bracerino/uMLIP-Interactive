@@ -5760,7 +5760,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.14.2 · 10/28/2026
+            v0.14.3 · 11/09/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
