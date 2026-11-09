@@ -5091,8 +5091,8 @@ class OptimizationLogger:
             self._print_step(-1)
 
 
-def save_optimization_convergence(history, base_name, fmax=None, output_dir="results"):
-    """Save the per-step convergence history as a CSV and an energy/force plot.
+def save_optimization_convergence(history, base_name, fmax=None, output_dir="results", plot=True):
+    """Save the per-step convergence history as a CSV and (if plot) an energy/force plot.
 
     Returns (csv_path, png_path); either may be None if it could not be written.
     """
@@ -5108,6 +5108,8 @@ def save_optimization_convergence(history, base_name, fmax=None, output_dir="res
     print(f"  📊 Saved convergence data to {csv_path}")
 
     png_path = None
+    if not plot:
+        return csv_path, png_path
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -5166,6 +5168,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fmax = optimization_params.get('fmax', 0.05)
     max_steps = optimization_params.get('max_steps', 200)
     save_trajectory = optimization_params.get('save_trajectory', True)
+    save_plots = optimization_params.get('save_plots', True)
     opt_type = optimization_params.get(
         'optimization_type', 'Both atoms and cell')
     cell_constraint = optimization_params.get(
@@ -5193,6 +5196,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
     fmax = {fmax}
     max_steps = {max_steps}
     save_trajectory = {save_trajectory}
+    save_plots = {save_plots}
     optimization_type = "{opt_type}"
     cell_constraint = "{cell_constraint}"
     pressure = {pressure}
@@ -5558,7 +5562,7 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                 print(f"  💾 Saved CIF to {cif_output_filename} (P1, all atoms explicit)")
 
             convergence_csv, convergence_plot = save_optimization_convergence(
-                logger.history, base_name, fmax=fmax
+                logger.history, base_name, fmax=fmax, plot=save_plots
             )
 
             detailed_summary_file = "results/optimization_detailed_summary.csv"
@@ -5813,10 +5817,13 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
 
     code += '''
     # Generate optimization plots
-    print("\\n📊 Generating optimization plots...")
     successful_results = [r for r in results if "error" not in r]
+    if not save_plots:
+        print("\\n📊 Supporting plots switched off (save_plots = False)")
+    else:
+        print("\\n📊 Generating optimization plots...")
 
-    if len(successful_results) > 0:
+    if save_plots and len(successful_results) > 0:
         try:
             import matplotlib.pyplot as plt
 

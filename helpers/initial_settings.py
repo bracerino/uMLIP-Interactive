@@ -243,11 +243,23 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             "By default, POSCAR output sorts atoms by element type."
         )
     )
-    save_trajectory = st.checkbox(
-        "Save optimization trajectory (.xyz) (⚠️ Currently, do not turn it off for calculations within GUI)",
-        value=True,
-        help="Save step-by-step trajectory in XYZ format. Disable for large batches to save disk space."
-    )
+    col_traj, col_plots = st.columns(2)
+    with col_traj:
+        save_trajectory = st.checkbox(
+            "Save optimization trajectory (.xyz) (⚠️ Currently, do not turn it off for calculations within GUI)",
+            value=True,
+            help="Save step-by-step trajectory in XYZ format. Disable for large batches to save disk space."
+        )
+    with col_plots:
+        save_plots = st.checkbox(
+            "Save supporting plots (.png)",
+            value=geom_defaults.get('save_plots', True),
+            help=(
+                "Standalone script: the per-structure convergence plots and the "
+                "comparison plots (energies, lattice changes). Disable for large "
+                "batches; the convergence and results CSV files are still written."
+            ),
+        )
 
 
     optimization_params = {
@@ -263,6 +275,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
         'hydrostatic_strain': hydrostatic_strain,
         'stress_threshold': stress_threshold,
         'save_trajectory': save_trajectory,
+        'save_plots': save_plots,
         'fix_symmetry': fix_symmetry,
         'preserve_atom_order': preserve_atom_order,
         'print_interval': int(print_interval),
