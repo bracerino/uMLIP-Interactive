@@ -6401,15 +6401,15 @@ with st.sidebar:
         )
 
     # cuEquivariance acceleration (enable_cueq): MACE-only and GPU-only. Same model
-    # and weights, faster equivariant kernels — so it is on by default when a GPU is
-    # selected. MACE-POLAR is excluded (polarisable heads are not covered).
+    # and weights, faster equivariant kernels. Off by default (needs the extra
+    # cuequivariance packages); the user can tick it on GPU. MACE-POLAR is excluded (polarisable heads are not covered).
     mace_enable_cueq = False
     is_mace_family = ((not use_qe) and "MACE" in selected_model
                       and "POLAR" not in selected_model.upper())
     if is_mace_family and device == "cuda":
         mace_enable_cueq = st.checkbox(
             "⚡ cuEquivariance acceleration (enable_cueq)",
-            value=True,
+            value=False,
             key="mace_enable_cueq",
             help=(
                 "Runs MACE with the cuEquivariance CUDA kernels — same model and "
@@ -6441,10 +6441,8 @@ with st.sidebar:
         _cueq_installed = _ilu.find_spec(SEVENNET_CUEQ_MODULE) is not None
         sevennet_enable_cueq = st.checkbox(
             "⚡ cuEquivariance acceleration (enable_cueq)",
-            # Ticked when the package is actually there, so a freshly installed
-            # environment gets the speed-up without an extra click, and an older
-            # one is not forced into an error.
-            value=_cueq_installed,
+            # Off by default; the user opts in.
+            value=False,
             key="sevennet_enable_cueq",
             help=(
                 "Runs SevenNet with the cuEquivariance CUDA kernels — same model "
