@@ -3739,7 +3739,7 @@ render_qe_sidebar = render_qe_settings
 
 
 QE_ENV_SETUP = {
-    "pip": "pip install ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib",
+    "pip": "pip install ase==3.29.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib",
     "note": (
         "Quantum ESPRESSO runs as an external program — no torch/MLIP packages are "
         "needed, but pw.x itself must be installed and the pseudopotential directory "

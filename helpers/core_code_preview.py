@@ -438,7 +438,7 @@ def _geometry_optimization(p):
     is_tetragonal   = (cell_constraint == "Tetragonal (a=b, optimize a and c)")
 
     opt_class = {
-        'BFGS': 'BFGS', 'LBFGS': 'LBFGS', 'FIRE': 'FIRE',
+        'BFGS': 'BFGS', 'LBFGS': 'LBFGS', 'FIRE': 'FIRE', 'FIRE2': 'FIRE2',
         'BFGSLineSearch (QuasiNewton)': 'BFGSLineSearch',
         'LBFGSLineSearch': 'LBFGSLineSearch',
         'GoodOldQuasiNewton': 'GoodOldQuasiNewton',

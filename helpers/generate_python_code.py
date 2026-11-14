@@ -279,7 +279,7 @@ E_DEC = {_e_dec}
 from ase import Atoms
 from ase.io import read, write
 from ase.optimize import (
-    BFGS, LBFGS, FIRE,
+    BFGS, LBFGS, FIRE, FIRE2,
     BFGSLineSearch, LBFGSLineSearch,
     GoodOldQuasiNewton, MDMin, GPMin
 )
@@ -466,7 +466,7 @@ E_DEC = {_e_dec}
 from ase import Atoms
 from ase.io import read, write
 from ase.optimize import (
-    BFGS, LBFGS, FIRE,
+    BFGS, LBFGS, FIRE, FIRE2,
     BFGSLineSearch, LBFGSLineSearch,
     GoodOldQuasiNewton, MDMin, GPMin
 )
@@ -3380,6 +3380,8 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
     def relax_ions_after_strain(atoms, fmax, max_steps, opt_name, log_interval, label=""):
         if opt_name == "FIRE":
             opt = FIRE(atoms, logfile=None)
+        elif opt_name == "FIRE2":
+            opt = FIRE2(atoms, logfile=None)
         elif opt_name == "BFGS":
             opt = BFGS(atoms, logfile=None)
         else:
@@ -3487,8 +3489,20 @@ def _generate_elastic_code(elastic_params, optimization_params, calc_formation_e
                     pre_opt_target = atoms
                 if pre_opt_optimizer == "FIRE":
                     pre_opt = FIRE(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "FIRE2":
+                    pre_opt = FIRE2(pre_opt_target, logfile=None)
                 elif pre_opt_optimizer == "BFGS":
                     pre_opt = BFGS(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "BFGSLineSearch (QuasiNewton)":
+                    pre_opt = BFGSLineSearch(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "LBFGSLineSearch":
+                    pre_opt = LBFGSLineSearch(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "MDMin":
+                    pre_opt = MDMin(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "SciPyFminBFGS":
+                    pre_opt = SciPyFminBFGS(pre_opt_target, logfile=None)
+                elif pre_opt_optimizer == "SciPyFminCG":
+                    pre_opt = SciPyFminCG(pre_opt_target, logfile=None)
                 else:
                     pre_opt = LBFGS(pre_opt_target, logfile=None)
 
@@ -5386,6 +5400,8 @@ def _generate_optimization_code(optimization_params, calc_formation_energy,prese
                 optimizer = LBFGS(optimization_object, logfile=f"results/{filename}_opt.log")
             elif optimizer_type == "FIRE":
                 optimizer = FIRE(optimization_object, logfile=f"results/{filename}_opt.log")
+            elif optimizer_type == "FIRE2":
+                optimizer = FIRE2(optimization_object, logfile=f"results/{filename}_opt.log")
             elif optimizer_type == "BFGSLineSearch (QuasiNewton)":
                 optimizer = BFGSLineSearch(optimization_object, logfile=f"results/{filename}_opt.log")
             elif optimizer_type == "LBFGSLineSearch":
@@ -6420,6 +6436,8 @@ def _generate_phonon_code(phonon_params, optimization_params, calc_formation_ene
                     relax_target = pre_atoms
                 if pre_relax_optimizer == "FIRE":
                     pre_opt = FIRE(relax_target, logfile=None)
+                elif pre_relax_optimizer == "FIRE2":
+                    pre_opt = FIRE2(relax_target, logfile=None)
                 else:
                     pre_opt = LBFGS(relax_target, logfile=None)
 

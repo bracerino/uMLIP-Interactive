@@ -186,7 +186,7 @@ from ase import Atoms
 
 try:
     from ase.optimize import (
-        BFGS, LBFGS, FIRE,
+        BFGS, LBFGS, FIRE, FIRE2,
         BFGSLineSearch, LBFGSLineSearch,
         GoodOldQuasiNewton, MDMin, GPMin,
         CellAwareBFGS
@@ -989,6 +989,9 @@ def calculate_elastic_properties(atoms, calculator, elastic_params, log_queue, s
             if opt_name == 'FIRE':
                 from ase.optimize import FIRE
                 opt = FIRE(atoms, logfile=None)
+            elif opt_name == 'FIRE2':
+                from ase.optimize import FIRE2
+                opt = FIRE2(atoms, logfile=None)
             elif opt_name == 'BFGS':
                 from ase.optimize import BFGS
                 opt = BFGS(atoms, logfile=None)
@@ -1829,7 +1832,7 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
         if cached_relaxed is None and phonon_params.get('pre_relax', True):
             log_queue.put("  Running brief pre-phonon optimization...")
             try:
-                from ase.optimize import LBFGS, FIRE
+                from ase.optimize import LBFGS, FIRE, FIRE2
                 fmax_crit = float(phonon_params.get('pre_relax_fmax', 0.01))
                 max_steps = int(phonon_params.get('pre_relax_steps', 100))
                 opt_name  = str(phonon_params.get('pre_relax_optimizer', 'LBFGS')).upper()
@@ -1872,8 +1875,12 @@ def calculate_phonons_pymatgen(atoms, calculator, phonon_params, log_queue, stru
                                   "relaxing the full cell, symmetry still held)")
                 relax_target, relax_desc = build_relax_target(temp_atoms, lattice_mode)
                 log_queue.put(f"  Pre-relax target: {relax_desc}")
-                opt = FIRE(relax_target, logfile=None) if opt_name == 'FIRE'\
-                      else LBFGS(relax_target, logfile=None)
+                if opt_name == 'FIRE':
+                    opt = FIRE(relax_target, logfile=None)
+                elif opt_name == 'FIRE2':
+                    opt = FIRE2(relax_target, logfile=None)
+                else:
+                    opt = LBFGS(relax_target, logfile=None)
                 opt.run(fmax=fmax_crit, steps=max_steps)
 
                 if _fix_sym:
@@ -3202,7 +3209,7 @@ MACE_MODELS = {k: v for family in MODEL_FAMILIES.values() for k, v in family.ite
 # itself, plus matscipy/phonopy for relaxation/phonon runs). The GUI-only
 # packages from requirements.txt (streamlit, plotly, py3Dmol, psutil, gputil, …)
 # are intentionally left out. Versions match the project's requirements files.
-_CORE_SCI = "ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
+_CORE_SCI = "ase==3.29.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
 _CORE_SCI_ASE327 = "ase==3.27.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.40.0 numpy pandas matplotlib"
 
 FAMILY_ENV_SETUP = {
@@ -5085,6 +5092,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                 optimizer = LBFGS(optimization_object, logfile=None)
                             elif opt_name == "FIRE":
                                 optimizer = FIRE(optimization_object, logfile=None)
+                            elif opt_name == "FIRE2":
+                                optimizer = FIRE2(optimization_object, logfile=None)
                             elif opt_name == "BFGSLineSearch (QuasiNewton)":
                                 optimizer = BFGSLineSearch(optimization_object, logfile=None)
                             elif opt_name == "LBFGSLineSearch":
@@ -5427,6 +5436,8 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
                                     temp_optimizer = LBFGS(relax_target, logfile=None)
                                 elif opt_name == "FIRE":
                                     temp_optimizer = FIRE(relax_target, logfile=None)
+                                elif opt_name == "FIRE2":
+                                    temp_optimizer = FIRE2(relax_target, logfile=None)
                                 elif opt_name == "BFGSLineSearch (QuasiNewton)":
                                     temp_optimizer = BFGSLineSearch(relax_target, logfile=None)
                                 elif opt_name == "LBFGSLineSearch":
@@ -5760,7 +5771,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.14.3 · 11/09/2026
+            v0.14.4 · 11/14/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -9143,13 +9154,14 @@ with tab1:
 
             if pre_relax:
                 col_r1, col_r2, col_r3 = st.columns(3)
-                _opt_opts = ["LBFGS", "FIRE"]
+                _opt_opts = ["LBFGS", "FIRE", "FIRE2"]
                 with col_r1:
                     phonon_params["pre_relax_optimizer"] = st.selectbox(
                         "Optimiser", options=_opt_opts,
                         index=_opt_opts.index(_pg('pre_relax_optimizer', 'LBFGS'))
                               if _pg('pre_relax_optimizer', 'LBFGS') in _opt_opts else 0,
-                        help="LBFGS is faster for most systems; FIRE can handle highly disordered ones better")
+                        help="LBFGS is faster for most systems; FIRE / FIRE2 (FIRE 2.0) can handle "
+                             "highly disordered ones better")
                 with col_r2:
                     phonon_params["pre_relax_fmax"] = st.number_input(
                         "Force convergence (eV/Å)",
@@ -9377,7 +9389,7 @@ with tab1:
                 with col_eo1:
                     elastic_params['pre_opt_optimizer'] = st.selectbox(
                         "Optimizer",
-                        ["LBFGS", "FIRE", "BFGS", "BFGSLineSearch (QuasiNewton)",
+                        ["LBFGS", "FIRE", "FIRE2", "BFGS", "BFGSLineSearch (QuasiNewton)",
                          "LBFGSLineSearch", "MDMin", "SciPyFminBFGS", "SciPyFminCG"],
                         index=0,
                         help="LBFGS is fast and reliable for most structures."
@@ -9468,7 +9480,7 @@ with tab1:
                     with col_r3:
                         elastic_params['ionic_relax_optimizer'] = st.selectbox(
                             "Optimizer",
-                            ["LBFGS", "FIRE", "BFGS"],
+                            ["LBFGS", "FIRE", "FIRE2", "BFGS"],
                             index=0,
                             help="LBFGS is fastest for most cases"
                         )

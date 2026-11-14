@@ -50,6 +50,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             "BFGS",
             "LBFGS",
             "FIRE",
+            "FIRE2",
             "BFGSLineSearch (QuasiNewton)",
             "LBFGSLineSearch",
             "GoodOldQuasiNewton",
@@ -66,7 +67,7 @@ def setup_geometry_optimization_ui(default_settings, cell_opt_available, save_se
             "Optimizer",
             optimizer_options,
             index=optimizer_index,
-            help="BFGS: More memory but faster convergence. LBFGS: Less memory usage. FIRE: Good for difficult surfaces. BFGSLineSearch (QuasiNewton): Often optimal, with line search."
+            help="BFGS: More memory but faster convergence. LBFGS: Less memory usage. FIRE: Good for difficult surfaces. FIRE2: FIRE 2.0 (Guénolé et al. 2020), an improved FIRE. BFGSLineSearch (QuasiNewton): Often optimal, with line search."
         )
 
     with col_opt2:

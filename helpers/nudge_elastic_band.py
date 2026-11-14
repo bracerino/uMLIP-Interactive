@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 from ase.mep import NEB, interpolate
-from ase.optimize import BFGS, FIRE, LBFGS, LBFGSLineSearch, MDMin
+from ase.optimize import BFGS, FIRE, FIRE2, LBFGS, LBFGSLineSearch, MDMin
 from ase.io import read, write
 from ase import Atoms
 from pymatgen.core import Structure
@@ -122,12 +122,13 @@ def setup_neb_parameters_ui():
     with col11:
         neb_params['optimizer'] = st.selectbox(
             "Optimizer",
-            ["LBFGS", "BFGS", "FIRE", "LBFGSLineSearch", "MDMin"],
+            ["LBFGS", "BFGS", "FIRE", "FIRE2", "LBFGSLineSearch", "MDMin"],
             index=0,
             help=(
                 "**LBFGS** — fast quasi-Newton, good default for NEB\n\n"
                 "**BFGS** — classic quasi-Newton\n\n"
                 "**FIRE** — robust for highly non-linear bands\n\n"
+                "**FIRE2** — FIRE 2.0, improved FIRE variant\n\n"
                 "**LBFGSLineSearch** — LBFGS with line-search\n\n"
                 "**MDMin** — molecular dynamics minimiser"))
     with col12:
@@ -251,6 +252,7 @@ def _make_optimizer(name, neb_obj):
     if name == "LBFGS":           return LBFGS(neb_obj, logfile=None)
     if name == "LBFGSLINESEARCH": return LBFGSLineSearch(neb_obj, logfile=None)
     if name == "FIRE":            return FIRE(neb_obj, logfile=None)
+    if name == "FIRE2":           return FIRE2(neb_obj, logfile=None)
     if name == "MDMIN":           return MDMin(neb_obj, logfile=None)
     return BFGS(neb_obj, logfile=None)
 
@@ -985,7 +987,7 @@ torch.set_num_threads({thread_count})
 
 from ase.io import read, write
 from ase.mep import NEB, interpolate
-from ase.optimize import BFGS, FIRE, LBFGS, LBFGSLineSearch, MDMin
+from ase.optimize import BFGS, FIRE, FIRE2, LBFGS, LBFGSLineSearch, MDMin
 
 Path("neb_results").mkdir(exist_ok=True)
 
@@ -1016,6 +1018,7 @@ def make_optimizer(name, obj):
     if name == "LBFGS":           return LBFGS(obj, logfile=None)
     if name == "LBFGSLINESEARCH": return LBFGSLineSearch(obj, logfile=None)
     if name == "FIRE":            return FIRE(obj, logfile=None)
+    if name == "FIRE2":           return FIRE2(obj, logfile=None)
     if name == "MDMIN":           return MDMin(obj, logfile=None)
     return BFGS(obj, logfile=None)
 
@@ -1453,7 +1456,7 @@ torch.set_num_threads({thread_count})
 
 from ase.io import read, write
 from ase.mep import NEB, interpolate
-from ase.optimize import BFGS, FIRE, LBFGS, LBFGSLineSearch, MDMin
+from ase.optimize import BFGS, FIRE, FIRE2, LBFGS, LBFGSLineSearch, MDMin
 
 Path("neb_results").mkdir(exist_ok=True)
 
@@ -1482,6 +1485,7 @@ def make_optimizer(name, obj):
     if n == "LBFGS":           return LBFGS(obj, logfile=None)
     if n == "LBFGSLINESEARCH": return LBFGSLineSearch(obj, logfile=None)
     if n == "FIRE":            return FIRE(obj, logfile=None)
+    if n == "FIRE2":           return FIRE2(obj, logfile=None)
     if n == "MDMIN":           return MDMin(obj, logfile=None)
     return BFGS(obj, logfile=None)
 

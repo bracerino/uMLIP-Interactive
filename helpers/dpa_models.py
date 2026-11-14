@@ -144,7 +144,7 @@ DPA_MODELS = {
 DPA_ENV_SETUP = {
     "pip": (
         "pip install torch==2.11.0 deepmd-kit==3.2.0 mpich e3nn vesin vesin-torch "
-        "huggingface_hub ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 "
+        "huggingface_hub ase==3.29.0 pymatgen==2025.10.7 matscipy==1.2.0 "
         "phonopy==2.41.0 numpy pandas matplotlib"
     ),
     "note": (

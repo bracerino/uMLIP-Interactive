@@ -143,7 +143,7 @@ TOKEN_KEYS = ("hf_token", "remember_token")
 UMA_ENV_SETUP = {
     "pip": (
         "pip install fairchem-core==2.22.0 \"huggingface_hub[cli]>=0.34.0\" "
-        "ase==3.28.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.41.0 "
+        "ase==3.29.0 pymatgen==2025.10.7 matscipy==1.2.0 phonopy==2.41.0 "
         "numpy pandas matplotlib"
     ),
     "note": (
