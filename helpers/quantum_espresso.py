@@ -3718,7 +3718,7 @@ def render_qe_settings(saved=None, symbols=None, structure_names=None,
     with col_save:
         if on_save_defaults is not None:
             if st.button("💾 Save as defaults", key="qe_save_defaults",
-                         type="primary", use_container_width=True,
+                         type="primary", width="stretch",
                          help="Keep everything on this page — pw.x path, "
                               "pseudopotential library, cutoffs, k-points, spin "
                               "and +U — as the values the panel starts from next "

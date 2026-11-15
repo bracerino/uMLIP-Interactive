@@ -57,7 +57,8 @@ from helpers.generate_python_code import *
 
 from helpers.core_code_preview import generate_core_preview
 
-from helpers.petmad_dos import render_petmad_dos_panel
+from helpers.petmad_dos import (render_petmad_dos_panel, generate_petmad_dos_script,
+                                 render_dos_script)
 
 # ---------------------------------------------------------------------------
 # Online / demo mode.
@@ -5771,7 +5772,7 @@ with colx1:
             padding: 4px 11px;
             border-radius: 10px;
         ">
-            v0.14.4 · 11/14/2026
+            v0.14.5 · 11/15/2026
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -7000,8 +7001,47 @@ with tab1:
         "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
     )
 
-    st.sidebar.link_button("GitHub page", "https://github.com/bracerino/mace-md-gui",
-                           type="primary")
+    st.sidebar.markdown("""
+<style>
+.github-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: 1px solid rgba(91, 140, 255, 0.45);
+    background: linear-gradient(135deg, #57606a 0%, #6e7b8c 100%);
+    color: #ffffff !important;
+    font-weight: 600;
+    text-decoration: none !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+.github-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(91, 140, 255, 0.45);
+    border-color: rgba(91, 140, 255, 0.9);
+}
+.github-btn svg {
+    flex-shrink: 0;
+    fill: #ffffff;
+}
+</style>
+<a class="github-btn" href="https://github.com/bracerino/mace-md-gui" target="_blank">
+    <svg height="20" width="20" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+        0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01
+        1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+        0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0
+        1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0
+        3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0
+        .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+    GitHub page
+</a>
+""", unsafe_allow_html=True)
     if st.session_state.structures:
         pass
     else:
@@ -9691,6 +9731,7 @@ with tab_st:
                 type="primary",
                 disabled=ONLINE_MODE or
                          external_only or
+                         calc_type == "PET-MAD-DOS" or
                          use_uma or
                          not all_compatible or
                          st.session_state.calculation_running or
@@ -9807,7 +9848,19 @@ with tab_st:
                     "written directly under `eos_results/`."
                 )
 
-        if but_local_script and calc_type != "Birch-Murnaghan EOS":
+        if (but_script or but_local_script) and calc_type == "PET-MAD-DOS":
+            # Same script as the buttons below the PET-MAD-DOS settings; the first
+            # button embeds the uploaded structures, the second uses local files.
+            render_dos_script(
+                generate_petmad_dos_script(
+                    st.session_state.get('petmad_dos_params', {}),
+                    thread_count=st.session_state.get('thread_count', 4),
+                    structures=st.session_state.structures if but_script else None,
+                ),
+                embedded=bool(but_script),
+            )
+
+        if but_local_script and calc_type not in ("Birch-Murnaghan EOS", "PET-MAD-DOS"):
             substitutions_for_script = None
             ga_params_for_script = None
 
@@ -9909,7 +9962,7 @@ with tab_st:
                         - Various plots and visualizations
                         """)
 
-        if but_script and calc_type != "Birch-Murnaghan EOS":
+        if but_script and calc_type not in ("Birch-Murnaghan EOS", "PET-MAD-DOS"):
             substitutions_for_script = None
             ga_params_for_script = None
 

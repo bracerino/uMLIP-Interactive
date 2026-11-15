@@ -11,7 +11,7 @@
 # Checkpoints download from Figshare on first use and are cached in
 # ~/.cache/atomgptlab/alignn_ff/. They are not gated, so no token is needed.
 
-streamlit==1.64.0
+streamlit==1.67.0
 plotly
 pymatgen==2025.10.7
 matscipy==1.2.0 # required for ASE 3.26+
