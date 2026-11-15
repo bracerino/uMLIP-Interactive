@@ -5737,6 +5737,33 @@ def run_mace_calculation(structure_data, calc_type, model_size, device, optimiza
 
 
 #st.title("uMLIP-Interactive: Compute properties with universal MLIPs")
+
+
+def _supporter_logos_html():
+    """FZU and IMPLANT logos (linked) for the Model Selection heading, as inline images."""
+    import base64
+    logos = [
+        ("FZU – Institute of Physics of the Czech Academy of Sciences",
+         "https://www.fzu.cz/en", "fzu_logo.svg", 21),
+        ("IMPLANT group", "https://implant.fs.cvut.cz/", "implant_logo.png", 34),
+    ]
+    html = []
+    for name, url, fname, height in logos:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", fname)
+        if not os.path.exists(path):
+            continue
+        mime = "image/svg+xml" if fname.endswith(".svg") else "image/png"
+        with open(path, "rb") as fh:
+            data = base64.b64encode(fh.read()).decode()
+        # flex-shrink:0 — in the narrow sidebar the logos would otherwise be
+        # squeezed horizontally and distorted.
+        html.append(f'<a href="{url}" target="_blank" title="{name}" style="flex-shrink:0;line-height:0;">'
+                    f'<img src="data:{mime};base64,{data}" alt="{name}" '
+                    f'style="height:{height}px;width:auto;"></a>')
+    return ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">'
+            + "".join(html) + '</span>')
+
+
 colx1, colx2 = st.columns([2,1])
 with colx1:
     st.markdown("""
@@ -5903,7 +5930,15 @@ def format_duration(seconds):
 
 
 with st.sidebar:
-    st.header("Model Selection")
+    # One row: the sidebar is too narrow for st.header plus the logos, so the
+    # heading is drawn slightly smaller and kept on one line.
+    st.markdown(
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'gap:6px;margin:0.4rem 0 0.8rem 0;">'
+        '<span style="font-size:1.15rem;font-weight:700;white-space:nowrap;">Model Selection</span>'
+        + _supporter_logos_html() + '</div>',
+        unsafe_allow_html=True,
+    )
 
     defaults = st.session_state.default_settings
     family_names = list(MODEL_FAMILIES.keys())
