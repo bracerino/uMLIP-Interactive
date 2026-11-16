@@ -25,7 +25,7 @@ import streamlit as st
 
 SEO_URL = "https://umlip-interactive.streamlit.app/"
 
-SEO_TITLE = "MLIP-Interactive: Compute properties with universal MLIPs"
+SEO_TITLE = "uMLIP-Interactive: calculations with universal machine-learning interatomic potentials"
 
 SEO_DESCRIPTION = (
     "Web GUI for atomistic simulations with universal machine learning "
@@ -37,12 +37,13 @@ SEO_DESCRIPTION = (
 )
 
 SEO_KEYWORDS = [
-    "MLIP", "uMLIP", "machine learning interatomic potential",
+    "MLIP", "uMLIP", "uMLIP calculation", "uMLIP calculator", "MLIP calculation online",
+    "machine learning interatomic potential",
     "universal machine learning interatomic potentials", "machine learning force field",
     "MLIP simulation", "molecular dynamics", "MD simulation online",
     "atomistic simulation GUI", "ASE", "MACE", "MACE-MP", "UMA", "fairchem",
     "Orb-v3", "SevenNet", "MatterSim", "CHGNet", "GRACE", "PET-MAD", "NequIP",
-    "Allegro", "DPA", "ALIGNN-FF", "phonons", "phonon calculation",
+    "Allegro", "Nequix", "UPET", "Prophet", "DPA", "ALIGNN-FF", "phonons", "phonon calculation",
     "elastic constants", "Birch-Murnaghan equation of state", "geometry optimization",
     "nudged elastic band", "NEB", "metal-organic frameworks", "MOF",
     "materials science", "computational materials science", "DFT alternative",
@@ -52,7 +53,7 @@ SEO_KEYWORDS = [
 SEO_JSON_LD = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "name": "MLIP-Interactive (uMLIP-Interactive)",
+    "name": "uMLIP-Interactive",
     "url": SEO_URL,
     "description": SEO_DESCRIPTION,
     "applicationCategory": "ScientificApplication",

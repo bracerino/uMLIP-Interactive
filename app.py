@@ -7,7 +7,7 @@ configure_tf_logging()
 from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
-st.set_page_config(page_title="MLIP-Interactive: Compute properties with universal MLIPs", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="uMLIP-Interactive: calculations with universal machine-learning interatomic potentials", layout="wide", initial_sidebar_state="expanded")
 
 import os
 import pandas as pd
@@ -5764,6 +5764,52 @@ def _supporter_logos_html():
             + "".join(html) + '</span>')
 
 
+def _journal_badge_html():
+    """'Published in' badge linking to the article (same style as in SimplySQS).
+
+    A journal logo saved as images/jmrt_logo.(svg|png|webp) replaces the text
+    badge; otherwise the journal name is drawn as text, next to the cover
+    thumbnail images/jmrt_cover.(jpg|png|webp) when that file is present.
+    """
+    import base64
+    img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
+    mimes = {".svg": "image/svg+xml", ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png"}
+
+    def _first(names):
+        for n in names:
+            p = os.path.join(img_dir, n)
+            if os.path.exists(p):
+                with open(p, "rb") as fh:
+                    return f"data:{mimes[os.path.splitext(n)[1]]};base64,{base64.b64encode(fh.read()).decode()}"
+        return None
+
+    url = "https://doi.org/10.1016/j.jmrt.2026.02.204"
+    title = ("M. Lebeda et al. (2026). Revealing interstitial energetics in Ti-23Nb-0.7Ta-2Zr gum metal "
+             "base alloy via universal machine learning interatomic potentials. "
+             "Journal of Materials Research and Technology, 41, 6766-6774")
+    logo = _first(("jmrt_logo.svg", "jmrt_logo.png", "jmrt_logo.webp"))
+    if logo:
+        badge = (f'<img src="{logo}" alt="Journal of Materials Research and Technology" '
+                 'style="max-height:44px;max-width:100%;width:auto;">')
+    else:
+        cover = _first(("jmrt_cover.jpg", "jmrt_cover.png", "jmrt_cover.webp"))
+        cover_html = (f'<img src="{cover}" alt="Journal of Materials Research and Technology cover" '
+                      'style="height:56px;width:auto;flex:none;border-radius:2px;'
+                      'box-shadow:0 1px 3px rgba(0,0,0,0.3);">' if cover else "")
+        # without the cover, a coloured bar on the left takes its place
+        bar = "" if cover else "border-left:4px solid #e9711c;padding-left:8px;"
+        badge = (
+            '<span style="display:inline-flex;align-items:center;gap:10px;">' + cover_html +
+            f'<span style="display:inline-block;{bar}padding-top:2px;padding-bottom:2px;'
+            'line-height:1.05;font-family:Georgia,\'Times New Roman\',serif;color:#1f4e8c;">'
+            '<span style="font-size:0.78em;font-style:italic;">Journal of</span><br>'
+            '<span style="font-size:0.95em;font-weight:700;white-space:nowrap;">'
+            'Materials Research and Technology</span></span></span>')
+    return ('<div style="font-size:0.85em;opacity:0.8;margin:14px 0 6px 0;">Published in</div>'
+            f'<a href="{url}" target="_blank" title="{title}" style="text-decoration:none;">'
+            + badge + '</a>')
+
+
 colx1, colx2 = st.columns([2,1])
 with colx1:
     st.markdown("""
@@ -6928,23 +6974,15 @@ if tab_qe is not None:
 
 with tab1:
     if ONLINE_MODE:
-        st.sidebar.header("🌐 Online Demo Mode")
         st.sidebar.info(
-            "🌐 **This is the online version.**\n\n"
-            "Uploading structures and running simulations in the interface are "
-            "**disabled** here.\n\n"
-            "✅ You can still configure any calculation and **generate the "
-            "standalone Python script**.\n\n"
-            "💻 To upload structures and run simulations directly inside the "
-            "interface, please **install and run the app locally**:\n"
-            "[github.com/bracerino/uMLIP-Interactive](https://github.com/bracerino/uMLIP-Interactive)"
+            "🌐 **Online version:** generate standalone Python scripts only. "
+            "To upload structures and run simulations, "
+            "[install the app locally](https://github.com/bracerino/uMLIP-Interactive)."
         )
-    st.sidebar.header("Upload Structure Files")
+    else:
+        st.sidebar.header("Upload Structure Files")
     if ONLINE_MODE:
         uploaded_files = None
-        st.sidebar.warning(
-            "Structure upload is disabled in the online version."
-        )
     elif not st.session_state.structures_locked:
         uploaded_files = st.sidebar.file_uploader(
             "Upload structure files (CIF, POSCAR, LMP, XSF, PW, CFG, etc.)",
@@ -7030,10 +7068,10 @@ with tab1:
             #st.rerun()
         if st.session_state.calculation_running:
             st.warning("⚠️ Cannot unlock structures while calculation is running")
-    st.sidebar.info(f"🫶 **[Donations always appreciated!](https://buymeacoffee.com/bracerino)**")
     st.sidebar.info(
         "Try also the main application **[XRDlicious](https://xrdlicious.com)**. 🌀 Developed by **[IMPLANT team](https://implant.fs.cvut.cz/)**. "
-        "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**."
+        "📺 **[Quick tutorial here](https://youtu.be/xh98fQqKXaI?si=JaOUFhYoMQvPmNbB)**. See our corresponding **[article](https://www.sciencedirect.com/science/article/pii/S2238785426004540)**. Spot a bug or have a feature requests? Let us know at **lebedmi2@cvut.cz**. "
+        "🫶 **[Donations](https://buymeacoffee.com/bracerino)** always appreciated!"
     )
 
     st.sidebar.markdown("""
@@ -7077,6 +7115,7 @@ with tab1:
     GitHub page
 </a>
 """, unsafe_allow_html=True)
+    st.sidebar.markdown(_journal_badge_html(), unsafe_allow_html=True)
     if st.session_state.structures:
         pass
     else:
