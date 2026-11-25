@@ -8,13 +8,19 @@ unsafe_allow_javascript=True) (Streamlit >= 1.49; requirements pin 1.64),
 which renders in the page itself rather than in an iframe, so `document.head`
 is the app's own head.
 
-Added tags:
+Added tags (same approach as XRDlicious):
     <meta name="description">        the snippet Google shows under the title
     <meta name="keywords">           ignored by Google, still read by Bing and others
     <meta name="robots">             index, follow
-    <link rel="canonical">           the streamlit.app URL, without query strings
-    og:/twitter: title, description  link previews (Cloud's own tags are overwritten)
     application/ld+json              schema.org SoftwareApplication
+
+Streamlit's <noscript> text ("You need to enable JavaScript to run this app"
+and its note for AI agents) is removed, so search engines do not use it as the
+page text or snippet.
+
+Canonical, og: and twitter: tags are left to Streamlit Community Cloud, which
+adds its own after the app renders; adding them here too gave duplicate,
+conflicting tags (two different canonical URLs).
 
 Each tag is updated in place if it already exists, so a rerun does not
 duplicate it.
@@ -23,21 +29,24 @@ import json
 
 import streamlit as st
 
-SEO_URL = "https://umlip-interactive.streamlit.app/"
+SEO_URL = "https://umlip-interactive.streamlit.app"
 
-SEO_TITLE = "uMLIP-Interactive: calculations with universal machine-learning interatomic potentials"
+SEO_TITLE = (
+    "uMLIP-Interactive: Online Generator of Python Scripts for Phonons, Elastic Constants, MD, "
+    "NEB and Geometry Optimization with Universal Machine-Learning Interatomic Potentials "
+    "(MACE, UMA, Orb, SevenNet, ...)"
+)
 
 SEO_DESCRIPTION = (
-    "Web GUI for atomistic simulations with universal machine learning "
-    "interatomic potentials (uMLIPs): MACE, UMA, Orb-v3, SevenNet, MatterSim, "
-    "CHGNet, GRACE, PET-MAD and more. Set up single-point energy, geometry "
-    "optimization, molecular dynamics (NVE, NVT, NPT), phonons, elastic "
-    "constants, equation of state and NEB calculations, and generate a "
-    "ready-to-run Python (ASE) script."
+    "uMLIP-Interactive, Online Generator of Python Scripts for Calculations with Universal "
+    "Machine-Learning Interatomic Potentials (uMLIPs: MACE, UMA, Orb-v3, SevenNet, MatterSim, "
+    "CHGNet, GRACE, PET-MAD, ...): Single-Point Energy, Geometry Optimization, Phonons, "
+    "Elastic Constants, Equation of State, Molecular Dynamics (MD) and NEB from Crystal "
+    "Structures (CIF, POSCAR, LMP, XYZ ...)"
 )
 
 SEO_KEYWORDS = [
-    "MLIP", "uMLIP", "uMLIP calculation", "uMLIP calculator", "MLIP calculation online",
+    "MLIP", "uMLIP", "uMLIP calculation", "uMLIP script generator", "MLIP Python script generator",
     "machine learning interatomic potential",
     "universal machine learning interatomic potentials", "machine learning force field",
     "MLIP simulation", "molecular dynamics", "MD simulation online",
@@ -70,47 +79,27 @@ _CONTAINER_KEY = "mlip_seo_meta"
 
 def _head_script():
     meta = {
-        "name": {
-            "description": SEO_DESCRIPTION,
-            "keywords": ", ".join(SEO_KEYWORDS),
-            "robots": "index, follow",
-            "twitter:title": SEO_TITLE,
-            "twitter:description": SEO_DESCRIPTION,
-        },
-        "property": {
-            "og:title": SEO_TITLE,
-            "og:description": SEO_DESCRIPTION,
-            "og:url": SEO_URL,
-            "og:type": "website",
-        },
+        "description": SEO_DESCRIPTION,
+        "keywords": ", ".join(SEO_KEYWORDS),
+        "robots": "index, follow",
     }
     # json.dumps gives valid JS literals; "</" is escaped so the payload cannot
     # close the surrounding <script> tag.
     meta_js = json.dumps(meta).replace("</", "<\\/")
     ld_js = json.dumps(json.dumps(SEO_JSON_LD)).replace("</", "<\\/")
-    url_js = json.dumps(SEO_URL)
     return f"""<script>
 (function () {{
   var head = document.head;
   var meta = {meta_js};
-  Object.keys(meta).forEach(function (attr) {{
-    Object.keys(meta[attr]).forEach(function (key) {{
-      var el = head.querySelector('meta[' + attr + '="' + key + '"]');
-      if (!el) {{
-        el = document.createElement('meta');
-        el.setAttribute(attr, key);
-        head.appendChild(el);
-      }}
-      el.setAttribute('content', meta[attr][key]);
-    }});
+  Object.keys(meta).forEach(function (key) {{
+    var el = head.querySelector('meta[name="' + key + '"]');
+    if (!el) {{
+      el = document.createElement('meta');
+      el.setAttribute('name', key);
+      head.appendChild(el);
+    }}
+    el.setAttribute('content', meta[key]);
   }});
-  var link = head.querySelector('link[rel="canonical"]');
-  if (!link) {{
-    link = document.createElement('link');
-    link.setAttribute('rel', 'canonical');
-    head.appendChild(link);
-  }}
-  link.setAttribute('href', {url_js});
   var ld = head.querySelector('script[data-mlip-seo]');
   if (!ld) {{
     ld = document.createElement('script');
@@ -119,6 +108,7 @@ def _head_script():
     head.appendChild(ld);
   }}
   ld.textContent = {ld_js};
+  document.querySelectorAll('noscript').forEach(function (el) {{ el.remove(); }});
 }})();
 </script>"""
 

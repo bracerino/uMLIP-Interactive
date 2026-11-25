@@ -7,7 +7,8 @@ configure_tf_logging()
 from ase.constraints import FixAtoms, FixCartesian
 import streamlit as st
 
-st.set_page_config(page_title="uMLIP-Interactive: calculations with universal machine-learning interatomic potentials", layout="wide", initial_sidebar_state="expanded")
+from helpers.seo_metadata import SEO_TITLE as SEO_PAGE_TITLE
+st.set_page_config(page_title=SEO_PAGE_TITLE, layout="wide", initial_sidebar_state="expanded")
 
 import os
 import pandas as pd

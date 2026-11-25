@@ -1,6 +1,6 @@
 # uMLIP-Interactive: GUI for running simulations with universal machine learning interatomic potentials (uMLIPs)
 
-**uMLIP-Interactive** is an online and local tool for **uMLIP calculations**: compute energies, geometry optimization, phonons, elastic constants, equation of state (EOS), molecular dynamics (MD) and nudged elastic band (NEB) with **universal machine-learning interatomic potentials** (foundation models such as MACE, UMA, Orb, SevenNet, MatterSim, GRACE, CHGNet, NequIP, Allegro, Nequix, UPET, DPA, ALIGNN-FF, Prophet), without writing code. Try it online at **https://umlip-interactive.streamlit.app**.
+uMLIP-Interactive is an online and local tool for uMLIP calculations: compute energies, geometry optimization, phonons, elastic constants, equation of state (EOS), molecular dynamics (MD) and nudged elastic band (NEB) with universal machine-learning interatomic potentials (foundation models such as MACE, UMA, Orb, SevenNet, MatterSim, GRACE, CHGNet, NequIP, Allegro, Nequix, UPET, DPA, ALIGNN-FF, Prophet), without writing code. Try it online at https://umlip-interactive.streamlit.app.
 
 Run or generate input script for basic molecular dynamics/static simulations:
 - **Single-point energy**
